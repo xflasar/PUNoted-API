@@ -1,0 +1,18 @@
+.history
+*.pyc
+*.json
+node_modules
+config
+.env
+__pycache__
+
+# Custom Dev support files
+prun_data
+prun_data_users
+received_data
+static_data
+.xatarc
+
+API
+msgApiPU
+handlers
