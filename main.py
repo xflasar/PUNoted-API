@@ -1,8 +1,12 @@
 # main.py
 
 import asyncio
+import csv
+import io
 import os
 import re
+import threading
+from typing import Any, Dict, List, Tuple
 import asyncpg
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, HTTPException, Request
@@ -15,9 +19,13 @@ import logging
 from db import Database
 
 from auth import auth_router
-from data_handlers import data_router
+from data_handlers import data_router, BackgroundTasks
 
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from discord_bot.bot import bot
+from discord_bot.webhook import router as discord_router
+
 
 # --- GLOBAL LOGGING CONFIGURATION ---
 logging.basicConfig(
@@ -80,13 +88,24 @@ db = Database()
 scheduler = AsyncIOScheduler()
 
 import debugpy
-DEBUG_PORT = 5680
+DEBUG_PORT = 5681
 if not debugpy.is_client_connected():
     try:
         debugpy.listen(("0.0.0.0", DEBUG_PORT))
         print(f"Debugpy listening on port {DEBUG_PORT}. Waiting for client...")
     except Exception as e:
         print(f"Failed to start debugpy listener on port {DEBUG_PORT}: {e}")
+
+def run_discord_bot():
+    """
+    This function runs the Discord bot.
+    It's run in a separate thread so it doesn't block the FastAPI server.
+    """
+    token = os.getenv("DISCORD_BOT_TOKEN")
+    if token:
+        bot.run(token)
+    else:
+        print("Error: DISCORD_BOT_TOKEN environment variable not set.")
 
 # STARTUP EVENT: Initializes the connection pool once when the app starts
 @app.on_event("startup")
@@ -97,16 +116,27 @@ async def startup_event():
 
         # Cron job set to run every 30 minutes
         scheduler.add_job(scrape_and_save_data, 'interval', minutes=30, args=[db.pool])
+        scheduler.add_job(scrape_prices_and_save_data, 'interval', minutes=30, args=[db.pool])
         scheduler.start()
         print('Scheduler started.')
+
+        # Start the Discord bot in a separate thread
+        discord_thread = threading.Thread(target=run_discord_bot, daemon=True)
+        discord_thread.start()
     except Exception as e:
         print(f"Failed to create database pool or start scheduler: {e}")
 
 # SHUTDOWN EVENT: Closes the connection pool when the app shuts down
 @app.on_event("shutdown")
 async def shutdown_event():
+    for task in BackgroundTasks:
+        task.cancel()
+    # Wait for the tasks to be cancelled
+    await asyncio.gather(*BackgroundTasks, return_exceptions=True)
     await db.close_pool()
     print('Closed DB.')
+
+    await bot.close()
     pass
 
 @app.middleware("http")
@@ -118,6 +148,7 @@ async def db_session_middleware(request: Request, call_next):
 # Include the routers
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(data_router, tags=["data"])
+app.include_router(discord_router, prefix="/discord")
 
 @app.get('/status')
 async def status_check(request: Request):
@@ -185,57 +216,162 @@ async def scrape_and_save_data(pool: asyncpg.pool.Pool):
     print("Starting scheduled scrape job...")
     
     try:
-        conn = await pool.acquire()
-        try:
-            response = requests.get(os.environ.get("SHIPS_PRODUCTION_GOOGLE_SHEET"))
-            response.raise_for_status()
-            soup = BeautifulSoup(response.text, 'html.parser')
-            table = soup.find('tbody')
-            if not table:
-                print("Table not found in HTML.")
-                return
-            rows = table.find_all('tr')
-            
-            async with conn.transaction():
-                for i, row in enumerate(rows):
-                    row_id = i + 1
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                try:
+                    response = requests.get(os.environ.get("SHIPS_PRODUCTION_GOOGLE_SHEET"))
+                    response.raise_for_status()
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    table = soup.find('tbody')
+                    if not table:
+                        print("Table not found in HTML.")
+                        return
+                    rows = table.find_all('tr')
                     
-                    cells = row.find_all('td')
-                    if len(cells) < 4:
-                        continue
-                    if not cells[0].get_text(strip=True) and not cells[1].get_text(strip=True) and not cells[3].get_text(strip=True):
-                        continue
-                    
-                    ship_and_price_text = cells[1].get_text(strip=True)
-                    ship_type, price = parse_ship_type(ship_and_price_text)
-                    
-                    if ship_type == "model":
-                        continue
-
-                    username = cells[0].get_text(strip=True)
-                    completed_cell = cells[2]
-                    is_completed = bool(completed_cell.find('use', href='#checked-checkbox-id'))
-                    notes = cells[3].get_text(strip=True)
-                    
-                    await conn.execute(
-                        """
-                        INSERT INTO ship_production (orderid, username, shiptype, price, completed, notes)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        ON CONFLICT (orderid) DO UPDATE
-                        SET
-                            username = EXCLUDED.username,
-                            shiptype = EXCLUDED.shiptype,
-                            price = EXCLUDED.price,
-                            completed = EXCLUDED.completed,
-                            notes = EXCLUDED.notes;
-                        """,
-                        row_id, username, ship_type, price, is_completed, notes
-                    )
-            print("Data scraped and saved successfully.")
-        finally:
-            await pool.release(conn)
+                    for i, row in enumerate(rows):
+                        row_id = i + 1
+                        
+                        cells = row.find_all('td')
+                        if len(cells) < 4:
+                            continue
+                        if not cells[0].get_text(strip=True) and not cells[1].get_text(strip=True) and not cells[3].get_text(strip=True):
+                            continue
+                        
+                        ship_and_price_text = cells[1].get_text(strip=True)
+                        ship_type, price = parse_ship_type(ship_and_price_text)
+                        
+                        if ship_type == "model":
+                            continue
+        
+                        username = cells[0].get_text(strip=True)
+                        completed_cell = cells[2]
+                        is_completed = bool(completed_cell.find('use', href='#checked-checkbox-id'))
+                        notes = cells[3].get_text(strip=True)
+                        
+                        con.execute(
+                            """
+                            INSERT INTO ship_production (orderid, username, shiptype, price, completed, notes)
+                            VALUES ($1, $2, $3, $4, $5, $6)
+                            ON CONFLICT (orderid) DO UPDATE
+                            SET
+                                username = EXCLUDED.username,
+                                shiptype = EXCLUDED.shiptype,
+                                price = EXCLUDED.price,
+                                completed = EXCLUDED.completed,
+                                notes = EXCLUDED.notes;
+                            """,
+                            row_id, username, ship_type, price, is_completed, notes
+                        )
+                    print("Data scraped and saved successfully.")
+                except Exception as e:
+                    print(f"Error in cron job: {e}")
     except Exception as e:
         print(f"Error in cron job: {e}")
+
+# --- Parsing Logic ---
+def parse_financial_data_row(cells: List[Any], headers: List[str]) -> Tuple[str, float | None]:
+    """
+    Parses a single row from the HTML table to extract the 'MAT' and 'Price'.
+    Handles non-numeric values and formula errors gracefully.
+    """
+    try:
+        mat_index = headers.index('MAT')
+        price_index = headers.index('Price')
+
+        mat_ticker = cells[mat_index].get_text(strip=True)
+        price_text = cells[price_index].get_text(strip=True)
+
+        # Remove both ',' and '$' from the price string
+        cleaned_price = re.sub(r'[$,]', '', price_text)
+
+        try:
+            price = float(cleaned_price)
+        except ValueError:
+            price = None # Set price to None if conversion fails (e.g., '#DIV/0!', empty string)
+        
+        return mat_ticker, price
+
+    except (ValueError, IndexError):
+        # Catch errors if 'MAT' or 'Price' columns are missing or if the cell content is unexpected.
+        return "", None
+
+async def scrape_prices_and_save_data(pool: asyncpg.pool.Pool):
+    """
+    Scrapes data from the Google Sheet and saves it to the database
+    using bulk operations.
+    """
+    print("Starting scheduled ticker and price scrape job...")
+    
+    try:
+        response = requests.get("https://docs.google.com/spreadsheets/u/0/d/e/2PACX-1vSG_rqZ_TCSTe12_FzJRw0_mbDCYJ5HnGvnmgI3Sd-CFd0AxkSzc88e3glLeM-5ZpI2ILcFSzEX8Nvg/pubhtml/sheet?plix3d1x26headersx3dfalse&gid=0")
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        main_table = soup.find('table', class_='waffle')
+        if not main_table:
+            print("The financial data table could not be found.")
+            return
+
+        rows = main_table.find_all('tr')
+        if len(rows) < 6:
+            print("Table has no data rows.")
+            return
+
+        header_row_index = None
+        headers = []
+        for i, row in enumerate(rows):
+            cells = row.find_all('td')
+            current_headers = [c.get_text(strip=True) for c in cells]
+            if 'MAT' in current_headers and 'Price' in current_headers:
+                header_row_index = i
+                headers = current_headers
+                break
+        
+        if header_row_index is None:
+            print("Could not find the header row with 'MAT' and 'Price'.")
+            return
+        
+        records_to_upsert = []
+        
+        for row in rows[header_row_index + 1:]:
+            cells = row.find_all('td')
+            if not cells:
+                continue
+
+            mat_ticker, price = parse_financial_data_row(cells, headers)
+            
+            # Skip rows where the ticker is empty or price is not a valid number
+            if not mat_ticker or price is None:
+                continue
+            
+            records_to_upsert.append((mat_ticker, price))
+
+        if not records_to_upsert:
+            print("No valid data records found to save.")
+            return
+        
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                try:
+                    await con.executemany(
+                        """
+                        INSERT INTO material_prices (ticker, price)
+                        VALUES ($1, $2)
+                        ON CONFLICT (ticker) DO UPDATE
+                        SET price = EXCLUDED.price;
+                        """,
+                        records_to_upsert
+                    )
+                    print(f"Data scraped and {len(records_to_upsert)} records saved successfully.")
+                except Exception as e:
+                    print(f"Database error during UPSERT: {e}")
+                    raise
+
+    except requests.exceptions.RequestException as e:
+        print(f"HTTP error during scraping: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
 
 @app.get('/')
 async def base():

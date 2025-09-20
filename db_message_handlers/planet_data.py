@@ -51,7 +51,11 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                     if changed_fields:
                         update_fields = ", ".join([f"{key} = ${i+2}" for i, key in enumerate(changed_fields.keys())])
                         update_query = f"UPDATE planets SET {update_fields} WHERE planetid = $1;"
-                        await conn.execute(update_query, planet.get("planetid"), *changed_fields.values())
+                        try:
+                            await conn.execute(update_query, planet.get("planetid"), *changed_fields.values())
+                        except Exception as e:
+                            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                            raise
                         overall_results["planets"] = {"success": True, "message": f"Record '{planet.get("planetid")}' updated. Changed fields: {list(changed_fields.keys())}"}
                     else:
                         overall_results["planets"] = {"success": True, "message": f"Record '{planet.get("planetid")}' is unchanged."}
@@ -59,7 +63,11 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                     keys = ", ".join(planet.keys())
                     values_placeholders = ", ".join([f'${i+1}' for i in range(len(planet))])
                     insert_query = f"INSERT INTO planets ({keys}) VALUES ({values_placeholders});"
-                    await conn.execute(insert_query, *planet.values())
+                    try:
+                        await conn.execute(insert_query, *planet.values())
+                    except Exception as e:
+                        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                        raise
                     overall_results["planets"] = {"success": True, "message": f"Record '{planet.get("planetid")}' inserted."}
 
                 # Step 2: Handle nested tables with selective updates
@@ -98,8 +106,11 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                         keys = ', '.join(records_to_insert[0].keys())
                         values_placeholders = ', '.join([f'${i+1}' for i in range(len(records_to_insert[0]))])
                         insert_query = f"INSERT INTO {table_name} ({keys}) VALUES ({values_placeholders});"
-                        await conn.executemany(insert_query, [list(rec.values()) for rec in records_to_insert])
-                    
+                        try:
+                            await conn.executemany(insert_query, [list(rec.values()) for rec in records_to_insert])
+                        except Exception as e:
+                            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                            raise
                     if records_to_update:
                         for update_rec in records_to_update:
                             changed_data = update_rec["changed_data"]
@@ -108,8 +119,11 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                             update_fields = ", ".join([f"{key} = ${i+len(key_fields)+1}" for i, key in enumerate(changed_data.keys())])
                             
                             update_query = f"UPDATE {table_name} SET {update_fields} WHERE {' AND '.join([f'{key_fields[i]} = ${i+1}' for i in range(len(key_fields))])};"
-                            await conn.execute(update_query, *key_values, *changed_data.values())
-
+                            try:
+                                await conn.execute(update_query, *key_values, *changed_data.values())
+                            except Exception as e:
+                                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                                raise
                     overall_results[table_name] = {"success": True, "message": f"Processed {len(records_to_insert)} inserts and {len(records_to_update)} selective updates."}
         
         end_time = time.perf_counter()

@@ -38,7 +38,11 @@ async def _upsert_batch(
 
     values_to_insert = [tuple(record.values()) for record in records]
     
-    await db.executemany(query, values_to_insert)
+    try:
+        await db.executemany(query, values_to_insert)
+    except Exception as e:
+        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+        raise
     logger.debug(f"Upserted {len(records)} records into {table_name}.")
 
 async def handle_site_available_reserve_population_data_message(db: Any, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -60,14 +64,15 @@ async def handle_site_available_reserve_population_data_message(db: Any, raw_pay
         unique_columns = ["planetid", "siteid"]
         
         updatable_columns = ["pioneer", "settler", "engineer", "scientist", "technician"]
-        
-        await _upsert_batch(
-            db,
-            table_name,
-            [population_data_records],
-            unique_columns,
-            updatable_columns
-        )
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                await _upsert_batch(
+                    con,
+                    table_name,
+                    [population_data_records],
+                    unique_columns,
+                    updatable_columns
+                )
 
         end_time = time.perf_counter()
         duration = (end_time - start_time) * 1000

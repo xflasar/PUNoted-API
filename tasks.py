@@ -24,6 +24,8 @@ import db_message_handlers.accounting_data
 import db_message_handlers.sectors_data
 import db_message_handlers.systems_data
 import db_message_handlers.site_available_reserve_population_data
+import db_message_handlers.production_lines_data
+import db_message_handlers.stations_data
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +51,9 @@ CONVERTER_HANDLERS = {
     'ACCOUNTING_BOOKINGS': data_converter.convert_accounting_data,
     'WORLD_SECTORS': data_converter.convert_sectors_data,
     'SYSTEM_STARS_DATA': data_converter.convert_systems_data,
-    'POPULATION_AVAILABLE_RESERVE_WORKFORCE': data_converter.convert_site_available_population_data
+    'POPULATION_AVAILABLE_RESERVE_WORKFORCE': data_converter.convert_site_available_population_data,
+    'PRODUCTION_SITE_PRODUCTION_LINES': data_converter.convert_production_lines_data,
+    'stations': data_converter.convert_stations_data
 }
 
 def converter_router(argument, data):
@@ -81,7 +85,9 @@ MESSAGE_HANDLERS = {
     'ACCOUNTING_BOOKINGS': db_message_handlers.accounting_data.handle_accounting_data_message,
     'WORLD_SECTORS': db_message_handlers.sectors_data.handle_sectors_message,
     'SYSTEM_STARS_DATA': db_message_handlers.systems_data.handle_systems_data,
-    'POPULATION_AVAILABLE_RESERVE_WORKFORCE': db_message_handlers.site_available_reserve_population_data.handle_site_available_reserve_population_data_message
+    'POPULATION_AVAILABLE_RESERVE_WORKFORCE': db_message_handlers.site_available_reserve_population_data.handle_site_available_reserve_population_data_message,
+    'PRODUCTION_SITE_PRODUCTION_LINES': db_message_handlers.production_lines_data.handle_production_lines_data_message,
+    'stations': db_message_handlers.stations_data.handle_stations_data_message
 }
 
 async def handle_message_data_router(db, messageType, payload) -> Any:
@@ -108,56 +114,67 @@ async def process_data_batch_task(items_to_process: List[Dict[str, Any]], user_i
     """
     Synchronous task wrapper that runs the async logic.
     """
+    timeout_duration = 120
     task_start_time = time.perf_counter()
-    
-
-    for item in items_to_process:
-        if "message" not in item or item["message"] is None:
-            logger.warning(f"Item {item.get('id', 'N/A')}: 'message' key is missing or None. Skipping.")
-            continue
-
-        message_payload = item.get("message")
-
-        if not isinstance(message_payload, dict):
-            try:
-                message_payload = json.loads(message_payload)
-            except (json.JSONDecodeError, TypeError):
-                logger.error(f"Invalid message payload format for item {item.get('id', 'N/A')}: {message_payload}. Skipping.", exc_info=True)
-                continue
-
-        message_id = item.get("id")
-        if message_id in processed_message_ids_cache:
-            logger.info(f"Message ID '{message_id}' already processed in this batch, skipping.")
-            continue
-
-        processed_message_ids_cache[message_id] = True
-
-        try:
-            message_type = message_payload.get("messageType")
-            if message_type == "DATA_DATA":
-                if message_payload.get("payload", {}).get("path", []) and \
-                    message_payload["payload"]["path"][0] == "planets" and \
-                    len(message_payload["payload"]["path"]) < 3:
-                    message_type = message_payload["payload"]["path"][0]
-                    message_payload["payload"] = message_payload["payload"].get("body")
-                else:
-                    logger.warning(f"Message {message_id}: messageType is None and not a recognized special case. Skipping.")
-                    continue
-
-            db_start_time = time.perf_counter()
-            response = await handle_message_data_router(
-                db,
-                messageType=message_type,
-                payload={"userId": user_id, "data": converter_router(message_type, message_payload)}
-            )
-
-            log_message = response[0].get('message', 'No message') if isinstance(response, tuple) and response and isinstance(response[0], dict) else 'No response info'
-            logger.info(f"Processed message ID '{message_id}' for type '{message_type}' with response: {log_message}")
-            db_end_time = time.perf_counter()
-            logger.info(f"Processing request took {db_end_time - db_start_time:.4f} seconds.")
-        except Exception as e:
-            logger.error(f"Error processing message ID '{message_id}': {e}", exc_info=True)
-
+    try:
+        await asyncio.wait_for(
+            _process_data_batch_coroutine(items_to_process, user_id, db),
+            timeout=timeout_duration
+        )
+    except asyncio.TimeoutError:
+        logger.error(f"Task for user '{user_id}' timed out after {timeout_duration} seconds.")
+        
+    except Exception as e:
+        logger.error(f"Task for user '{user_id}' failed with an exception: {e}", exc_info=True)
     task_end_time = time.perf_counter()
     logger.info(f"Finished for user_id: '{user_id}' in {task_end_time - task_start_time:.2f} seconds.")
     return {"status": "completed", "total_processed": len(items_to_process)}
+
+async def _process_data_batch_coroutine(items_to_process, user_id, db):
+    for item in items_to_process:
+            if "message" not in item or item["message"] is None:
+                logger.warning(f"Item {item.get('id', 'N/A')}: 'message' key is missing or None. Skipping.")
+                continue
+
+            message_payload = item.get("message")
+
+            if not isinstance(message_payload, dict):
+                try:
+                    message_payload = json.loads(message_payload)
+                except (json.JSONDecodeError, TypeError):
+                    logger.error(f"Invalid message payload format for item {item.get('id', 'N/A')}: {message_payload}. Skipping.", exc_info=True)
+                    continue
+
+            message_id = item.get("id")
+            if message_id in processed_message_ids_cache:
+                logger.info(f"Message ID '{message_id}' already processed in this batch, skipping.")
+                continue
+
+            processed_message_ids_cache[message_id] = True
+
+            try:
+                message_type = message_payload.get("messageType")
+                if message_type == "DATA_DATA":
+                    if message_payload.get("payload", {}).get("path", []) and message_payload["payload"]["path"][0] == "planets" and len(message_payload["payload"]["path"]) < 3:
+                        message_type = message_payload["payload"]["path"][0]
+                        message_payload["payload"] = message_payload["payload"].get("body")
+                    elif message_payload.get("payload", {}).get("path", []) and message_payload["payload"]["path"][0] == "stations" and len(message_payload["payload"]["path"]) < 3:
+                        message_type = message_payload["payload"]["path"][0]
+                        message_payload["payload"] = message_payload["payload"].get("body")
+                    else:
+                        logger.warning(f"Message {message_id}: messageType is None and not a recognized special case. Skipping.")
+                        continue
+
+                db_start_time = time.perf_counter()
+                response = await handle_message_data_router(
+                    db,
+                    messageType=message_type,
+                    payload={"userId": user_id, "data": converter_router(message_type, message_payload)}
+                )
+
+                log_message = response[0].get('message', 'No message') if isinstance(response, tuple) and response and isinstance(response[0], dict) else 'No response info'
+                logger.info(f"Processed message ID '{message_id}' for type '{message_type}' with response: {log_message}")
+                db_end_time = time.perf_counter()
+                logger.info(f"Processing request took {db_end_time - db_start_time:.4f} seconds.")
+            except Exception as e:
+                logger.error(f"Error processing message ID '{message_id}': {e}", exc_info=True)

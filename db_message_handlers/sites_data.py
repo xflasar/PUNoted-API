@@ -75,7 +75,11 @@ async def process_all_site_data(con, raw_payload: Dict[str, Any]) -> Dict[str, A
             if changed_fields:
                 update_fields = ", ".join([f"{key} = ${i+2}" for i, key in enumerate(changed_fields.keys())])
                 update_query = f"UPDATE sites SET {update_fields} WHERE siteid = $1;"
-                await con.execute(update_query, site_id, *changed_fields.values())
+                try:
+                    await con.execute(update_query, site_id, *changed_fields.values())
+                except Exception as e:
+                    logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                    raise
                 overall_results.append({"siteid": site_id, "status": "updated"})
             else:
                 overall_results.append({"siteid": site_id, "status": "unchanged"})
@@ -83,7 +87,11 @@ async def process_all_site_data(con, raw_payload: Dict[str, Any]) -> Dict[str, A
             keys = ", ".join(site_record_to_process.keys())
             values_placeholders = ", ".join([f'${i+1}' for i in range(len(site_record_to_process))])
             insert_query = f"INSERT INTO sites ({keys}) VALUES ({values_placeholders});"
-            await con.execute(insert_query, *site_record_to_process.values())
+            try:
+                await con.execute(insert_query, *site_record_to_process.values())
+            except Exception as e:
+                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                raise
             overall_results.append({"siteid": site_id, "status": "inserted"})
 
         # 2. Handle all nested tables
@@ -255,7 +263,11 @@ async def _upsert_records(
     for i in range(0, len(records), chunk_size):
         chunk = records[i:i + chunk_size]
         values_to_insert = [list(rec.values()) for rec in chunk]
-        await con.executemany(query, values_to_insert, timeout=timeout)
+        try:
+            await con.executemany(query, values_to_insert, timeout=timeout)
+        except Exception as e:
+            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+            raise
     logger.info(f"Finished inserting data in upsert_records.")
 
 async def _handle_deletions_by_platforms(
@@ -299,4 +311,8 @@ async def _handle_deletions_by_platforms(
     
     values_to_delete = list(zip(*keys_to_delete))
 
-    await con.execute(delete_query, *values_to_delete)
+    try:
+        await con.execute(delete_query, *values_to_delete)
+    except Exception as e:
+        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+        raise

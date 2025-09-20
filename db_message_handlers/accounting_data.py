@@ -66,9 +66,13 @@ async def handle_accounting_data_message(db: Database, raw_payload: Dict[str, An
     try:
         async with db.pool.acquire() as con:
             async with con.transaction():
-                await con.executemany(update_query, records_for_upsert)
-
-                logger.info(f"Attempted to UPDATE {len(records_for_upsert)} accounting balance records.")
+                try:
+                    await con.executemany(update_query, records_for_upsert)
+                    logger.info(f"Attempted to UPDATE {len(records_for_upsert)} accounting balance records.")
+                except Exception as e:
+                    logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                    raise
+                
     
     except Exception as e:
         logger.error(f"Database error during UPDATE: {e}", exc_info=True)

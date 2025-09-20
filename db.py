@@ -31,10 +31,14 @@ class Database:
             self.con.close()
             print("Connection closed.")
 
+    async def init_connection(self, con):
+        """Sets a statement timeout on the connection."""
+        await con.execute("SET statement_timeout = '15s'")
+
     async def create_pool(self, loop):
         self.poolInit = True
         dsn = (XATA_DATABASE_URL)
-        self.pool = await asyncpg.create_pool(dsn=dsn, reset=self.no_op_reset, loop=loop, timeout=15, init=lambda con: con.execute("SET statement_timeout = '15s'"))
+        self.pool = await asyncpg.create_pool(dsn=dsn, reset=self.no_op_reset, max_size=12, loop=loop, command_timeout=60, timeout=15, init=self.init_connection)
         logger.info("Database pool created successfully.")
 
     async def close_pool(self):

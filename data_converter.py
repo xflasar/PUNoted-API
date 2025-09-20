@@ -1,5 +1,6 @@
 # data_converter.py
 import json
+import string
 from typing import Dict, List, Any, Optional
 import datetime
 
@@ -27,7 +28,6 @@ def convert_users_data_table(raw_records: Dict[str, Any]) -> List[Dict[str, Any]
     # Handle subscription expiry timestamp
     subscription_expiry_data = payload.get('subscriptionExpiry')
     if subscription_expiry_data is not None and subscription_expiry_data.get('timestamp') is not None:
-        # 🌟 FIX: Pass the datetime object directly to the query
         subscription_expiry = datetime.datetime.fromtimestamp(subscription_expiry_data['timestamp'] / 1000)
     else:
         subscription_expiry = None
@@ -35,13 +35,11 @@ def convert_users_data_table(raw_records: Dict[str, Any]) -> List[Dict[str, Any]
     # Handle created timestamp
     created_data = payload.get('created')
     if created_data is not None and created_data.get('timestamp') is not None:
-        # 🌟 FIX: Pass the datetime object directly to the query
         created = datetime.datetime.fromtimestamp(created_data['timestamp'] / 1000)
     else:
-        created = None # Use None instead of 'null' for a null value
+        created = None
 
     converted_records.append({
-        # For simple keys, use the helper function to set a default
         'userid': get_value_or_default('id', 'null'),
         'displayname': get_value_or_default('username', 'null'),
         'companyid': get_value_or_default('companyId', 'null'),
@@ -54,9 +52,6 @@ def convert_users_data_table(raw_records: Dict[str, Any]) -> List[Dict[str, Any]
         'ismuted': get_value_or_default('isMuted', 'null'),
         'preferredlocale': get_value_or_default('preferredLocale', 'null')
     })
-
-    #print(raw_records)
-    #print(converted_records)
     
     return converted_records
 
@@ -385,15 +380,20 @@ def convert_production_lines_data(raw_records: List[Dict[str, Any]]) -> List[Dic
             'slots': record.get('slots'),
             'efficiency': record.get('efficiency'),
             'condition': record.get('condition'),
-        })
-    return converted_records
+            'orders': convert_production_line_orders_data(record.get('orders')),
+            'production_templates': convert_production_line_order_production_templates_data(record.get('productionTemplates')),
+            'efficiency_factors': convert_production_line_efficiency_factors(record.get('efficiencyFactors'), record.get('id')),
+            'workforces': convert_production_workforces_data(record.get('workforces'), record.get('id'))
 
-def convert_production_workforces_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        })
+    return {'siteid': raw_records['payload'].get('siteId'), 'production_lines': converted_records}
+
+def convert_production_workforces_data(raw_records: List[Dict[str, Any]], production_line_id: string) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'production_workforces' table schema."""
     converted_records = []
     for record in raw_records:
         converted_records.append({
-            'productionLineId': record.get('productionLineId'),
+            'productionlineid': production_line_id,
             'level': record.get('level'),
             'efficiency': record.get('efficiency')
         })
@@ -406,34 +406,36 @@ def convert_production_line_orders_data(raw_records: List[Dict[str, Any]]) -> Li
         # Handle created timestamp
         created = record.get('created')
         if created is not None and created.get('timestamp') is not None:
-            # 🌟 FIX: Pass the datetime object directly to the query
             created = datetime.datetime.fromtimestamp(created['timestamp'] / 1000)
         else:
-            created = None # Use None instead of 'null' for a null value
+            created = None
 
         # Handle created timestamp
-        started = record.get('created')
+        started = record.get('started')
         if started is not None and started.get('timestamp') is not None:
-            # 🌟 FIX: Pass the datetime object directly to the query
             started = datetime.datetime.fromtimestamp(started['timestamp'] / 1000)
         else:
-            started = None # Use None instead of 'null' for a null value
+            started = None
 
         # Handle created timestamp
-        completion = record.get('created')
+        completion = record.get('completion')
         if completion is not None and completion.get('timestamp') is not None:
-            # 🌟 FIX: Pass the datetime object directly to the query
             completion = datetime.datetime.fromtimestamp(completion['timestamp'] / 1000)
         else:
-            completion = None # Use None instead of 'null' for a null value
+            completion = None
 
         # Handle created timestamp
-        lastupdated = record.get('created')
+        lastupdated = record.get('lastUpdated')
         if lastupdated is not None and lastupdated.get('timestamp') is not None:
-            # 🌟 FIX: Pass the datetime object directly to the query
             lastupdated = datetime.datetime.fromtimestamp(lastupdated['timestamp'] / 1000)
         else:
-            lastupdated = None # Use None instead of 'null' for a null value
+            lastupdated = None
+
+        duration = record.get('duration')
+        if duration is not None and duration.get('millis') is not None:
+            duration = duration.get('millis')
+        else:
+            duration = None
 
         converted_records.append({
             'orderid': record.get('id'),
@@ -442,27 +444,74 @@ def convert_production_line_orders_data(raw_records: List[Dict[str, Any]]) -> Li
             'created': created,
             'started': started,
             'completion': completion,
-            'duration': record.get('durationMillis'),
+            'duration': duration,
             'lastupdated': lastupdated,
-            'completed': record.get('completed'),
+            'completed': bool(record.get('completed')),
             'halted': record.get('halted'),
             'recurring': record.get('recurring'),
             'productionfeeamount': record.get('productionFee').get('amount'),
-            'productionfeecurrency': record.get('productionFee').get('currency')
+            'productionfeecurrency': record.get('productionFee').get('currency'),
+            'inputs': convert_production_line_order_materials_data(record.get('inputs'), record.get('id'), 'input'),
+            'outputs': convert_production_line_order_materials_data(record.get('outputs'), record.get('id'), 'output')
         })
     return converted_records
 
-def convert_production_line_order_materials_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def convert_production_line_order_materials_data(raw_records: List[Dict[str, Any]], order_id: string, material_type: string) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'production_line_order_materials' table schema."""
     converted_records = []
     for record in raw_records:
         converted_records.append({
-            'poroductionLineOrderId': record.get('poroductionLineOrderId'),
-            'materialId': record.get('materialId'),
+            'orderid': order_id,
+            'materialId': record.get('material').get('id'),
+            'type': material_type,
+            'amount': record.get('amount'),
+            'valueAmount': record.get('value').get('amount'),
+            'valueCurrency': record.get('value').get('currency')
+        })
+    return converted_records
+
+def convert_production_line_order_production_templates_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    converted_records = []
+    for record in raw_records:
+
+        duration = record.get('duration')
+        if duration is not None and duration.get('millis') is not None:
+            duration = duration.get('millis')
+        else:
+            duration = None
+
+        converted_records.append({
+            'productiontemplateid': record.get('id'),
+            'name': record.get('name'),
+            'duration': duration,
+            'efficiency': record.get('efficiency'),
+            'effortfactor': record.get('effortFactor'),
+            'experience': record.get('experience'),
+            'input_factors': convert_templates_factors_data(record.get('inputFactors'), record.get('id'), 'input'),
+            'output_factors': convert_templates_factors_data(record.get('outputFactors'), record.get('id'), 'output'),
+        })
+    return converted_records
+
+def convert_templates_factors_data(raw_records: List[Dict[str, Any]], production_template_id: string, material_type: string) -> List[Dict[str, Any]]:
+    converted_records = []
+    for record in raw_records:
+        converted_records.append({
+            'productiontemplateid': production_template_id,
+            'materialid': record.get('material').get('id'),
+            'factor': record.get('factor'),
+            'type': material_type
+        })
+    return converted_records
+
+def convert_production_line_efficiency_factors(raw_records: List[Dict[str, Any]], production_line_id: string) -> List[Dict[str, Any]]:
+    converted_records = []
+    for record in raw_records:
+        converted_records.append({
+            'productionlineid': production_line_id,
+            'expertisecategory': record.get('expertiseCategory', None),
             'type': record.get('type'),
-            'quantity': record.get('quantity'),
-            'valueAmount': record.get('valueAmount'),
-            'valueCurrency': record.get('valueCurrency')
+            'effectivity': record.get('effectivity'),
+            'value': record.get('value')
         })
     return converted_records
 
@@ -1168,25 +1217,30 @@ def convert_planetBuildOptionMaterials_data(raw_records: List[Dict[str, Any]]) -
         })
     return converted_records
 
-def convert_stations_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def convert_stations_data(raw_record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'stations' table schema."""
-    converted_records = []
-    for record in raw_records:
-        converted_records.append({
-            'stationId': record.get('stationId'),
-            'systemId': record.get('systemId'),
-            'name': record.get('name'),
-            'naturalId': record.get('naturalId'),
-            'commissioningTime': record.get('commissioningTime'),
-            'comexId': record.get('comexId'),
-            'comexName': record.get('comexName'),
-            'comexCode': record.get('comexCode'),
-            'warehouseId': record.get('warehouseId'),
-            'localMarketId': record.get('localMarketId'),
-            'countryId': record.get('countryId'),
-            'governingEntityId': record.get('governingEntityId')
-        })
-    return converted_records
+    raw_record = raw_record['payload']
+    # Handle subscription expiry timestamp
+    commissioning_time = raw_record.get('commissioningTime')
+    if commissioning_time is not None and commissioning_time.get('timestamp') is not None:
+        commissioning_time = datetime.datetime.fromtimestamp(commissioning_time['timestamp'] / 1000)
+    else:
+        commissioning_time = None
+    
+    converted_record = {
+        'stationid': raw_record.get('id'),
+        'systemid': raw_record.get('address').get('lines')[0].get('entity').get('id'),
+        'name': raw_record.get('name'),
+        'naturalid': raw_record.get('naturalId'),
+        'commissioningtime': commissioning_time,
+        'comexid': raw_record.get('comex').get('id'),
+        'warehouseid': raw_record.get('warehouseId'),
+        'localmarketid': raw_record.get('localMarketId'),
+        'countryid': raw_record.get('country').get('id'),
+        'governingentityid': raw_record.get('governingEntity').get('id')
+    }
+        
+    return converted_record
 
 def convert_countries_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'countries' table schema."""

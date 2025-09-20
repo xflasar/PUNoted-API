@@ -122,7 +122,11 @@ async def _upsert_records(
     for i in range(0, len(records), chunk_size):
         chunk = records[i:i + chunk_size]
         values_to_insert = [list(rec.values()) for rec in chunk]
-        await con.executemany(query, values_to_insert)
+        try:
+            await con.executemany(query, values_to_insert)
+        except Exception as e:
+            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+            raise
     logger.info(f"Finished inserting data in upsert_records.")
 
 
@@ -140,7 +144,11 @@ async def _handle_deletions_by_parent(
     """
     if not current_records:
         delete_query = f"DELETE FROM {table_name} WHERE {parent_id_field} = $1;"
-        await con.execute(delete_query, parent_id)
+        try:
+            await con.execute(delete_query, parent_id)
+        except Exception as e:
+            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+            raise
         return
 
     payload_keys = {
@@ -166,4 +174,8 @@ async def _handle_deletions_by_parent(
     
     values_to_delete = [key[0] for key in keys_to_delete]
 
-    await con.execute(delete_query, values_to_delete)
+    try:
+        await con.execute(delete_query, values_to_delete)
+    except Exception as e:
+        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+        raise

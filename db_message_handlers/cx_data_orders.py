@@ -105,5 +105,9 @@ async def _upsert_records(
     for i in range(0, len(records), chunk_size):
         chunk = records[i:i + chunk_size]
         values_to_insert = [list(rec.values()) for rec in chunk]
-        await con.executemany(query, values_to_insert)
+        try:
+            await con.executemany(query, values_to_insert)
+        except Exception as e:
+            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+            raise
     logger.info(f"Finished inserting data in upsert_records.")

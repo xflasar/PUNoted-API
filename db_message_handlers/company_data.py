@@ -80,10 +80,14 @@ async def handle_company_data_message(conn, converted_data: Dict[str, Any]) -> D
 
             company_keys = ', '.join(company_data_record.keys())
             company_values = ', '.join([f'${i+1}' for i in range(len(company_data_record))])
-            await conn.execute(
-                f"INSERT INTO {company_data_table} ({company_keys}) VALUES ({company_values});",
-                *company_data_record.values()
-            )
+            try:
+                await conn.execute(
+                    f"INSERT INTO {company_data_table} ({company_keys}) VALUES ({company_values});",
+                    *company_data_record.values()
+                )
+            except Exception as e:
+                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                raise
 
         end_time = time.perf_counter()
         logger.info(f"Finished processing company data in {end_time - start_time:.2f} seconds.")
@@ -136,9 +140,16 @@ async def handle_company_update_transactional(conn, existing_company_record, com
                     # Delete existing nested items
                     tables_to_clear_by_hq = ["headquarters_upgrade_items", "efficiency_gains", "efficiency_gains_next_level"]
                     for table in tables_to_clear_by_hq:
-                        await conn.execute(f"DELETE FROM {table} WHERE headquartersid = $1;", headquarters_id_to_link)
-
-                    await conn.execute("DELETE FROM representation_contributors WHERE representationid = $1;", representation_id_to_link)
+                        try:
+                            await conn.execute(f"DELETE FROM {table} WHERE headquartersid = $1;", headquarters_id_to_link)
+                        except Exception as e:
+                            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                            raise
+                    try:
+                        await conn.execute("DELETE FROM representation_contributors WHERE representationid = $1;", representation_id_to_link)
+                    except Exception as e:
+                        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                        raise
                     logger.info("Deleted old nested items in preparation for new ones.")
 
                     # Insert new nested items (bulk insert)
@@ -147,7 +158,11 @@ async def handle_company_update_transactional(conn, existing_company_record, com
                         if items_to_insert:
                             keys = ', '.join(items_to_insert[0].keys())
                             values_placeholders = ', '.join([f'${i+1}' for i in range(len(items_to_insert[0]))])
-                            await conn.executemany(f"INSERT INTO headquarters_upgrade_items ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in items_to_insert])
+                            try:
+                                await conn.executemany(f"INSERT INTO headquarters_upgrade_items ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in items_to_insert])
+                            except Exception as e:
+                                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                                raise
                             logger.info(f"Bulk inserted {len(items_to_insert)} headquarters_upgrade_items.")
 
                     if headquarters_efficiency_gains:
@@ -155,7 +170,11 @@ async def handle_company_update_transactional(conn, existing_company_record, com
                         if gains_to_insert:
                             keys = ', '.join(gains_to_insert[0].keys())
                             values_placeholders = ', '.join([f'${i+1}' for i in range(len(gains_to_insert[0]))])
-                            await conn.executemany(f"INSERT INTO efficiency_gains ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in gains_to_insert])
+                            try:
+                                await conn.executemany(f"INSERT INTO efficiency_gains ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in gains_to_insert])
+                            except Exception as e:
+                                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                                raise
                             logger.info(f"Bulk inserted {len(gains_to_insert)} efficiency_gains.")
 
                     if headquarters_efficiency_gains_next_level:
@@ -163,7 +182,11 @@ async def handle_company_update_transactional(conn, existing_company_record, com
                         if next_level_gains_to_insert:
                             keys = ', '.join(next_level_gains_to_insert[0].keys())
                             values_placeholders = ', '.join([f'${i+1}' for i in range(len(next_level_gains_to_insert[0]))])
-                            await conn.executemany(f"INSERT INTO efficiency_gains_next_level ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in next_level_gains_to_insert])
+                            try:
+                                await conn.executemany(f"INSERT INTO efficiency_gains_next_level ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in next_level_gains_to_insert])
+                            except Exception as e:
+                                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                                raise
                             logger.info(f"Bulk inserted {len(next_level_gains_to_insert)} efficiency_gains_next_level.")
 
                     if representation_contributors:
@@ -171,7 +194,11 @@ async def handle_company_update_transactional(conn, existing_company_record, com
                         if contribs_to_insert:
                             keys = ', '.join(contribs_to_insert[0].keys())
                             values_placeholders = ', '.join([f'${i+1}' for i in range(len(contribs_to_insert[0]))])
-                            await conn.executemany(f"INSERT INTO representation_contributors ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in contribs_to_insert])
+                            try:
+                                await conn.executemany(f"INSERT INTO representation_contributors ({keys}) VALUES ({values_placeholders});", [list(rec.values()) for rec in contribs_to_insert])
+                            except Exception as e:
+                                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                                raise
                             logger.info(f"Bulk inserted {len(contribs_to_insert)} representation_contributors.")
 
                     # Update the main company_data record
@@ -181,7 +208,11 @@ async def handle_company_update_transactional(conn, existing_company_record, com
 
                     update_fields = ", ".join([f"{key} = ${i+2}" for i, key in enumerate(company_data_record.keys())])
                     update_query = f"UPDATE {company_data_table} SET {update_fields} WHERE xata_id = $1;"
-                    await conn.execute(update_query, existing_company_record['xata_id'], *company_data_record.values())
+                    try:
+                        await conn.execute(update_query, existing_company_record['xata_id'], *company_data_record.values())
+                    except Exception as e:
+                        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                        raise
                     logger.info(f"Updated main company record for '{company_id}'.")
 
                 else:
@@ -254,7 +285,12 @@ async def insert_new_company(
             contrib_keys = ', '.join(contrib_records_to_insert[0].keys())
             contrib_values = ', '.join([f'${i+1}' for i in range(len(contrib_records_to_insert[0]))])
             contrib_query = f"INSERT INTO representation_contributors ({contrib_keys}) VALUES ({contrib_values});"
-            await conn.executemany(contrib_query, [list(rec.values()) for rec in contrib_records_to_insert])
+            try:
+                await conn.executemany(contrib_query, [list(rec.values()) for rec in contrib_records_to_insert])
+                logger.info(f"Attempted to UPDATE {len(contrib_records_to_insert)} records.")
+            except Exception as e:
+                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                raise
 
     # Headquarters items
     if headquarters_upgrade_items:
@@ -268,7 +304,12 @@ async def insert_new_company(
             item_keys = ', '.join(items_to_insert[0].keys())
             item_values = ', '.join([f'${i+1}' for i in range(len(items_to_insert[0]))])
             item_query = f"INSERT INTO headquarters_upgrade_items ({item_keys}) VALUES ({item_values});"
-            await conn.executemany(item_query, [list(rec.values()) for rec in items_to_insert])
+            try:
+                await conn.executemany(item_query, [list(rec.values()) for rec in items_to_insert])
+                logger.info(f"Attempted to UPDATE {len(items_to_insert)} records.")
+            except Exception as e:
+                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                raise
 
     # Headquarters efficiency gains
     if headquarters_efficiency_gains:
@@ -282,7 +323,12 @@ async def insert_new_company(
             gain_keys = ', '.join(gains_to_insert[0].keys())
             gain_values = ', '.join([f'${i+1}' for i in range(len(gains_to_insert[0]))])
             gain_query = f"INSERT INTO efficiency_gains ({gain_keys}) VALUES ({gain_values});"
-            await conn.executemany(gain_query, [list(rec.values()) for rec in gains_to_insert])
+            try:
+                await conn.executemany(gain_query, [list(rec.values()) for rec in gains_to_insert])
+                logger.info(f"Attempted to UPDATE {len(items_to_insert)} records.")
+            except Exception as e:
+                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                raise
 
     # Headquarters efficiency gains next level
     if headquarters_efficiency_gains_next_level:
@@ -296,7 +342,12 @@ async def insert_new_company(
             next_level_keys = ', '.join(next_level_gains_to_insert[0].keys())
             next_level_values = ', '.join([f'${i+1}' for i in range(len(next_level_gains_to_insert[0]))])
             next_level_query = f"INSERT INTO efficiency_gains_next_level ({next_level_keys}) VALUES ({next_level_values});"
-            await conn.executemany(next_level_query, [list(rec.values()) for rec in next_level_gains_to_insert])
+            try:
+                await conn.executemany(next_level_query, [list(rec.values()) for rec in next_level_gains_to_insert])
+                logger.info(f"Attempted to UPDATE {len(next_level_gains_to_insert)} records.")
+            except Exception as e:
+                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+                raise
 
     return {
         "representationid": representation_id,

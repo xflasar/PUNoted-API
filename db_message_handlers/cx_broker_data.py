@@ -89,7 +89,11 @@ async def _upsert_records(
     for i in range(0, len(records), chunk_size):
         chunk = records[i:i + chunk_size]
         values_to_insert = [list(rec.values()) for rec in chunk]
-        await con.executemany(query, values_to_insert)
+        try:
+            await con.executemany(query, values_to_insert)
+        except Exception as e:
+            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+            raise
     logger.info(f"Finished inserting data in upsert_records.")
 
 async def _delete_and_insert(
@@ -104,8 +108,11 @@ async def _delete_and_insert(
     """
     # Delete existing records for the parent ID
     delete_query = f"DELETE FROM {table_name} WHERE {parent_id_field} = $1;"
-    await con.execute(delete_query, parent_id)
-
+    try:
+        await con.execute(delete_query, parent_id)
+    except Exception as e:
+        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+        raise
     # Insert the new records if the list is not empty
     if records:
         columns = records[0].keys()
@@ -116,6 +123,9 @@ async def _delete_and_insert(
         
         # Use executemany for bulk insertion
         values_to_insert = [list(rec.values()) for rec in records]
-        await con.executemany(insert_query, values_to_insert)
-        
+        try:
+            await con.executemany(insert_query, values_to_insert)
+        except Exception as e:
+            logger.error(f"Database error during UPSERT: {e}", exc_info=True)
+            raise
     logger.info(f"Finished processing {len(records)} records for {table_name}.")

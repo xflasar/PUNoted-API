@@ -471,6 +471,7 @@ async def login(login_data: Dict[str, str], request: Request):
     conn = request.state.db
     username = login_data.get('username', '').lower()
     password = login_data.get('password')
+    isWebsite = login_data.get('isWebsite')
     
     if not username or not password:
         raise HTTPException(
@@ -479,9 +480,16 @@ async def login(login_data: Dict[str, str], request: Request):
         )
 
     try:
-        users = await conn.fetch_rows(
-            f"SELECT xata_id, username, password_hash, isverified FROM users WHERE username = $1;",username
-        )
+        query = ""
+        if isWebsite:
+            query = f"""SELECT us.xata_id, us.username, us.password_hash, us.isverified, ud.displayname, cd.companyname, cd.companycode
+                    FROM users as us
+                    INNER JOIN users_data as ud ON ud.userid = us.userdataid
+                    INNER JOIN company_data as cd ON cd.userdataid = ud.userid
+                    WHERE username = $1;"""
+        else:
+            query = f"SELECT xata_id, username, password_hash, isverified FROM users WHERE username = $1;"
+        users = await conn.fetch_rows(query, username)
         
         # Check if a user was found and if the password is correct
         if users and check_password_hash(users[0]['password_hash'], password):
@@ -498,14 +506,25 @@ async def login(login_data: Dict[str, str], request: Request):
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Failed to generate token"
                 )
-
-            return {
-                "success": True,
-                "message": "Login successful",
-                "token": token,
-                "expires_at": expires_at,
-                "username": user['username']
-            }
+            if isWebsite == "true":
+                return {
+                    "success": True,
+                    "message": "Login successful",
+                    "token": token,
+                    "expires_at": expires_at,
+                    "username": user['username'],
+                    "displayName": user['displayname'],
+                    "companyName": user['companyname'],
+                    "companyCode": user['companycode']
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": "Login successful",
+                    "token": token,
+                    "expires_at": expires_at,
+                    "username": user['username']
+                }
         else:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
