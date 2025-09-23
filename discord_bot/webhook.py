@@ -3,15 +3,17 @@ import asyncio
 import threading
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request
-from .bot import bot # Import the bot instance
+from .bot import bot, get_bot # Import the bot instance
 from discord import Member, Guild
 import re
+import logging
 
 # Create a FastAPI router
 router = APIRouter()
 
 # Get the Discord channel ID from an environment variable for security
 discord_channel_id = int(os.getenv("DISCORD_CHANNEL_ID", "YOUR_CHANNEL_ID_HERE"))
+logger = logging.getLogger(__name__)
 
 def format_price(price: Optional[float]) -> str:
     """
@@ -38,18 +40,22 @@ def format_amount(amount: Optional[int]) -> str:
 
 # Helper function to send messages to Discord
 async def send_discord_message(message_content: str):
-    """Asynchronously sends a message to the configured Discord channel."""
+    bot_instance = get_bot()
+    if not bot_instance:
+        logger.error("Discord bot instance not available.")
+        return False
+        
     try:
-        channel = bot.get_channel(discord_channel_id)
+        channel = bot_instance.get_channel(discord_channel_id)
         if channel:
             await channel.send(message_content)
-            print(f"✅ Successfully sent message to Discord.")
+            logger.info("✅ Successfully sent message to Discord.")
             return True
         else:
-            print(f"❌ Error: Discord channel with ID {discord_channel_id} not found.")
+            logger.error(f"❌ Error: Discord channel with ID {discord_channel_id} not found.")
             return False
     except Exception as e:
-        print(f"❌ Error sending message to Discord: {e}")
+        logger.error(f"❌ Error sending message to Discord: {e}")
         return False
 
 # Function to search for a user in a guild by their in-game name
@@ -59,8 +65,12 @@ async def get_user_by_ingamename(guild: Guild, ingamename: str) -> Optional[Memb
     This is a resource-intensive operation on large guilds.
     """
     async for member in guild.fetch_members(limit=None):
-        if member.display_name == ingamename or member.name == ingamename:
+        # Extract the display name part before the ' - ' separator
+        display_name_part = member.display_name.partition(' - ')[0]
+
+        if display_name_part == ingamename or member.name == ingamename:
             return member
+            
     return None
 
 @router.post("/buy_order")

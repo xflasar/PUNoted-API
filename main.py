@@ -23,7 +23,7 @@ from data_handlers import data_router, BackgroundTasks
 
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from discord_bot.bot import bot
+from discord_bot.bot import bot, run_bot
 from discord_bot.webhook import router as discord_router
 
 
@@ -96,16 +96,8 @@ if not debugpy.is_client_connected():
     except Exception as e:
         print(f"Failed to start debugpy listener on port {DEBUG_PORT}: {e}")
 
-def run_discord_bot():
-    """
-    This function runs the Discord bot.
-    It's run in a separate thread so it doesn't block the FastAPI server.
-    """
-    token = os.getenv("DISCORD_BOT_TOKEN")
-    if token:
-        bot.run(token)
-    else:
-        print("Error: DISCORD_BOT_TOKEN environment variable not set.")
+# Use a separate thread to run the Discord bot
+discord_bot_thread = threading.Thread(target=run_bot, daemon=True)
 
 # STARTUP EVENT: Initializes the connection pool once when the app starts
 @app.on_event("startup")
@@ -113,7 +105,7 @@ async def startup_event():
     loop = asyncio.get_event_loop()
     try:
         await db.create_pool(loop=loop)
-
+        
         # Cron job set to run every 30 minutes
         scheduler.add_job(scrape_and_save_data, 'interval', minutes=30, args=[db.pool])
         scheduler.add_job(scrape_prices_and_save_data, 'interval', minutes=30, args=[db.pool])
@@ -121,8 +113,7 @@ async def startup_event():
         print('Scheduler started.')
 
         # Start the Discord bot in a separate thread
-        discord_thread = threading.Thread(target=run_discord_bot, daemon=True)
-        discord_thread.start()
+        discord_bot_thread.start()
     except Exception as e:
         print(f"Failed to create database pool or start scheduler: {e}")
 
@@ -234,7 +225,7 @@ async def scrape_and_save_data(pool: asyncpg.pool.Pool):
                         cells = row.find_all('td')
                         if len(cells) < 4:
                             continue
-                        if not cells[0].get_text(strip=True) and not cells[1].get_text(strip=True) and not cells[3].get_text(strip=True):
+                        if not cells[0].get_text(strip=True) and not cells[1].get_text(strip=True) and not cells[5].get_text(strip=True):
                             continue
                         
                         ship_and_price_text = cells[1].get_text(strip=True)
@@ -246,9 +237,9 @@ async def scrape_and_save_data(pool: asyncpg.pool.Pool):
                         username = cells[0].get_text(strip=True)
                         completed_cell = cells[2]
                         is_completed = bool(completed_cell.find('use', href='#checked-checkbox-id'))
-                        notes = cells[3].get_text(strip=True)
+                        notes = cells[5].get_text(strip=True)
                         
-                        con.execute(
+                        await con.execute(
                             """
                             INSERT INTO ship_production (orderid, username, shiptype, price, completed, notes)
                             VALUES ($1, $2, $3, $4, $5, $6)

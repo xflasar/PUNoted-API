@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional
 import logging
 from auth import get_current_user_id
 from db import Database
+from discord_bot import bot
+from discord_bot.webhook import send_discord_message
 
 data_router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -472,7 +474,7 @@ async def get_user_vendor_stores(
             
             # Step 2: Fetch all orders associated with this vendor
             orders_records = await conn.fetch(
-                "SELECT orderid, materialid, materialticker, ordertype, fixedprice FROM user_vendor_orders WHERE vendorid = $1;", vendor_record['vendorid']
+                "SELECT orderid, materialid, materialticker, ordertype, fixedprice, reserved FROM user_vendor_orders WHERE vendorid = $1;", vendor_record['vendorid']
             )
 
             # Step 3: Combine the data into a single, structured response
@@ -501,7 +503,7 @@ async def get_vendor_stores(request: Request):
             # Step 1: Fetch all vendors and their orders in a single query
             vendors_orders_query = """
                 SELECT uv.vendorid, uv.companycode, uv.companyname, uv.corpname, uv.gamename, uv.isactive,
-                       uvo.orderid, uvo.materialticker, uvo.ordertype, uvo.fixedprice
+                       uvo.orderid, uvo.materialticker, uvo.ordertype, uvo.fixedprice, uvo.reserved
                 FROM user_vendors AS uv
                 INNER JOIN user_vendor_orders AS uvo ON uvo.vendorid = uv.vendorid;
             """
@@ -574,7 +576,8 @@ async def get_vendor_stores(request: Request):
                     "orderid": record['orderid'],
                     "materialticker": record['materialticker'],
                     "ordertype": record['ordertype'],
-                    "fixedprice": record['fixedprice']
+                    "fixedprice": record['fixedprice'],
+                    "reserved": record['reserved']
                 })
                 
                 # Attach the quantity to the correct order
@@ -675,6 +678,7 @@ class OrderItem(BaseModel):
     ordertype: str
     fixedprice: float
     materialid: str
+    reserved: int
 
 class EditOrdersRequest(BaseModel):
     vendorid: str
@@ -697,9 +701,7 @@ async def edit_vendor_orders(
                     "SELECT userid, gamename FROM user_vendors WHERE vendorid = $1", payload.vendorid
                 )
 
-                vendor_record = vendor_record[0]
-
-                if not vendor_record or vendor_record['userid'] != user_id:
+                if not vendor_record or vendor_record[0]['userid'] != user_id:
                     raise HTTPException(status_code=403, detail="Not authorized to edit this vendor store.")
 
                 # Step 2: Delete orders
@@ -711,29 +713,39 @@ async def edit_vendor_orders(
 
                 # Step 3: Add or update orders
                 for order in payload.orders_to_update:
+                    # ... (your existing database logic remains the same) ...
                     if order.orderid:
-                        # Update existing order
                         await con.execute(
                             """
-                            INSERT INTO user_vendor_orders (orderid, vendorid, materialticker, materialid, ordertype, fixedprice)
-                            VALUES ($1, $2, $3, $4, $5, $6)
+                            INSERT INTO user_vendor_orders (orderid, vendorid, materialticker, materialid, ordertype, fixedprice, reserved)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7)
                             ON CONFLICT (orderid) DO UPDATE SET
                                 materialticker = EXCLUDED.materialticker,
                                 ordertype = EXCLUDED.ordertype,
-                                fixedprice = EXCLUDED.fixedprice;
+                                fixedprice = EXCLUDED.fixedprice,
+                                reserved = EXCLUDED.reserved;
                             """,
                             order.orderid,
                             payload.vendorid,
                             order.materialticker,
                             order.materialid,
                             order.ordertype,
-                            order.fixedprice
+                            order.fixedprice,
+                            order.reserved
                         )
 
-                from discord_bot.webhook import send_discord_message_sync
-                send_discord_message_sync(f"Vendor store of {vendor_record['gamename']} was updated!")
+        bot_instance = bot.get_bot()
+        if bot_instance and bot_instance.is_ready():
+            # Schedule the coroutine to run on the bot's event loop
+            future = asyncio.run_coroutine_threadsafe(
+                send_discord_message(f"Vendor store of {vendor_record[0]['gamename']} was updated!"),
+                bot_instance.loop
+            )
+            future.result() # Wait for the message to be sent
+        else:
+            logger.warning("Discord bot is not ready. Skipping message.")
 
-                return JSONResponse(status_code=200, content={"success": True, "message": "Vendor store orders updated successfully."})
+        return JSONResponse(status_code=200, content={"success": True, "message": "Vendor store orders updated successfully."})
     
     except HTTPException as e:
         logger.error(f"Authorization error for user '{user_id}': {e.detail}")
