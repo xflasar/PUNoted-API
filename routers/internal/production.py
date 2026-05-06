@@ -1,0 +1,354 @@
+import json
+import logging
+from collections import defaultdict
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Request
+
+from app.core.security import require_internal_origin
+from auth import get_current_user_id
+
+production_router = APIRouter(dependencies=[Depends(require_internal_origin)])
+logger = logging.getLogger(__name__)
+
+MS_PER_DAY = 1000 * 60 * 60 * 24.0
+
+
+# --- HELPER: Safe JSON Parsing ---
+# Handles cases where the DB driver returns a JSON string instead of an object
+def safe_json(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    return value
+
+
+# --- QUERY 1: SITES & INFRASTRUCTURE ---
+SQL_GET_SITES_AND_INFRA = """
+WITH UserSites AS (
+    SELECT 
+        s.siteid, s.area, s.investedpermits, s.maximumpermits, s.foundedtimestamp, 
+        p.naturalid AS planet_name, p.name AS planet_name_alt
+    FROM sites s
+    INNER JOIN users u ON u.userdataid = s.userid
+    INNER JOIN planets p ON p.planetid = s.addressplanetid
+    WHERE u.accountid = $1
+)
+SELECT 
+    us.*,
+    (
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'material_id', ssi.materialid, 'ticker', m.ticker, 'amount', ssi.quantity
+        )), '[]'::jsonb)
+        FROM storage_items ssi
+        JOIN storages st ON st.storageid = ssi.storageid
+        JOIN materials m ON m.materialid = ssi.materialid
+        WHERE st.addressableid = us.siteid
+    ) AS storage_items,
+    (
+        SELECT jsonb_build_object(
+            'overall', COALESCE(AVG(CASE WHEN b.type IN ('PRODUCTION', 'RESOURCES') THEN sp.condition END), 0.0),
+            'tickers', (
+                SELECT jsonb_agg(DISTINCT b2.ticker ORDER BY b2.ticker) 
+                FROM site_platforms sp2 JOIN buildings b2 ON b2.buildingid = sp2.buildingid 
+                WHERE sp2.siteid = us.siteid
+            ),
+            'conditions', jsonb_agg(jsonb_build_object('building_ticker', b.ticker, 'platform_condition', sp.condition))
+        )
+        FROM site_platforms sp
+        JOIN buildings b ON b.buildingid = sp.buildingid
+        WHERE sp.siteid = us.siteid
+    ) AS platform_data
+FROM UserSites us;
+"""
+
+# --- QUERY 2: LINES & ORDERS ---
+# Fetches lines and the active/queued orders.
+SQL_GET_LINES_AND_QUEUES = """
+SELECT 
+    pl.siteid,
+    pl.productionlineid,
+    pl.type,
+    pl.slots,
+    pl.capacity,
+    pl.efficiency,
+    pl.condition,
+    (
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'order_id', po.orderid,
+            'created', po.created,
+            'completion', po.completion,
+            'duration', po.duration,
+            'halted', po.halted,
+            'recurring', po.recurring,
+            'completed', po.completed,
+            'started', po.started,
+            'recipe_id', po.recipeid
+        ) ORDER BY po.created ASC), '[]'::jsonb)
+        FROM site_production_line_orders po
+        WHERE po.productionlineid = pl.productionlineid
+        AND po.completion IS NULL -- Active or Queued
+    ) AS production_orders
+FROM site_production_lines pl
+INNER JOIN sites s ON s.siteid = pl.siteid
+INNER JOIN users u ON u.userdataid = s.userid
+WHERE u.accountid = $1;
+"""
+
+# --- QUERY 3: RECIPE PARTS (SPLIT) ---
+
+# 3.1 Core Info
+SQL_FETCH_RECIPES_CORE = """
+WITH Targets AS (
+    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
+)
+SELECT 
+    r.productiontemplateid as recipe_id, 
+    r.productionlineid as line_id,
+    r.duration,
+    r.name,
+    r.efficiency,
+    r.effortfactor as effort_factor
+FROM production_recipes r
+JOIN Targets t ON r.productiontemplateid = t.t_id AND r.productionlineid = t.l_id
+"""
+
+# 3.2 Inputs
+SQL_FETCH_RECIPE_INPUTS = """
+WITH Targets AS (
+    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
+)
+SELECT 
+    i.productiontemplateid as recipe_id, 
+    i.productionlineid as line_id,
+    m.ticker, 
+    i.factor
+FROM production_recipe_input_factors i
+JOIN Targets t ON i.productiontemplateid = t.t_id AND i.productionlineid = t.l_id
+JOIN materials m ON m.materialid = i.materialid
+"""
+
+# 3.3 Outputs
+SQL_FETCH_RECIPE_OUTPUTS = """
+WITH Targets AS (
+    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
+)
+SELECT 
+    o.productiontemplateid as recipe_id, 
+    o.productionlineid as line_id,
+    m.ticker, 
+    o.factor
+FROM production_recipe_output_factors o
+JOIN Targets t ON o.productiontemplateid = t.t_id AND o.productionlineid = t.l_id
+JOIN materials m ON m.materialid = o.materialid
+"""
+
+
+@production_router.get("/user_production")
+async def get_user_production(
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    try:
+        async with request.app.state.db.pool.acquire() as conn:
+            # --- STEP 1: SITES ---
+            sites_records = await conn.fetch(SQL_GET_SITES_AND_INFRA, user_id)
+
+            if not sites_records:
+                return {"success": True, "data": {}}
+
+            results = {}
+            for row in sites_records:
+                p_data = safe_json(row["platform_data"])
+                if not isinstance(p_data, dict):
+                    p_data = {}
+
+                storage_data = safe_json(row["storage_items"])
+
+                results[row["siteid"]] = {
+                    "siteid": row["siteid"],
+                    "planet_name": row["planet_name"],
+                    "planet_name_alt": row["planet_name_alt"],
+                    "area": row["area"],
+                    "invested_permits": row["investedpermits"],
+                    "maximum_permits": row["maximumpermits"],
+                    "founded_timestamp": row["foundedtimestamp"].isoformat() if row["foundedtimestamp"] else None,
+                    "overall_platform_condition": p_data.get("overall", 0.0),
+                    "site_building_tickers": p_data.get("tickers", []),
+                    "site_platform_conditions": p_data.get("conditions", []),
+                    "platform_repair_list": [],
+                    "storage_items": storage_data,
+                    "production_lines": [],
+                    "site_daily_flow": {},
+                }
+
+            # --- STEP 2: LINES & ORDER PAIRS ---
+            lines_records = await conn.fetch(SQL_GET_LINES_AND_QUEUES, user_id)
+
+            # Identify Pairings: (recipe_id, line_id)
+            # We must use both because recipe factors depend on the line
+            recipe_line_pairs = set()
+
+            site_lines_map = {}
+
+            for row in lines_records:
+                line_id = row["productionlineid"]
+                orders = safe_json(row["production_orders"])
+
+                for order in orders:
+                    rid = order.get("recipe_id")
+                    if rid:
+                        recipe_line_pairs.add((rid, line_id))
+
+                sid = row["siteid"]
+                if sid not in site_lines_map:
+                    site_lines_map[sid] = []
+
+                site_lines_map[sid].append(
+                    {
+                        "line_id": line_id,
+                        "type": row["type"],
+                        "slots": row["slots"],
+                        "capacity": row["capacity"],
+                        "efficiency": row["efficiency"],
+                        "condition": row["condition"],
+                        "production_orders": orders,
+                    }
+                )
+
+            # --- STEP 3: SPLIT RECIPE FETCHING ---
+            recipe_map = {}
+
+            if recipe_line_pairs:
+                # Unzip pairs into two parallel lists for SQL Arrays
+                # list(zip(*set)) returns [(r1, r2, ...), (l1, l2, ...)]
+                target_r_ids, target_l_ids = map(list, zip(*recipe_line_pairs))
+
+                # 3.1 Fetch Core
+                core_rows = await conn.fetch(SQL_FETCH_RECIPES_CORE, target_r_ids, target_l_ids)
+                for r in core_rows:
+                    key = (r["line_id"], r["recipe_id"])
+                    recipe_map[key] = {
+                        "name": r["name"],
+                        "efficiency": r["efficiency"],
+                        "effort_factor": r["effort_factor"],
+                        "duration": r["duration"],
+                        "inputs": [],  # Will populate below
+                        "outputs": [],  # Will populate below
+                    }
+
+                # 3.2 Fetch Inputs
+                input_rows = await conn.fetch(SQL_FETCH_RECIPE_INPUTS, target_r_ids, target_l_ids)
+                for i in input_rows:
+                    key = (i["line_id"], i["recipe_id"])
+                    if key in recipe_map:
+                        recipe_map[key]["inputs"].append({"ticker": i["ticker"], "factor": i["factor"]})
+
+                # 3.3 Fetch Outputs
+                output_rows = await conn.fetch(SQL_FETCH_RECIPE_OUTPUTS, target_r_ids, target_l_ids)
+                for o in output_rows:
+                    key = (o["line_id"], o["recipe_id"])
+                    if key in recipe_map:
+                        recipe_map[key]["outputs"].append({"ticker": o["ticker"], "factor": o["factor"]})
+
+            # --- STEP 4: STITCH & CALCULATE (CORP LOGIC APPLIED HERE) ---
+            for site_id, site_data in results.items():
+                raw_lines = site_lines_map.get(site_id, [])
+                daily_flow = {}
+
+                # 4a. Initialize Flow with Current Storage
+                for item in site_data["storage_items"]:
+                    ticker = item["ticker"]
+                    if ticker not in daily_flow:
+                        daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0}
+                    daily_flow[ticker]["currentAmount"] = item["amount"]
+
+                hydrated_lines = []
+
+                for line in raw_lines:
+                    line_id = line["line_id"]
+                    # 4b. Hydrate Orders
+                    for order in line["production_orders"]:
+                        rid = order.get("recipe_id")
+                        # LOOKUP using (LineID, RecipeID)
+                        if rid and (line_id, rid) in recipe_map:
+                            order["production_recipe"] = recipe_map[(line_id, rid)]
+                        else:
+                            order["production_recipe"] = {
+                                "name": "Unknown",
+                                "inputs": [],
+                                "outputs": [],
+                            }
+
+                    hydrated_lines.append(line)
+
+                    line_unscaled_flow = defaultdict(float)
+
+                    orders = line.get("production_orders", [])
+                    if not orders:
+                        continue
+
+                    orders.sort(
+                        key=lambda o: datetime.fromisoformat(o["created"]) if o.get("created") else datetime.max
+                    )
+                    total_ms = sum((float(o.get("duration") or 0)) for o in orders)
+
+                    if total_ms <= 0:
+                        continue
+
+                    daily_cycles = (line.get("capacity", 0) * MS_PER_DAY) / total_ms
+
+                    # Queued orders loop - we calculate the flow as if all orders execute in sequence, then scale by how many cycles the line can do in a day
+                    for active_order in orders:
+                        # Determine Duration (Order > Recipe > Default)
+                        recipe = active_order.get("production_recipe") or {}
+                        order_duration = float(active_order.get("duration") or 0)
+                        recipe_duration = float(recipe.get("duration") or 0)
+
+                        if recipe_duration == 0:
+                            continue
+                        
+                        # Get Multiplier based on Order vs Recipe Duration
+                        duration_multiplier = order_duration / recipe_duration
+
+                        # Process Inputs (Consumption)
+                        inputs = recipe.get("inputs") or []
+                        for inp in inputs:
+                            ticker = inp.get("ticker")
+                            if not ticker:
+                                continue
+                            
+                            # Consumption is negative flow, so we subtract from the line flow
+                            factor = -inp.get("factor", 0) * duration_multiplier
+                            line_unscaled_flow[ticker] += factor
+
+                        # Process Outputs (Production)
+                        outputs = recipe.get("outputs") or []
+                        for out in outputs:
+                            ticker = out.get("ticker")
+                            if not ticker:
+                                continue
+
+                            # Production is positive flow, so we add to the line flow
+                            factor = out.get("factor", 0) * duration_multiplier
+                            line_unscaled_flow[ticker] += factor
+
+                    # 4c. Scale Flow by Line Capacity & Duration, then add to Daily Flow
+                    for ticker, unscaled_flow in line_unscaled_flow.items():
+                        r_flow = unscaled_flow * daily_cycles
+                        if ticker not in daily_flow:
+                            daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0}
+                        daily_flow[ticker]["flow"] += r_flow
+
+                site_data["production_lines"] = hydrated_lines
+                site_data["site_daily_flow"] = daily_flow
+
+            return {"success": True, "data": results}
+
+    except Exception as e:
+        logger.error(f"Error fetching production data: {e}", exc_info=True)
+        return {"success": False, "message": f"An error occurred: {str(e)}"}

@@ -1,373 +1,438 @@
-# main.py
-
 import asyncio
-import csv
-import io
-import os
-import re
-import threading
-from typing import Any, Dict, List, Tuple
-import asyncpg
-from bs4 import BeautifulSoup
-from fastapi import FastAPI, HTTPException, Request
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi.middleware.cors import CORSMiddleware
-import requests
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+import gzip
 import logging
+import time
+import sentry_sdk
+import os
 
-from db import Database
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from slowapi.errors import RateLimitExceeded
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+from redis import asyncio as aioredis
+from prometheus_fastapi_instrumentator import Instrumentator
+from contextlib import asynccontextmanager
+
+# Service & Logic Imports
+from app.core.docs import api_v1_docs, custom_openapi
+from app.core.event_manager import EventManager
+from app.core.limiter import limiter, rate_limit_exceeded_handler
+from app.services.background import scrape_and_save_data, scrape_prices_and_save_data
 from auth import auth_router
-from data_handlers import data_router, BackgroundTasks
+from data_handlers import BackgroundTasks, data_router
 
-from starlette.middleware.base import BaseHTTPMiddleware
-
-from discord_bot.bot import bot, run_bot
+# Core Imports
+from db import Database
 from discord_bot.webhook import router as discord_router
-
-
-# --- GLOBAL LOGGING CONFIGURATION ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
+from endpoints.Protected.routers.accounting import (
+    accounting_router as api_useraccounting_external_router,
 )
+from endpoints.Protected.routers.contracts import (
+    contracts_router as api_usercontracts_external_router,
+)
+from endpoints.Protected.routers.cxuser import cxuser_router as api_cxuser_router
+from endpoints.Protected.routers.flights import (
+    flights_router as api_userflights_external_router,
+)
+from endpoints.Protected.routers.production import (
+    production_router as api_userproduction_external_router,
+)
+from endpoints.Protected.routers.ships import (
+    ships_router as api_userships_external_router,
+)
+from endpoints.Protected.routers.sites import (
+    sites_router as api_usersites_external_router,
+)
+from endpoints.Protected.routers.storageuser import (
+    storage_router as api_storageuser_router,
+)
+
+from endpoints.Protected.routers.workforce import (
+    workforce_router as api_userworkforce_external_router,
+)
+
+# Protected API v1 Router Imports
+from endpoints.Protected.routers.user import user_router as api_user_router
+
+# Public API v1 Router Imports
+from endpoints.Public.routers.vendors import (
+    vendors_router as api_vendors_external_router,
+)
+from endpoints.Public.routers.cx import (
+    cx_router as api_cx_external_router
+)
+from endpoints.Public.routers.materials import (
+    materials_router as api_materials_external_router
+)
+from endpoints.Public.routers.planets import (
+    planets_router as api_planets_external_router
+)
+from endpoints.Public.routers.corp import (
+    corporation_router as corporation_public_external_router
+)
+from endpoints.Protected.routers.corporation import (
+    corporation_router as corporation_external_router
+)
+from endpoints.Public.routers.buildings import (
+    buildings_router as buildings_public_external_router
+)
+from endpoints.Public.routers.company import (
+    company_router as company_public_external_router
+)
+
+
+from routers.cxuser import cx_router
+from routers.flights import flights_router
+from routers.governance import governance_router
+
+# Router Imports
+from routers.group import group_router
+from routers.internal.corporation import corporation_internal_router
+from routers.internal.production import production_router
+from routers.internal.storage import storage_router
+from routers.internal.data_group import group_router as internal_data_group_router
+from routers.internal.contracts import contracts_router
+from routers.logistics import logistics_router
+from routers.map import map_router
+from routers.planets import planets_router
+from routers.user import user_router
+from routers.usersettings import user_settings_router as settings_router
+from routers.vendor import vendor_router
+from routers.websocket_router import ws_router
+from routers.internal.leaderboard import leaderboard_router
+from routers.internal.finances import finances_router
+from routers.internal.cx import cx_internal_router
+
+from app.routers.buildings import buildings_router as internal_buildings_router
+from app.routers.materials import materials_router as internal_materials_router
+
+# Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# Create the FastAPI app instance
-app = FastAPI(title="PUNoted API", description="API for managing data", version="1.0.0")
+sentry_sdk.init(
+    dsn=os.getenv("SENTRY_DSN"),
+    # Set traces_sample_rate to 1.0 to capture 100% of transactions for debugging.
+    # In high-traffic production, lower this to 0.1 or 0.01.
+    traces_sample_rate=1.0,
+    profiles_sample_rate=1.0,
+)
 
-# Configure CORS
-origins = ["*"] # will get changed to host correct extension ids
+# --- Lifecycle Events ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- STARTUP ---
+    try:
+        # 1. Database
+        await db.create_pool() 
+        app.state.db = db
+        print("Database connected.")
+
+        # 2. Redis Cache
+        redis = aioredis.from_url("redis://redis_cache:6379/0", encoding="utf8", decode_responses=True)
+        FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+        print("Redis initialized.")
+
+        # TEMPORARY SCRAPING SHIP SHEET AND CORP PRICE SHEET
+        #await scrape_and_save_data(db.pool)
+        #await scrape_prices_and_save_data(db.pool)
+
+        event_manager = EventManager(db.pool)
+        app.state.event_manager = event_manager
+
+
+        # 3. Scheduler
+        #scheduler.add_job(scrape_and_save_data, "interval", minutes=30, args=[db.pool])
+        #scheduler.add_job(scrape_prices_and_save_data, "interval", minutes=30, args=[db.pool])
+        #scheduler.start()
+        #print("Scheduler started.")
+
+        print("System initialized successfully.")
+        
+    except Exception as e:
+        print(f"Startup Failure: {e}")
+        raise e
+
+    yield
+
+    # --- SHUTDOWN ---
+    print("Shutting down...")
+    if hasattr(db, 'pool') and db.pool:
+        await db.pool.close()
+    #scheduler.shutdown()
+
+# --- App Initialization ---
+app = FastAPI(
+    title="PUNoted API (v1)",
+    description="Public API for PrUn data.",
+    version="1.0.0",
+    docs_url=None,  # Disabled default docs to use custom /api/v1/docs
+    redoc_url=None,
+    lifespan=lifespan,
+    root_url="/",
+)
+
+app.state.limiter = limiter
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+Instrumentator().instrument(app).expose(app)
+
+from starlette.types import ASGIApp, Scope, Receive, Send
+
+class SecurityLoggerMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        start_time = time.perf_counter()
+        status_code = [200]
+
+        async def wrapped_send(message: dict):
+            if message["type"] == "http.response.start":
+                status_code[0] = message["status"]
+            await send(message)
+
+        # Process request
+        await self.app(scope, receive, wrapped_send)
+
+        # Post-processing
+        process_time = (time.perf_counter() - start_time) * 1000
+        path = scope.get("path", "")
+
+        if not any(p in path for p in ["/status", "/metrics", "/favicon.ico"]):
+            # Look for the tags created by DecompressMiddleware
+            orig_size = scope.get("original_gzip_size")
+            decomp_size = scope.get("decompressed_size")
+
+            headers = dict(scope.get("headers", []))
+            # Safe IP detection from b"headers" list
+            xf = headers.get(b"x-forwarded-for", b"").decode().split(",")[0].strip()
+            real_ip = xf if xf else (scope.get("client")[0] if scope.get("client") else "unknown")
+
+            if orig_size is not None:
+                size_mb = orig_size / (1024 * 1024)
+                ratio = (decomp_size / orig_size) if orig_size > 0 else 0
+                tag = f"GZIP ({ratio:.1f}x to {decomp_size / (1024*1024):.2f}MB)"
+            else:
+                # Fallback for RAW requests
+                try:
+                    cl = int(headers.get(b"content-length", 0))
+                except: cl = 0
+                size_mb = cl / (1024 * 1024)
+                tag = "RAW"
+
+            log_msg = (
+                f"SECURITY: {real_ip} | {scope['method']} {path} | "
+                f"SIZE: {size_mb:.2f}MB | {tag} | "
+                f"STATUS: {status_code[0]} | TIME: {process_time:.2f}ms"
+            )
+
+            if size_mb > 5 or status_code[0] >= 400:
+                logger.warning(log_msg)
+            else:
+                logger.info(log_msg)
+
+
+class DecompressMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        content_encoding = headers.get(b"content-encoding", b"")
+
+        if b"gzip" in content_encoding:
+            # 1. Strip the encoding headers so downstream doesn't try to decompress again
+            new_headers = [
+                (k, v) for k, v in scope["headers"]
+                if k.lower() not in (b"content-encoding", b"content-length")
+            ]
+            scope["headers"] = new_headers
+
+            # 2. Collect the full compressed body
+            body_chunks = []
+            while True:
+                message = await receive()
+                if message["type"] == "http.request":
+                    body_chunks.append(message.get("body", b""))
+                    if not message.get("more_body", False):
+                        break
+                else:
+                    # If we get a disconnect or other event, pass it through
+                    await self.app(scope, lambda: message, send)
+                    return
+
+            full_body = b"".join(body_chunks)
+
+            # 3. Decompress
+            try:
+                if not full_body:
+                    decompressed_body = b""
+                else:
+                    decompressed_body = gzip.decompress(full_body)
+                
+                # Metrics for your logs
+                scope["original_gzip_size"] = len(full_body)
+                scope["decompressed_size"] = len(decompressed_body)
+            except Exception as e:
+                logger.error(f"GZIP DECOMPRESSION FAILED: {e}")
+                # Fallback to original body if decompression fails
+                decompressed_body = full_body
+
+            # 4. Create a stateful receive function
+            # Downstream apps (and Sentry) call receive() multiple times.
+            # First call gets the data. Second call gets empty + more_body: False.
+            has_sent_body = False
+
+            async def _receive() -> dict:
+                nonlocal has_sent_body
+                if not has_sent_body:
+                    has_sent_body = True
+                    return {
+                        "type": "http.request",
+                        "body": decompressed_body,
+                        "more_body": False
+                    }
+                # Subsequent calls return a disconnect or empty state
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            await self.app(scope, _receive, send)
+            return
+
+        # Not GZIP? Just pass through
+        await self.app(scope, receive, send)
+
+app.add_middleware(DecompressMiddleware)
+app.add_middleware(SecurityLoggerMiddleware)
+
+
+# Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=False,
+    allow_credentials=True,
+    allow_origin_regex="https?://.*",
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Debugging for request size
-class RequestSizeMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        print(f"Received a request to: {request.url}")
-        content_length = request.headers.get("Content-Length")
-        if content_length:
-            print(f"Request body size: {content_length} bytes")
-        response = await call_next(request)
-        return response
-
-app.add_middleware(RequestSizeMiddleware)
-
-# Temporary fix for not yet signed extensions
-class DynamicCORSMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        origin = request.headers.get("origin")
-        
-        # Check if the origin is from a browser extension (Chrome or Firefox)
-        if origin and (origin.startswith("chrome-extension://") or origin.startswith("moz-extension://")):
-            response = await call_next(request)
-            response.headers["Access-Control-Allow-Origin"] = origin
-            response.headers["Access-Control-Allow-Credentials"] = "true"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-            return response
-        else:
-            response = await call_next(request)
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "*"
-            response.headers["Access-Control-Allow-Headers"] = "*"
-            return response
-
-app.add_middleware(DynamicCORSMiddleware)
-
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
-
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 db = Database()
-scheduler = AsyncIOScheduler()
 
-import debugpy
-DEBUG_PORT = 5681
-if not debugpy.is_client_connected():
-    try:
-        debugpy.listen(("0.0.0.0", DEBUG_PORT))
-        print(f"Debugpy listening on port {DEBUG_PORT}. Waiting for client...")
-    except Exception as e:
-        print(f"Failed to start debugpy listener on port {DEBUG_PORT}: {e}")
-
-# Use a separate thread to run the Discord bot
-discord_bot_thread = threading.Thread(target=run_bot, daemon=True)
-
-# STARTUP EVENT: Initializes the connection pool once when the app starts
-@app.on_event("startup")
-async def startup_event():
-    loop = asyncio.get_event_loop()
-    try:
-        await db.create_pool(loop=loop)
-        
-        # Cron job set to run every 30 minutes
-        scheduler.add_job(scrape_and_save_data, 'interval', minutes=30, args=[db.pool])
-        scheduler.add_job(scrape_prices_and_save_data, 'interval', minutes=30, args=[db.pool])
-        scheduler.start()
-        print('Scheduler started.')
-
-        # Start the Discord bot in a separate thread
-        discord_bot_thread.start()
-    except Exception as e:
-        print(f"Failed to create database pool or start scheduler: {e}")
-
-# SHUTDOWN EVENT: Closes the connection pool when the app shuts down
 @app.on_event("shutdown")
 async def shutdown_event():
     for task in BackgroundTasks:
         task.cancel()
-    # Wait for the tasks to be cancelled
-    await asyncio.gather(*BackgroundTasks, return_exceptions=True)
     await db.close_pool()
-    print('Closed DB.')
+    # await bot.close()
+    print("System shutdown complete.")
 
-    await bot.close()
-    pass
-
-@app.middleware("http")
-async def db_session_middleware(request: Request, call_next):
-    request.state.db = db
-    response = await call_next(request)
-    return response
-
-# Include the routers
+# --- Route Includes ---
+# Core
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(data_router, tags=["data"])
 app.include_router(discord_router, prefix="/discord")
+app.include_router(ws_router)
 
-@app.get('/status')
-async def status_check(request: Request):
-  try:
-      # Get the client IP address from the request object
-      client_host = request.client.host if request and request.client else 'N/A'
+# Application Logic
+app.include_router(group_router, prefix="/groups")
+app.include_router(map_router, prefix="/map")
+#app.include_router(contracts_router)
+app.include_router(logistics_router)
+app.include_router(vendor_router)
+app.include_router(cx_router, prefix="/cx", tags=["cx"])
+app.include_router(governance_router, prefix="/governance", tags=["governance"])
+app.include_router(planets_router, prefix="/planets", tags=["planets"])
 
-      # Check for the X-Forwarded-For header to get the real client IP
-      x_forwarded_for = request.headers.get('x-forwarded-for')
-    
-      # If the header exists, take the first IP in the list
-      if x_forwarded_for:
-          real_client_ip = x_forwarded_for.split(',')[0].strip()
-          logger.info(f"IP: {real_client_ip} (via proxy: {client_host}) - Received batch...")
-      else:
-          # If the header is not present, use the direct connection's IP
-          real_client_ip = client_host
-          logger.info(f"IP: {real_client_ip} - Received Status Check")
+# Internal
+app.include_router(
+    corporation_internal_router,
+    prefix="/internal/corporation",
+    tags=["API_corporation"],
+)
+app.include_router(storage_router, prefix="/internal/storage", tags=["API_storage"])
+app.include_router(production_router, prefix="/internal/production", tags=["API_production"])
+app.include_router(internal_data_group_router, prefix="/internal/datagroup", tags=["API_group"])
+app.include_router(user_router, prefix="/internal/users", tags=["users"])
+app.include_router(settings_router, prefix="/internal/settings", tags=["User Settings"])
+app.include_router(contracts_router, prefix="/internal/contracts", tags=["Contracts"])
+app.include_router(leaderboard_router, prefix="/internal/leaderboard", tags=["Leaderboard"])
+app.include_router(finances_router, prefix="/internal/finances", tags=["Finances"])
+app.include_router(internal_buildings_router, prefix="/internal/buildings", tags=["Buildings"])
+app.include_router(internal_materials_router, prefix="/internal/materials", tags=["Materials"])
+app.include_router(cx_internal_router, prefix="/internal/cx", tags=["CX"])
 
-      return {"status": "online", "db_check": "success"}
-  except Exception as e:
-      logger.error(f"Database connection issue during status check: {e}")
-      raise HTTPException(status_code=500, detail="Database connection error.")
+# Protected External API v1
+app.include_router(api_user_router, prefix="/v1/user", tags=["User Data"])
+app.include_router(flights_router, prefix="/public/flights", tags=["flights"])
+app.include_router(api_cxuser_router, prefix="/v1/cxuser", tags=["CX User Data"])
+app.include_router(api_storageuser_router, prefix="/v1/storages", tags=["Storage User Data"])
+app.include_router(api_usercontracts_external_router, prefix="/v1/contracts", tags=["Contracts Data"])
+app.include_router(api_userflights_external_router, prefix="/v1/flights", tags=["Flights Data"])
+app.include_router(
+    api_useraccounting_external_router,
+    prefix="/v1/accounting",
+    tags=["Accounting Data"],
+)
+app.include_router(api_usersites_external_router, prefix="/v1/sites", tags=["Sites Data"])
+app.include_router(api_userships_external_router, prefix="/v1/ships", tags=["Ships Data"])
+app.include_router(
+    api_userproduction_external_router,
+    prefix="/v1/production",
+    tags=["Production Data"],
+)
+app.include_router(api_userworkforce_external_router, prefix="/v1/workforce", tags=["Workforce Data"])
+app.include_router(corporation_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
 
-# --- Parsing Logic ---
-def parse_ship_type(text):
-    """Parses the text from the cell and returns the ship type and price."""
-    text = text.strip().lower()
-    if "starter ship" in text and "-" in text:
-        parts = text.split('-', 1)
-        # We need to extract 'upgrade' and prepend it with 'starter'
-        ship_name_part = parts[0].strip().lower().replace("starter ship wcb ", "")
-        final_ship_type = "starter" + ship_name_part
-        
-        price_text = parts[1].strip()
-        cleaned_price = re.sub(r'[^0-9]', '', price_text)
-        price_int = int(cleaned_price) if cleaned_price else 0
-        return final_ship_type, price_int
-    
-    match = re.search(r'^(.*?)\s+\((.*?)\)\s+-\s+(.*)', text)
-    if match:
-        ship_name = match.group(1).strip()
-        modifier_text = match.group(2).strip()
-        price_text = match.group(3).strip()
-        composed_ship = ship_name
-        if "ftl" in modifier_text:
-            composed_ship += "ftl"
-        elif "stl" in modifier_text:
-            composed_ship += "stl"
-        cleaned_price = re.sub(r'[^0-9]', '', price_text)
-        price_int = int(cleaned_price) if cleaned_price else 0
-        return composed_ship.replace(" ", ""), price_int
-    parts = text.split('-', 1)
-    if len(parts) == 2:
-        ship_name = parts[0].strip()
-        price_text = parts[1].strip()
-        cleaned_price = re.sub(r'[^0-9]', '', price_text)
-        price_int = int(cleaned_price) if cleaned_price else 0
-        return ship_name.replace("shipwcb", ""), price_int
-    return text.replace(" ", ""), 0
+# -- Public External API v1
+app.include_router(api_vendors_external_router, prefix="/v1/vendors", tags=["Vendors Data"])
+app.include_router(api_cx_external_router, prefix="/v1/cx", tags=["CX Data"])
+app.include_router(api_materials_external_router, prefix="/v1/materials", tags=["Materials Data"])
+app.include_router(api_planets_external_router, prefix="/v1/planets", tags=["Planets Data"])
+app.include_router(corporation_public_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
+app.include_router(buildings_public_external_router, prefix="/v1/buildings", tags=["Buildings Data"])
+app.include_router(company_public_external_router, prefix="/v1/company", tags=["Company Data"])
 
-# --- Asynchronous Scraping and Saving Task ---
-async def scrape_and_save_data(pool: asyncpg.pool.Pool):
-    """Scrapes data from the sheet and saves it to the database."""
-    print("Starting scheduled scrape job...")
-    
-    try:
-        async with db.pool.acquire() as con:
-            async with con.transaction():
-                try:
-                    response = requests.get(os.environ.get("SHIPS_PRODUCTION_GOOGLE_SHEET"))
-                    response.raise_for_status()
-                    soup = BeautifulSoup(response.text, 'html.parser')
-                    table = soup.find('tbody')
-                    if not table:
-                        print("Table not found in HTML.")
-                        return
-                    rows = table.find_all('tr')
-                    
-                    for i, row in enumerate(rows):
-                        row_id = i + 1
-                        
-                        cells = row.find_all('td')
-                        if len(cells) < 4:
-                            continue
-                        if not cells[0].get_text(strip=True) and not cells[1].get_text(strip=True) and not cells[5].get_text(strip=True):
-                            continue
-                        
-                        ship_and_price_text = cells[1].get_text(strip=True)
-                        ship_type, price = parse_ship_type(ship_and_price_text)
-                        
-                        if ship_type == "model":
-                            continue
-        
-                        username = cells[0].get_text(strip=True)
-                        completed_cell = cells[2]
-                        is_completed = bool(completed_cell.find('use', href='#checked-checkbox-id'))
-                        notes = cells[5].get_text(strip=True)
-                        
-                        await con.execute(
-                            """
-                            INSERT INTO ship_production (orderid, username, shiptype, price, completed, notes)
-                            VALUES ($1, $2, $3, $4, $5, $6)
-                            ON CONFLICT (orderid) DO UPDATE
-                            SET
-                                username = EXCLUDED.username,
-                                shiptype = EXCLUDED.shiptype,
-                                price = EXCLUDED.price,
-                                completed = EXCLUDED.completed,
-                                notes = EXCLUDED.notes;
-                            """,
-                            row_id, username, ship_type, price, is_completed, notes
-                        )
-                    print("Data scraped and saved successfully.")
-                except Exception as e:
-                    print(f"Error in cron job: {e}")
-    except Exception as e:
-        print(f"Error in cron job: {e}")
+# --- Swagger / Docs Setup ---
+# 1. Register the custom docs endpoint
+app.add_api_route("/v1/docs", api_v1_docs, include_in_schema=False)
+#app.add_api_route("/api/v1/docs", api_v1_docs, include_in_schema=False)
+# 2. Register the schema generator
+app.openapi = lambda: custom_openapi(app)
 
-# --- Parsing Logic ---
-def parse_financial_data_row(cells: List[Any], headers: List[str]) -> Tuple[str, float | None]:
+
+@app.get("/app")
+def read_main(request: Request):
+    return {"message": "Hello World", "root_path": request.scope.get("root_path")}
+
+
+@app.get("/status")
+async def status_check():
+    return {"status": "online", "db_check": "success"}
+
+@app.get("/debug-sentry")
+async def trigger_error():
     """
-    Parses a single row from the HTML table to extract the 'MAT' and 'Price'.
-    Handles non-numeric values and formula errors gracefully.
+    Temporary endpoint to verify GlitchTip integration.
     """
-    try:
-        mat_index = headers.index('MAT')
-        price_index = headers.index('Price')
-
-        mat_ticker = cells[mat_index].get_text(strip=True)
-        price_text = cells[price_index].get_text(strip=True)
-
-        # Remove both ',' and '$' from the price string
-        cleaned_price = re.sub(r'[$,]', '', price_text)
-
-        try:
-            price = float(cleaned_price)
-        except ValueError:
-            price = None # Set price to None if conversion fails (e.g., '#DIV/0!', empty string)
-        
-        return mat_ticker, price
-
-    except (ValueError, IndexError):
-        # Catch errors if 'MAT' or 'Price' columns are missing or if the cell content is unexpected.
-        return "", None
-
-async def scrape_prices_and_save_data(pool: asyncpg.pool.Pool):
-    """
-    Scrapes data from the Google Sheet and saves it to the database
-    using bulk operations.
-    """
-    print("Starting scheduled ticker and price scrape job...")
-    
-    try:
-        response = requests.get("https://docs.google.com/spreadsheets/u/0/d/e/2PACX-1vSG_rqZ_TCSTe12_FzJRw0_mbDCYJ5HnGvnmgI3Sd-CFd0AxkSzc88e3glLeM-5ZpI2ILcFSzEX8Nvg/pubhtml/sheet?plix3d1x26headersx3dfalse&gid=0")
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        main_table = soup.find('table', class_='waffle')
-        if not main_table:
-            print("The financial data table could not be found.")
-            return
-
-        rows = main_table.find_all('tr')
-        if len(rows) < 6:
-            print("Table has no data rows.")
-            return
-
-        header_row_index = None
-        headers = []
-        for i, row in enumerate(rows):
-            cells = row.find_all('td')
-            current_headers = [c.get_text(strip=True) for c in cells]
-            if 'MAT' in current_headers and 'Price' in current_headers:
-                header_row_index = i
-                headers = current_headers
-                break
-        
-        if header_row_index is None:
-            print("Could not find the header row with 'MAT' and 'Price'.")
-            return
-        
-        records_to_upsert = []
-        
-        for row in rows[header_row_index + 1:]:
-            cells = row.find_all('td')
-            if not cells:
-                continue
-
-            mat_ticker, price = parse_financial_data_row(cells, headers)
-            
-            # Skip rows where the ticker is empty or price is not a valid number
-            if not mat_ticker or price is None:
-                continue
-            
-            records_to_upsert.append((mat_ticker, price))
-
-        if not records_to_upsert:
-            print("No valid data records found to save.")
-            return
-        
-        async with db.pool.acquire() as con:
-            async with con.transaction():
-                try:
-                    await con.executemany(
-                        """
-                        INSERT INTO material_prices (ticker, price)
-                        VALUES ($1, $2)
-                        ON CONFLICT (ticker) DO UPDATE
-                        SET price = EXCLUDED.price;
-                        """,
-                        records_to_upsert
-                    )
-                    print(f"Data scraped and {len(records_to_upsert)} records saved successfully.")
-                except Exception as e:
-                    print(f"Database error during UPSERT: {e}")
-                    raise
-
-    except requests.exceptions.RequestException as e:
-        print(f"HTTP error during scraping: {e}")
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+    division_by_zero = 1 / 0
+    return division_by_zero
 
 
-@app.get('/')
-async def base():
-   return {"status": "online"}
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=9601, reload=True, log_level="info")
+
+    uvicorn.run("app.main:app", host="0.0.0.0", port=9901, reload=True, log_level="info")

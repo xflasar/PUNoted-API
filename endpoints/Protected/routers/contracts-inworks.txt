@@ -1,0 +1,213 @@
+# SHIPPING types
+SHIPPING_CONDITION_TYPES = [
+    "PROVISION_SHIPMENT",
+    "DELIVERY_SHIPMENT",
+    "PICKUP_SHIPMENT",
+]
+
+
+# ============================================================
+# Fetch FILTERED contracts (Grouped by User) - Helper
+# ============================================================
+@limiter.limit("1/minute", key_func=get_auth_key)
+async def _fetch_contracts_data_filtered(
+    con,
+    usernames_list: List[str],
+    status_filter: Optional[str] = None,
+    condition_types_filter: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    
+    where_clauses = ["u.username = ANY($1::text[])"]
+    params = [usernames_list]
+    param_count = 2
+
+    if status_filter:
+        where_clauses.append(f"c.status = ${param_count}")
+        params.append(status_filter)
+        param_count += 1
+
+    if condition_types_filter:
+        where_clauses.append(f"""
+            EXISTS (
+                SELECT 1
+                FROM contract_conditions cc
+                WHERE cc.contractid = c.id
+                  AND cc.type = ANY(${param_count}::text[])
+            )
+        """)
+        params.append(condition_types_filter)
+        param_count += 1
+
+    where_clause_str = " AND ".join(where_clauses)
+
+    aggregation_query = f"""
+        WITH contracts_raw AS (
+            SELECT
+                u.username,
+                jsonb_build_object(
+                    'id', c.id,
+                    'localId', c.localid,
+                    'date', jsonb_build_object('timestamp', EXTRACT(EPOCH FROM c.date) * 1000),
+                    'party', c.party,
+                    'partner', jsonb_build_object(
+                        'id', c.partnerid,
+                        'name', c.partnername,
+                        'code', c.partnercode
+                    ),
+                    'status', c.status,
+                    'dueDate', c.duedate,
+                    'name', c.name,
+                    'preamble', c.preamble,
+                    'extensionDeadline', c.extensiondeadline,
+                    'relatedContracts', c.relatedcontracts,
+                    'contractType', c.contracttype,
+
+                    'conditions', COALESCE(
+                        (
+                            SELECT jsonb_agg(base_condition.condition_obj ORDER BY base_condition.index)
+                            FROM (
+                                SELECT
+                                    cc.index,
+                                    jsonb_build_object(
+                                        'id', cc.id,
+                                        'type', cc.type,
+                                        'party', cc.party,
+                                        'index', cc.index,
+                                        'status', cc.status,
+                                        'dependencies', cc.dependencies,
+                                        'deadlineDuration', jsonb_build_object('millis', cc.deadlineduration_millis),
+                                        'deadline', cc.deadline,
+                                        'amount', CASE WHEN cc.amountmoney IS NOT NULL
+                                                        THEN jsonb_build_object('amount', cc.amountmoney, 'currency', cc.currencymoney)
+                                                        ELSE NULL END,
+                                        'addressSystemId', cc.addresssystemid,
+                                        'addressPlanetId', cc.addressplanetid,
+                                        'addressStationId', cc.addressstationid,
+                                        'destinationSystemId', cc.destinationsystemid,
+                                        'destinationPlanetId', cc.destinationplanetid,
+                                        'destinationStationId', cc.destinationstationid,
+                                        'autoProvisionStoreId', cc.autoprovisionstoreid,
+                                        'reputationChange', cc.reputationchange,
+
+                                        'materials_data', COALESCE(
+                                            (
+                                                SELECT jsonb_agg(
+                                                    jsonb_build_object(
+                                                        'materialid', cm.materialid,
+                                                        'amount', cm.amount,
+                                                        'pickedupamount', cm.pickedupamount
+                                                    )
+                                                )
+                                                FROM contract_materials cm
+                                                WHERE cm.contractconditionid = cc.id
+                                            ),
+                                            '[]'::jsonb
+                                        )
+                                    ) AS condition_obj
+                                FROM contract_conditions cc
+                                WHERE cc.contractid = c.id
+                            ) AS base_condition
+                        ),
+                        '[]'::jsonb
+                    )
+                ) AS contract_obj
+            FROM contracts c
+            JOIN users u ON u.userdataid = c.userid
+            WHERE {where_clause_str}
+        )
+        SELECT
+            COALESCE(
+                jsonb_agg(
+                    jsonb_build_object(
+                        'Username', username,
+                        'Contracts', contracts
+                    )
+                ),
+                '[]'::jsonb
+            )
+        FROM (
+            SELECT username, jsonb_agg(contract_obj) as contracts
+            FROM contracts_raw
+            GROUP BY username
+        ) sub;
+    """
+
+    raw = await con.fetchval(aggregation_query, *params)
+
+    if isinstance(raw, str):
+        return orjson.loads(raw)
+    if isinstance(raw, list): 
+        return raw
+    return []
+
+
+# ============================================================
+# 3. SHIPPING PARTIAL - LIST (Multi-User)
+# ============================================================
+@limiter.limit("1/minute", key_func=get_auth_key)
+@contracts_router.get("/shipping-partial", response_class=ORJSONResponse)
+async def get_contracts_shipping_partial(
+    request: Request,
+    usernames: Optional[str] = Query(None),
+    user_id: str = Depends(RequireAuth(["contracts:read"])),
+):
+    db = request.app.state.db
+    valid_targets = getattr(request.state, "valid_target_users", [])
+    
+    if not valid_targets:
+        return ORJSONResponse(content=[])
+
+    try:
+        async with db.pool.acquire() as con:
+            contracts_data = await _fetch_contracts_data_filtered(
+                con,
+                valid_targets,
+                status_filter="PARTIALLY_FULFILLED",
+                condition_types_filter=SHIPPING_CONDITION_TYPES,
+            )
+            return ORJSONResponse(content=contracts_data)
+
+    except PostgresError as e:
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Database error.")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail="Unexpected error.")
+
+
+# ============================================================
+# 4. SHIPPING PARTIAL - SINGLE USER (Unwrapped)
+# ============================================================
+@contracts_router.get("/shipping-partial/user", response_class=ORJSONResponse)
+async def get_contracts_shipping_partial_user(
+    request: Request,
+    username: Optional[str] = Query(None),
+    user_id: str = Depends(RequireAuth(["contracts:read"])),
+):
+    db = request.app.state.db
+    valid_targets = getattr(request.state, "valid_target_users", [])
+    
+    if not valid_targets:
+        raise HTTPException(status_code=404, detail="User not found or access denied")
+
+    try:
+        async with db.pool.acquire() as con:
+            # Fetch Multi-User Structure
+            contracts_data = await _fetch_contracts_data_filtered(
+                con,
+                valid_targets,
+                status_filter="PARTIALLY_FULFILLED",
+                condition_types_filter=SHIPPING_CONDITION_TYPES,
+            )
+            
+            # Unwrap: Return only the Contracts list
+            if contracts_data and "Contracts" in contracts_data[0]:
+                return contracts_data[0]["Contracts"]
+            return []
+
+    except PostgresError as e:
+        logger.error(f"Database error: {e}")
+        raise HTTPException(status_code=500, detail="Database error.")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail="Unexpected error.")

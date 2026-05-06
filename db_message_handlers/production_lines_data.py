@@ -1,29 +1,54 @@
 import logging
 import time
+from itertools import chain
 from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
+
 async def handle_production_lines_data_message(db, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     start_time = time.perf_counter()
-    logger.info("Starting processing production lines data.")
+    logger.debug("Starting processing production lines data.")
     converted_data = raw_payload["data"]
 
-    site_id = converted_data['siteid']
-    production_lines = converted_data['production_lines']
-    if not production_lines or len(production_lines) == 0:
-        return {"success": False, "message": "Invalid or missing production lines data in payload."}
-    
+    site_id = converted_data["siteid"]
+    production_lines = converted_data["production_lines"]
+
+    # It's valid for a site to have 0 production lines.
+    # The check `if not production_lines` would prevent clearing all lines.
+
     try:
         async with db.pool.acquire() as con:
             async with con.transaction():
-                # check if we have production lines for siteid
-                query = "SELECT xata_id, productionlineid FROM site_production_lines WHERE siteid=$1;"
-                query_response = await db.fetch_rows(query, site_id )
+                # 1. Fetch all existing production lines for the site
+                query = "SELECT productionlineid FROM site_production_lines WHERE siteid=$1;"
+                query_response = await con.fetch(query, site_id)
+                existing_production_lines_ids = {record["productionlineid"] for record in query_response}
 
-                existing_production_lines = {record['productionlineid']: record['xata_id'] for record in query_response}
-                existing_production_lines_ids = set(existing_production_lines.keys())
+                # 2. Get all incoming production line IDs from the payload
+                incoming_production_line_ids = {
+                    record.get("productionlineid") for record in production_lines if record.get("productionlineid")
+                }
 
+                # 3. Determine which existing lines are NOT in the payload and delete them
+                lines_to_delete = existing_production_lines_ids - incoming_production_line_ids
+                if lines_to_delete:
+                    logger.debug(f"Deleting {len(lines_to_delete)} stale production lines for site {site_id}.")
+                    # Assuming ON DELETE CASCADE is set for foreign keys in related tables
+                    # (e.g., site_production_line_orders). If not, manual deletion is needed.
+                    delete_query = (
+                        "DELETE FROM site_production_lines WHERE siteid = $1 AND productionlineid = ANY($2::text[]);"
+                    )
+                    await con.execute(delete_query, site_id, list(lines_to_delete))
+
+                # If there are no production lines in the payload, we're done.
+                if not production_lines:
+                    return {
+                        "success": True,
+                        "message": "No production lines in payload. Stale lines (if any) deleted.",
+                    }
+
+                # 4. Separate incoming lines into records to insert vs. update
                 records_to_insert = []
                 records_to_update = []
 
@@ -33,156 +58,156 @@ async def handle_production_lines_data_message(db, raw_payload: Dict[str, Any]) 
                 workforces = []
 
                 for record in production_lines:
-                    production_line_id = record.get('productionlineid')
+                    production_line_id = record.get("productionlineid")
                     if not production_line_id:
-                      continue
+                        continue
 
-                    orders = record.get("orders", [])
-                    production_templates = record.get("production_templates", [])
-                    efficiency_factors = record.get("efficiency_factors", [])
-                    workforces = record.get('workforces', [])
+                    orders.extend(record.get("orders", []))
+                    production_templates.extend(record.get("production_templates", []))
+                    efficiency_factors.extend(record.get("efficiency_factors", []))
+                    workforces.extend(record.get("workforces", []))
 
                     temp_record = record.copy()
-                    if 'orders' in temp_record:
-                        del temp_record['orders']
-                    if 'production_templates' in temp_record:
-                        del temp_record['production_templates']
-                    if 'efficiency_factors' in temp_record:
-                        del temp_record['efficiency_factors']
-                    if 'workforces' in temp_record:
-                        del temp_record['workforces']
+                    temp_record.pop("orders", None)
+                    temp_record.pop("production_templates", None)
+                    temp_record.pop("efficiency_factors", None)
+                    temp_record.pop("workforces", None)
 
                     if production_line_id not in existing_production_lines_ids:
                         records_to_insert.append(temp_record)
                     else:
-                        temp_record['productionlineid'] = existing_production_lines[production_line_id]
                         records_to_update.append(temp_record)
 
+                # 5. Perform inserts and updates
                 if records_to_insert:
-                    logger.info(f"Found {len(records_to_insert)} new production lines. Performing bulk insert.")
-                    keys = ', '.join(records_to_insert[0].keys())
-                    values_placeholders = ', '.join([f'${i+1}' for i in range(len(records_to_insert[0]))])
-                    query = f"INSERT INTO site_production_lines ({keys}) VALUES ({values_placeholders}) ON CONFLICT (productionlineid) DO NOTHING;"
-                    for rec_values in [list(rec.values()) for rec in records_to_insert]:
-                        try:
-                          await con.execute(query, *rec_values)
-                        except Exception as e:
-                          logger.error(e)
-                          raise
+                    logger.debug(f"Found {len(records_to_insert)} new production lines. Performing bulk insert.")
+                    keys = ", ".join(records_to_insert[0].keys())
+                    values_placeholders = ", ".join([f"${i + 1}" for i in range(len(records_to_insert[0]))])
+                    insert_query = f"INSERT INTO site_production_lines ({keys}) VALUES ({values_placeholders}) ON CONFLICT (productionlineid) DO NOTHING;"
+                    await con.executemany(insert_query, [list(rec.values()) for rec in records_to_insert])
 
                 if records_to_update:
-                    logger.info(f"Found {len(records_to_update)} existing production lines. Performing bulk insert.")
+                    logger.debug(f"Found {len(records_to_update)} existing production lines. Performing bulk update.")
                     for record_to_update in records_to_update:
                         update_data = record_to_update.copy()
-                        record_id = update_data.pop('productionlineid')
-                        update_fields = ", ".join([f"{key} = ${i+2}" for i, key in enumerate(update_data.keys())])
-                        query = f"UPDATE site_production_lines SET {update_fields} WHERE productionlineid = $1;"
-                        try:
-                          await con.execute(query, record_id, *update_data.values())
-                        except Exception as e:
-                          logger.error(e)
-                          raise
-            
-                # now we need to handle nested items
-                await process_orders(con, db, orders)
+                        record_id = update_data.pop("productionlineid")
+                        update_fields = ", ".join([f"{key} = ${i + 2}" for i, key in enumerate(update_data.keys())])
+                        update_query = f"UPDATE site_production_lines SET {update_fields} WHERE productionlineid = $1;"
+                        await con.execute(update_query, record_id, *update_data.values())
+
+                # 6. Process nested data for the upserted lines
+                await process_orders(con, orders, incoming_production_line_ids)
+                await process_production_templates(con, production_templates)
+                # Placeholder for other nested data processing
+                # await process_effficiency_factors(efficiency_factors)
+                # await process_workforce(workforces)
 
         end_time = time.perf_counter()
-        logger.info(f"Finished processing production lines data in {end_time - start_time:.2f} seconds.")
-        return {
-            "success": True, 
-            "message": f"Processed production lines data."
-        }
+        logger.debug(f"Finished processing production lines data in {end_time - start_time:.2f} seconds.")
+        return {"success": True, "message": "Processed production lines data."}
     except Exception as e:
-        logger.error(f"Error processing planet data: {e}", exc_info=True)
+        logger.error(f"Error processing production line data: {e}", exc_info=True)
         raise
-    
-async def process_production_templates(production_templates: List[Dict[str, Any]]):
-    # this one will be run for some time then turned off since it's more like a static data
-    return
 
-async def process_orders(con, db, orders: List[Dict[str, Any]]):
-    incoming_orders_ids = [record.get('orderid') for record in orders if record.get('orderid')]
-    if not incoming_orders_ids:
-        return {"success": False, "message": "No valid orders IDs found."}
-    # Query for existing storage records in bulk
-    query_response = await db.fetch_rows(
-        f"SELECT orderid, xata_id FROM site_production_line_orders WHERE productionlineid = ANY($1::text[]);",
-        incoming_orders_ids
+
+async def process_production_templates(con, recipes_with_factors: List[Dict[str, Any]]):
+    """
+    Asynchronously processes a list of recipes, flattens the nested factors,
+    and performs a bulk UPSERT operation on all three tables within the transaction.
+    """
+    if not recipes_with_factors:
+        return
+
+    all_input_factors = list(chain.from_iterable(r.get("input_factors", []) for r in recipes_with_factors))
+    all_output_factors = list(chain.from_iterable(r.get("output_factors", []) for r in recipes_with_factors))
+
+    recipes_data_for_db = [
+        {k: v for k, v in r.items() if k not in ["input_factors", "output_factors"]} for r in recipes_with_factors
+    ]
+
+    if not recipes_data_for_db:
+        return
+
+    recipe_keys = list(recipes_data_for_db[0].keys())
+    recipe_columns = ", ".join(recipe_keys)
+    recipe_placeholders = ", ".join([f"${i + 1}" for i in range(len(recipe_keys))])
+    update_clause = ", ".join([f"{col} = EXCLUDED.{col}" for col in recipe_keys if col != "productiontemplateid"])
+    recipes_tuples = [tuple(r.values()) for r in recipes_data_for_db]
+
+    SQL_UPSERT_RECIPES = f"""
+        INSERT INTO production_recipes ({recipe_columns}) 
+        VALUES ({recipe_placeholders})
+        ON CONFLICT (productiontemplateid, productionlineid) DO UPDATE 
+        SET {update_clause};
+    """
+
+    await con.executemany(SQL_UPSERT_RECIPES, recipes_tuples)
+
+    factor_keys = []
+    if all_input_factors:
+        factor_keys = list(all_input_factors[0].keys())
+    elif all_output_factors:
+        factor_keys = list(all_output_factors[0].keys())
+
+    if factor_keys:
+        factor_columns = ", ".join(factor_keys)
+        factor_placeholders = ", ".join([f"${i + 1}" for i in range(len(factor_keys))])
+        factor_update_clause = ", ".join(
+            [f"{col} = EXCLUDED.{col}" for col in factor_keys if col not in ("productiontemplateid", "materialid")]
+        )
+
+        if all_input_factors:
+            input_factors_tuples = [tuple(f.values()) for f in all_input_factors]
+            SQL_UPSERT_INPUT_FACTORS = f"""
+                INSERT INTO production_recipe_input_factors ({factor_columns})
+                VALUES ({factor_placeholders})
+                ON CONFLICT (productiontemplateid, materialid, productionlineid) DO UPDATE 
+                SET {factor_update_clause};
+            """
+            await con.executemany(SQL_UPSERT_INPUT_FACTORS, input_factors_tuples)
+
+        if all_output_factors:
+            output_factors_tuples = [tuple(f.values()) for f in all_output_factors]
+            SQL_UPSERT_OUTPUT_FACTORS = f"""
+                INSERT INTO production_recipe_output_factors ({factor_columns})
+                VALUES ({factor_placeholders})
+                ON CONFLICT (productiontemplateid, materialid, productionlineid) DO UPDATE 
+                SET {factor_update_clause};
+            """
+            await con.executemany(SQL_UPSERT_OUTPUT_FACTORS, output_factors_tuples)
+
+
+async def process_orders(con, orders: List[Dict[str, Any]], all_incoming_line_ids: set):
+    if not all_incoming_line_ids:
+        return
+
+    await con.execute(
+        "DELETE FROM site_production_line_orders WHERE productionlineid = ANY($1::text[]);",
+        list(all_incoming_line_ids),
     )
-    
-    existing_ids_map = {record['orderid']: record['xata_id'] for record in query_response}
-    existing_orders_ids = set(existing_ids_map.keys())
 
-    records_to_delete_ids = existing_ids_map.keys() - incoming_orders_ids
+    # Now proceed with re-inserting whatever orders came in
+    if not orders:
+        return
 
-    records_to_insert = []
-    records_to_update = []
+    records_to_insert = [
+        {k: v for k, v in o.items() if k not in ["inputs", "outputs"]}
+        for o in orders
+        if o.get("orderid") and o.get("productionlineid")
+    ]
 
-    records_order_inputs = []
-    records_order_outputs = []
+    if not records_to_insert:
+        return
 
-    for record in orders:
-        order_id = record.get('orderid')
-        if not order_id:
-            continue
-        
-        if 'inputs' in record:
-            for rec in record.get('inputs'):
-                records_order_inputs.append(rec)
-            del record['inputs']
-        if 'outputs' in record:
-            for rec in record.get('outputs'):
-                records_order_outputs.append(rec)
-            del record['outputs']
-        
-        if order_id not in existing_orders_ids:
-            records_to_insert.append(record)
-        else:
-            record['orderid'] = existing_ids_map[order_id]
-            records_to_update.append(record)
-    
-    await process_bulk(con, "site_production_line_orders", records_to_insert, records_to_update, records_to_delete_ids)
-    return
+    keys = ", ".join(records_to_insert[0].keys())
+    values_placeholders = ", ".join([f"${i + 1}" for i in range(len(records_to_insert[0]))])
+    query = f"INSERT INTO site_production_line_orders ({keys}) VALUES ({values_placeholders}) ON CONFLICT (orderid) DO NOTHING;"
+    await con.executemany(query, [list(rec.values()) for rec in records_to_insert])
+
 
 async def process_effficiency_factors(efficiency_factors: List[Dict[str, Any]]):
     return
 
+
 async def process_workforce(workforce: List[Dict[str, Any]]):
     return
-
-async def process_bulk(con, table_name, records_to_insert, records_to_update, records_to_delete_ids = None):
-    # Perform bulk inserts
-    if records_to_insert:
-        logger.info(f"Found {len(records_to_insert)} new production line orders records. Performing bulk insert.")
-        keys = ', '.join(records_to_insert[0].keys())
-        values_placeholders = ', '.join([f'${i+1}' for i in range(len(records_to_insert[0]))])
-        query = f"INSERT INTO {table_name} ({keys}) VALUES ({values_placeholders}) ON CONFLICT (orderid) DO NOTHING;"
-        for rec_values in [list(rec.values()) for rec in records_to_insert]:
-            try:
-              await con.execute(query, *rec_values)
-            except Exception as e:
-                logger.error(e)
-                raise
-
-    # Perform bulk updates
-    if records_to_update:
-        logger.info(f"Found {len(records_to_update)} existing production line orders records. Performing bulk update.")
-        
-        for record_to_update in records_to_update:
-            update_data = record_to_update.copy()
-            record_id = update_data.pop('orderid')
-            update_fields = ", ".join([f"{key} = ${i+2}" for i, key in enumerate(update_data.keys())])
-            query = f"UPDATE {table_name} SET {update_fields} WHERE orderid = $1;"
-            try:
-              await con.execute(query, record_id, *update_data.values())
-            except Exception as e:
-                logger.error(e)
-                raise
-
-    if records_to_delete_ids:
-        logger.info(f"Deleting {len(records_to_delete_ids)} from production line orders.")
-        try:
-          await con.execute(f"DELETE FROM {table_name} WHERE productionlineid = ANY($1::text[]);", records_to_delete_ids)
-        except Exception as e:
-                logger.error(e)
-                raise

@@ -2,9 +2,11 @@ import asyncio
 import logging
 import time
 from typing import Any, Dict, List
+
 import asyncpg
 
 logger = logging.getLogger(__name__)
+
 
 def get_changed_fields(new_data: Dict[str, Any], existing_data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -17,6 +19,7 @@ def get_changed_fields(new_data: Dict[str, Any], existing_data: Dict[str, Any]) 
             changed_fields[key] = new_value
     return changed_fields
 
+
 async def handle_sites_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Asynchronously handles incoming site data messages using a single transaction from a connection pool.
@@ -24,87 +27,149 @@ async def handle_sites_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[s
     """
     try:
         async with conn.pool.acquire() as con:
+            # All operations (UPSERTs and DELETEs) run within a single transaction.
             async with con.transaction():
                 return await process_all_site_data(conn, raw_payload)
     except Exception as e:
         logger.error(f"Error processing sites data: {e}", exc_info=True)
+        # The transaction will automatically be rolled back due to the raised exception
         raise
+
 
 async def process_all_site_data(con, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Contains the core logic for processing sites data, operating within an existing transaction.
+    Uses bulk fetching to avoid the N+1 query problem for better performance.
     """
-    converted_data_list = raw_payload['data']
-    if not converted_data_list:
-        return {"success": False, "message": "Invalid or missing 'sites' list in payload after conversion."}
-    
-    # Get user ID and userdataid
+    logger.debug("Starting processing site data, including deletion of stale sites.")
+
+    converted_data_list = raw_payload.get("data", [])
+    if not converted_data_list or not isinstance(converted_data_list, list):
+        return {"success": True, "message": "No valid site records to process."}
+
+    # --- STEP 1: Get User ID ---
     user_response = await con.fetch_one(
-        "SELECT xata_id, userdataid FROM users WHERE xata_id = $1;",
-        raw_payload["userId"]
+        "SELECT accountid, userdataid FROM users WHERE accountid = $1;",
+        raw_payload.get("userId"),
     )
-    if user_response and user_response.get('userdataid') is not None:
-        userid = user_response.get('userdataid')
+    if user_response and user_response.get("userdataid") is not None:
+        userid = user_response.get("userdataid")
     elif user_response:
-        userid = user_response.get('xata_id')
+        userid = user_response.get("accountid")
     else:
+        logger.warning(f"User not found for accountid: {raw_payload.get('userId')}")
         return {"success": False, "message": "User not found."}
 
     overall_results = []
-    
+    sites_to_insert = []
+    sites_to_update = []
+
+    # --- STEP 2: Collect valid IDs, prepare data, and map existing records ---
+    site_ids_in_payload = []
+    incoming_data_map = {}  # Map incoming data by siteid for easy lookup
+
     for site_data in converted_data_list:
-        site_id = site_data.get('siteid')
-        site_data['userid'] = userid
+        site_id = site_data.get("siteid")
         if not site_id:
             logger.warning("Skipping record due to missing siteid.")
             continue
 
-        # 1. Handle the main 'sites' table record
-        existing_site_record = await con.fetch_one(
-            "SELECT * FROM sites WHERE siteid = $1;",
-            site_id
-        )
-        
-        # Create a shallow copy to remove nested data before processing for the 'sites' table
+        site_ids_in_payload.append(site_id)
+        site_data["userid"] = userid  # Inject required foreign key
+
+        # Prepare data for main 'sites' table by removing nested keys
         site_record_to_process = site_data.copy()
-        site_record_to_process.pop('building_options', None)
-        site_record_to_process.pop('platforms', None)
-        
-        if existing_site_record:
-            changed_fields = get_changed_fields(site_record_to_process, dict(existing_site_record))
+        site_record_to_process.pop("building_options", None)
+        site_record_to_process.pop("platforms", None)
+
+        incoming_data_map[site_id] = site_record_to_process
+
+    if not site_ids_in_payload:
+        return {"success": True, "message": "No valid site IDs found to process."}
+
+    # --- STEP 3: BULK FETCH existing data (N+1 fix) ---
+    existing_records = await con.fetch_rows(
+        "SELECT * FROM sites WHERE siteid = ANY($1::text[]) AND userid = $2;",
+        site_ids_in_payload,
+        userid,
+    )
+    existing_data_map = {r["siteid"]: dict(r) for r in existing_records}
+
+    # --- STEP 4: Determine Insert vs. Update Actions ---
+    for site_id, new_data in incoming_data_map.items():
+        existing_data = existing_data_map.get(site_id)
+
+        if existing_data:
+            # UPDATE Scenario
+            changed_fields = get_changed_fields(new_data, existing_data)
             if changed_fields:
-                update_fields = ", ".join([f"{key} = ${i+2}" for i, key in enumerate(changed_fields.keys())])
-                update_query = f"UPDATE sites SET {update_fields} WHERE siteid = $1;"
-                try:
-                    await con.execute(update_query, site_id, *changed_fields.values())
-                except Exception as e:
-                    logger.error(f"Database error during UPSERT: {e}", exc_info=True)
-                    raise
-                overall_results.append({"siteid": site_id, "status": "updated"})
+                sites_to_update.append({"id": site_id, "changes": changed_fields})
+                overall_results.append({"siteid": site_id, "status": "pending_update"})
             else:
                 overall_results.append({"siteid": site_id, "status": "unchanged"})
         else:
-            keys = ", ".join(site_record_to_process.keys())
-            values_placeholders = ", ".join([f'${i+1}' for i in range(len(site_record_to_process))])
-            insert_query = f"INSERT INTO sites ({keys}) VALUES ({values_placeholders});"
-            try:
-                await con.execute(insert_query, *site_record_to_process.values())
-            except Exception as e:
-                logger.error(f"Database error during UPSERT: {e}", exc_info=True)
-                raise
-            overall_results.append({"siteid": site_id, "status": "inserted"})
+            # INSERT Scenario
+            sites_to_insert.append(new_data)
+            overall_results.append({"siteid": site_id, "status": "pending_insert"})
 
-        # 2. Handle all nested tables
-        await _handle_all_nested_data(con, site_data)
+        original_site_data = next((d for d in converted_data_list if d.get("siteid") == site_id), None)
+        if original_site_data:
+            await _handle_all_nested_data(con, original_site_data)
 
-    return {"success": True, "message": "Sites data processed successfully.", "results": overall_results}
+    # --- STEP 5: Execute Bulk INSERTs and Batched UPDATEs ---
+
+    # Execute INSERTS
+    for record in sites_to_insert:
+        keys = ", ".join(record.keys())
+        values_placeholders = ", ".join([f"${i + 1}" for i in range(len(record))])
+        insert_query = f"INSERT INTO sites ({keys}) VALUES ({values_placeholders});"
+        try:
+            await con.execute(insert_query, *record.values())
+        except Exception as e:
+            logger.error(f"Database error during site insert: {e}", exc_info=True)
+            raise
+
+    # Execute UPDATEs
+    for item in sites_to_update:
+        site_id = item["id"]
+        changed_fields = item["changes"]
+
+        update_fields = ", ".join([f"{key} = ${i + 2}" for i, key in enumerate(changed_fields.keys())])
+        update_query = f"UPDATE sites SET {update_fields} WHERE siteid = $1;"
+        try:
+            await con.execute(update_query, site_id, *changed_fields.values())
+        except Exception as e:
+            logger.error(f"Database error during site update: {e}", exc_info=True)
+            raise
+
+    # --- STEP 6: Delete sites missing from the payload for this user ---
+    delete_sites_query = """
+        DELETE FROM sites
+        WHERE userid = $1
+        AND siteid NOT IN (SELECT unnest($2::text[]));
+    """
+
+    try:
+        status_message = await con.execute(delete_sites_query, userid, site_ids_in_payload)
+        deleted_count = status_message.split()[-1]
+        logger.debug(f"Deleted {deleted_count} sites for user {userid} not in payload.")
+    except Exception as e:
+        logger.error(f"Database error during site deletion for user {userid}: {e}", exc_info=True)
+        raise
+
+    return {
+        "success": True,
+        "message": "Sites data processed successfully.",
+        "results": overall_results,
+    }
+
 
 async def _handle_all_nested_data(con, site_data: Dict[str, Any]):
     """
     Processes all nested data, including buildings, platforms, and their
     associated materials and workforce capacities.
     """
-    site_id = site_data.get('siteid')
+    site_id = site_data.get("siteid")
 
     buildings_task = None
     platforms_task = None
@@ -117,104 +182,138 @@ async def _handle_all_nested_data(con, site_data: Dict[str, Any]):
 
     platform_ids = []
 
-    # 1. Prepare and insert 'building_options' records
-    building_records_to_insert = []
-    for option in site_data['building_options']:
-        clean_record = option.copy()
-        clean_record.pop('materials', None)
-        clean_record.pop('workforcecapacities', None)
-        building_records_to_insert.append(clean_record)
+    ## All of this needs rework
 
-    if building_records_to_insert:
-        keys = ', '.join(building_records_to_insert[0].keys())
-        values_placeholders = ', '.join([f'${i+1}' for i in range(len(building_records_to_insert[0]))])
-        insert_query = f"INSERT INTO buildings ({keys}) VALUES ({values_placeholders}) ON CONFLICT DO NOTHING;"
-        
-        values_to_insert = [list(rec.values()) for rec in building_records_to_insert]
-        buildings_task = con.executemany(insert_query, values_to_insert)
+    # 1. Prepare and insert 'building_options' records
+    #building_records_to_insert = []
+    #for option in site_data.get("building_options", []):
+    #    clean_record = option.copy()
+    #    clean_record.pop("materials", None)
+    #    clean_record.pop("workforcecapacities", None)
+    #    building_records_to_insert.append(clean_record)
+#
+    #if building_records_to_insert:
+    #    keys = ", ".join(building_records_to_insert[0].keys())
+    #    values_placeholders = ", ".join([f"${i + 1}" for i in range(len(building_records_to_insert[0]))])
+    #    insert_query = f"INSERT INTO buildings ({keys}) VALUES ({values_placeholders}) ON CONFLICT DO NOTHING;"
+#
+    #    values_to_insert = [list(rec.values()) for rec in building_records_to_insert]
+    #    buildings_task = con.executemany(insert_query, values_to_insert)
 
     # 2. Process nested 'materials' and 'workforce_capacities'
-    for option in site_data['building_options']:
-        building_id = option.get('buildingid')
+    for option in site_data.get("building_options", []):
+        building_id = option.get("buildingid")
         if not building_id:
             continue
 
-        materials_list = option.get('materials', [])
+        materials_list = option.get("materials", [])
         if materials_list:
             buildings_options_materials_task.extend(materials_list)
 
-        workforce_list = option.get('workforcecapacities', [])
+        workforce_list = option.get("workforcecapacities", [])
         if workforce_list:
             buildings_options_workforce_task.extend(workforce_list)
 
+    # 3. Prepare and insert 'site_platforms' records (UPSERT)
     platform_records_to_insert = []
-    for platform in site_data.get('platforms', []):
-        platform_ids.append(platform.get('platformid'))
+    for platform in site_data.get("platforms", []):
+        platform_ids.append(platform.get("platformid"))
         clean_record = platform.copy()
-        clean_record.pop('reclaimable_materials', None)
-        clean_record.pop('repair_materials', None)
+        clean_record.pop("reclaimable_materials", None)
+        clean_record.pop("repair_materials", None)
         platform_records_to_insert.append(clean_record)
 
     if platform_records_to_insert:
-        # Get the keys and prepare placeholders.
         keys = platform_records_to_insert[0].keys()
-        keys_str = ', '.join(keys)
-        values_placeholders = ', '.join([f'${i+1}' for i in range(len(keys))])
+        keys_str = ", ".join(keys)
+        values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys))])
+        update_set_clause = ", ".join([f"{key} = EXCLUDED.{key}" for key in keys])
 
-        # Generate the SET clause for the update.
-        update_set_clause = ', '.join([f"{key} = EXCLUDED.{key}" for key in keys])
-
-        # Construct the full upsert query.
         insert_query = f"""
             INSERT INTO site_platforms ({keys_str})
             VALUES ({values_placeholders})
             ON CONFLICT (platformid) DO UPDATE
             SET {update_set_clause};
         """
-
         values_to_insert = [list(rec.values()) for rec in platform_records_to_insert]
+        await con.executemany(insert_query, values_to_insert)
 
-        platforms_task = con.executemany(insert_query, values_to_insert)
-
-    # 2. Process nested 'reclaimable_materials' and 'repair_materials'
-    for platform in site_data.get('platforms', []):
-        platform_id = platform.get('platformid')
+    # 4. Process nested 'reclaimable_materials' and 'repair_materials'
+    for platform in site_data.get("platforms", []):
+        platform_id = platform.get("platformid")
         if not platform_id:
             continue
-            
-        reclaimable_list = platform.get('reclaimable_materials', [])
+
+        reclaimable_list = platform.get("reclaimable_materials", [])
         if reclaimable_list:
             platforms_reclaimables_task.extend(reclaimable_list)
-        
-        repair_list = platform.get('repair_materials', [])
+
+        repair_list = platform.get("repair_materials", [])
         if repair_list:
             platforms_repairs_task.extend(repair_list)
 
     buildings_time_process_start = time.perf_counter()
+    # --- STEP 5: DELETE REMOVED PLATFORM RECORDS (within the current site) ---
+    if site_id and platform_ids:
+        # Deletes any platform for this site whose ID is NOT in the current platform_ids list.
+        delete_platforms_query = """
+            DELETE FROM site_platforms
+            WHERE siteid = $1
+            AND platformid NOT IN (SELECT unnest($2::text[]));
+        """
+        try:
+            # If platform_ids is empty, this correctly deletes ALL platforms for the site.
+            await con.execute(delete_platforms_query, site_id, platform_ids)
+            logger.debug(f"Deleted platforms from site_platforms for site {site_id} that were not in the payload.")
+        except Exception as e:
+            logger.error(
+                f"Database error during site_platforms deletion for site {site_id}: {e}",
+                exc_info=True,
+            )
+            raise
+
+    # --- STEP 6: Upsert all nested records ---
     await asyncio.gather(
-        buildings_task,
-        platforms_task
-    )
-    await asyncio.gather(
-        _upsert_records(con, "building_build_materials", buildings_options_materials_task, ["buildingid", "materialid"]),
-        _upsert_records(con, "building_workforce_capacities", buildings_options_workforce_task, ["buildingid", "workforcelevel"]),
-        _upsert_records(con, "platform_materials", platforms_reclaimables_task, ["platformid", "materialid", "materialtype"]),
-        _upsert_records(con, "platform_materials", platforms_repairs_task, ["platformid", "materialid", "materialtype"])
+        #_upsert_records(
+        #    con,
+        #    "building_build_materials",
+        #    buildings_options_materials_task,
+        #    ["buildingid", "materialid"],
+        #),
+        #_upsert_records(
+        #    con,
+        #    "building_workforce_capacities",
+        #    buildings_options_workforce_task,
+        #    ["buildingid", "workforcelevel"],
+        #),
+        _upsert_records(
+            con,
+            "platform_materials",
+            platforms_reclaimables_task,
+            ["platformid", "materialid", "materialtype"],
+        ),
+        _upsert_records(
+            con,
+            "platform_materials",
+            platforms_repairs_task,
+            ["platformid", "materialid", "materialtype"],
+        ),
     )
 
+    # 7. Clean up old platform materials for the remaining platforms
     all_platform_materials = platforms_reclaimables_task + platforms_repairs_task
     await _handle_deletions_by_platforms(
         con,
         "platform_materials",
         ["platformid", "materialid", "materialtype"],
         all_platform_materials,
-        platform_ids
+        platform_ids,
     )
     buildings_time_process_end = time.perf_counter()
-    logger.info(f"Processed nested site_platforms_options data for siteid {site_id} in {buildings_time_process_end - buildings_time_process_start:.4f} seconds.")
-    
-    ## Delete data not in payload -> Needs testing
-    
+    logger.debug(
+        f"Processed nested site_platforms_options data for siteid {site_id} in {buildings_time_process_end - buildings_time_process_start:.4f} seconds."
+    )
+
 
 async def _upsert_records(
     con: asyncpg.Connection,
@@ -222,7 +321,7 @@ async def _upsert_records(
     records: List[Dict[str, Any]],
     unique_fields: List[str],
     chunk_size: int = 5000,
-    timeout: float = None
+    timeout: float = None,
 ):
     """
     A generic helper function to perform bulk upserts using INSERT ... ON CONFLICT DO UPDATE.
@@ -233,65 +332,69 @@ async def _upsert_records(
 
     # Extract columns from the first record to build the query dynamically
     columns = records[0].keys()
-    columns_str = ', '.join(columns)
-    unique_columns_str = ', '.join(unique_fields)
-    
+    columns_str = ", ".join(columns)
+    unique_columns_str = ", ".join(unique_fields)
+
     # Construct the SET clause for ON CONFLICT DO UPDATE
     set_clauses = []
-    # Use IS DISTINCT FROM to only update if a field's value has changed
     for col in columns:
         if col not in unique_fields:
-            if col == 'capacity':
-                set_clauses.append(f"capacity = EXCLUDED.capacity WHERE {table_name}.capacity IS DISTINCT FROM EXCLUDED.capacity")
-            elif col == 'amount':
-                set_clauses.append(f"amount = EXCLUDED.amount WHERE {table_name}.amount IS DISTINCT FROM EXCLUDED.amount")
+            if col == "capacity":
+                set_clauses.append(
+                    f"capacity = EXCLUDED.capacity WHERE {table_name}.capacity IS DISTINCT FROM EXCLUDED.capacity"
+                )
+            elif col == "amount":
+                set_clauses.append(
+                    f"amount = EXCLUDED.amount WHERE {table_name}.amount IS DISTINCT FROM EXCLUDED.amount"
+                )
             else:
                 set_clauses.append(f"{col} = EXCLUDED.{col}")
 
-    set_clause_str = ',\n'.join(set_clauses)
-    
-    values_placeholders = ', '.join([f'${i+1}' for i in range(len(columns))])
-    
+    set_clause_str = ",\n".join(set_clauses)
+
+    values_placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])
+
     if set_clause_str:
         on_conflict_clause = f"ON CONFLICT ({unique_columns_str}) DO UPDATE SET {set_clause_str}"
     else:
         on_conflict_clause = f"ON CONFLICT ({unique_columns_str}) DO NOTHING"
-        
+
     query = f"INSERT INTO {table_name} ({columns_str}) VALUES ({values_placeholders}) {on_conflict_clause};"
-    
+
     # Process records in chunks
     for i in range(0, len(records), chunk_size):
-        chunk = records[i:i + chunk_size]
+        chunk = records[i : i + chunk_size]
         values_to_insert = [list(rec.values()) for rec in chunk]
         try:
             await con.executemany(query, values_to_insert, timeout=timeout)
         except Exception as e:
             logger.error(f"Database error during UPSERT: {e}", exc_info=True)
             raise
-    logger.info(f"Finished inserting data in upsert_records.")
+    logger.debug("Finished inserting data in upsert_records.")
+
 
 async def _handle_deletions_by_platforms(
     con,
     table_name: str,
     unique_fields: List[str],
     current_records: List[Dict[str, Any]],
-    platform_ids_in_payload: List[str]
+    platform_ids_in_payload: List[str],
 ):
     """
-    Deletes records for a list of platforms that are not present in the new payload.
-    It handles empty payloads for the specified platforms by deleting all their records.
+    Deletes records from a child table (e.g., platform_materials)
+    that are not present in the new payload, for the platforms that still exist.
     """
     if not platform_ids_in_payload:
         return
 
     # 1. Get a list of all existing unique keys for these platforms from the database
     keys_query = f"""
-        SELECT {', '.join(unique_fields)} FROM {table_name}
+        SELECT {", ".join(unique_fields)} FROM {table_name}
         WHERE platformid = ANY($1::text[]);
     """
     existing_records = await con.fetch_rows(keys_query, platform_ids_in_payload)
     existing_keys_in_db = set(tuple(rec.values()) for rec in existing_records)
-    
+
     # 2. Get a set of unique keys from the new payload
     payload_keys = set(tuple(rec[field] for field in unique_fields) for rec in current_records)
 
@@ -300,19 +403,23 @@ async def _handle_deletions_by_platforms(
 
     if not keys_to_delete:
         return
-        
-    # 4. Perform the bulk deletion with a single query
-    delete_query = f"""
-        DELETE FROM {table_name}
-        WHERE ({', '.join(unique_fields)}) IN (
-            SELECT UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[])
-        );
-    """
-    
-    values_to_delete = list(zip(*keys_to_delete))
 
-    try:
-        await con.execute(delete_query, *values_to_delete)
-    except Exception as e:
-        logger.error(f"Database error during UPSERT: {e}", exc_info=True)
-        raise
+    # 4. Perform the bulk deletion with a single query
+    if len(unique_fields) == 3:
+        delete_query = f"""
+            DELETE FROM {table_name}
+            WHERE ({", ".join(unique_fields)}) IN (
+                SELECT UNNEST($1::text[]), UNNEST($2::text[]), UNNEST($3::text[])
+            );
+        """
+        values_to_delete = list(zip(*keys_to_delete))
+
+        try:
+            await con.execute(delete_query, *values_to_delete)
+        except Exception as e:
+            logger.error(f"Database error during deletion in {table_name}: {e}", exc_info=True)
+            raise
+    else:
+        logger.warning(
+            f"Skipping deletion for {table_name}: Generic deletion logic not implemented for {len(unique_fields)} unique fields."
+        )

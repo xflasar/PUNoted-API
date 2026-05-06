@@ -1,19 +1,19 @@
-import os
 import asyncio
-import threading
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Request
-from .bot import bot, get_bot # Import the bot instance
-from discord import Member, Guild
-import re
 import logging
+import os
+from typing import Optional
 
-# Create a FastAPI router
+from discord import Guild, Member
+from fastapi import APIRouter, HTTPException, Request
+
+from .bot import bot, get_bot
+
 router = APIRouter()
 
-# Get the Discord channel ID from an environment variable for security
+# Get the Discord channel ID
 discord_channel_id = int(os.getenv("DISCORD_CHANNEL_ID", "YOUR_CHANNEL_ID_HERE"))
 logger = logging.getLogger(__name__)
+
 
 def format_price(price: Optional[float]) -> str:
     """
@@ -22,11 +22,12 @@ def format_price(price: Optional[float]) -> str:
     """
     if price is None or not isinstance(price, (int, float)):
         return "N/A ICA"
-    
+
     if price == int(price):
         return f"{int(price):,} ICA"
     else:
         return f"{price:,.2f} ICA"
+
 
 def format_amount(amount: Optional[int]) -> str:
     """
@@ -35,8 +36,9 @@ def format_amount(amount: Optional[int]) -> str:
     """
     if amount is None or not isinstance(amount, int):
         return "N/A"
-    
+
     return f"{amount:,}"
+
 
 # Helper function to send messages to Discord
 async def send_discord_message(message_content: str):
@@ -44,12 +46,12 @@ async def send_discord_message(message_content: str):
     if not bot_instance:
         logger.error("Discord bot instance not available.")
         return False
-        
+
     try:
         channel = bot_instance.get_channel(discord_channel_id)
         if channel:
             await channel.send(message_content)
-            logger.info("✅ Successfully sent message to Discord.")
+            logger.debug("✅ Successfully sent message to Discord.")
             return True
         else:
             logger.error(f"❌ Error: Discord channel with ID {discord_channel_id} not found.")
@@ -57,6 +59,7 @@ async def send_discord_message(message_content: str):
     except Exception as e:
         logger.error(f"❌ Error sending message to Discord: {e}")
         return False
+
 
 # Function to search for a user in a guild by their in-game name
 async def get_user_by_ingamename(guild: Guild, ingamename: str) -> Optional[Member]:
@@ -66,12 +69,13 @@ async def get_user_by_ingamename(guild: Guild, ingamename: str) -> Optional[Memb
     """
     async for member in guild.fetch_members(limit=None):
         # Extract the display name part before the ' - ' separator
-        display_name_part = member.display_name.partition(' - ')[0]
+        display_name_part = member.display_name.partition(" - ")[0]
 
         if display_name_part == ingamename or member.name == ingamename:
             return member
-            
+
     return None
+
 
 @router.post("/buy_order")
 async def discord_buy_order_webhook(payload: dict):
@@ -89,10 +93,7 @@ async def discord_buy_order_webhook(payload: dict):
     guild = bot.guilds[0]
     if guild:
         # Get the Discord user for the customer
-        future_customer = asyncio.run_coroutine_threadsafe(
-            get_user_by_ingamename(guild, customer_ingamename),
-            bot.loop
-        )
+        future_customer = asyncio.run_coroutine_threadsafe(get_user_by_ingamename(guild, customer_ingamename), bot.loop)
         customer_member = future_customer.result(timeout=5)
     else:
         customer_member = None
@@ -101,13 +102,10 @@ async def discord_buy_order_webhook(payload: dict):
         vendor_id = vendor_data.get("vendorid", "N/A")
         vendor_ingamename = vendor_data.get("gamename", "Unknown Vendor")
         orders = vendor_data.get("orders", [])
-        
+
         if guild:
             # Get the Discord user for the vendor
-            future_vendor = asyncio.run_coroutine_threadsafe(
-                get_user_by_ingamename(guild, vendor_ingamename),
-                bot.loop
-            )
+            future_vendor = asyncio.run_coroutine_threadsafe(get_user_by_ingamename(guild, vendor_ingamename), bot.loop)
             vendor_member = future_vendor.result(timeout=5)
         else:
             print(f"Guild with ID {vendor_id} not found.")
@@ -116,10 +114,10 @@ async def discord_buy_order_webhook(payload: dict):
 
         vendor_mention = f"<@!{vendor_member.id}>" if vendor_member else vendor_ingamename
         customer_mention = f"<@!{customer_member.id}>" if customer_member else customer_ingamename
-        
+
         message_content += f"Customer: {customer_mention}\n\n"
         message_content += f"**Vendor:** {vendor_mention}\n"
-        
+
         if not orders:
             message_content += "  - No orders for this vendor.\n"
         else:
@@ -128,24 +126,25 @@ async def discord_buy_order_webhook(payload: dict):
                 amount = order.get("amount", "N/A")
                 price = order.get("price", "N/A")
                 message_content += f"  -> {ticker} - {format_amount(amount)} - {format_price(price)}\n"
-        
-        message_content += "\n" # Add a newline between vendors
+
+        message_content += "\n"
 
     # Safely run the coroutine to send the message on the bot's event loop
-    future_send = asyncio.run_coroutine_threadsafe(
-        send_discord_message(message_content),
-        bot.loop
-    )
-    
+    future_send = asyncio.run_coroutine_threadsafe(send_discord_message(message_content), bot.loop)
+
     try:
         success = future_send.result(timeout=5)
         if success:
-            return {"status": "success", "message": "Buy order message sent to Discord."}
+            return {
+                "status": "success",
+                "message": "Buy order message sent to Discord.",
+            }
         else:
             return {"status": "error", "message": "Discord channel not found."}, 404
     except Exception as e:
         print(f"Error sending message to Discord: {e}")
         return {"status": "error", "message": str(e)}, 500
+
 
 @router.post("/test")
 async def discord_test_webhook():
@@ -166,7 +165,8 @@ async def discord_test_webhook():
         print(f"Error processing test webhook: {e}")
         return {"status": "error", "message": str(e)}, 400
 
-# The original generic webhook endpoint (unmodified)
+
+# The original generic webhook endpoint
 @router.post("/webhook")
 async def discord_generic_webhook(request: Request):
     """
@@ -175,12 +175,9 @@ async def discord_generic_webhook(request: Request):
     try:
         data = await request.json()
         message_content = f"**New message from API:**\n```json\n{data}\n```"
-        
-        future = asyncio.run_coroutine_threadsafe(
-            send_discord_message(message_content),
-            bot.loop
-        )
-        
+
+        future = asyncio.run_coroutine_threadsafe(send_discord_message(message_content), bot.loop)
+
         success = future.result(timeout=5)
         if success:
             return {"status": "success", "message": "Message sent to Discord."}

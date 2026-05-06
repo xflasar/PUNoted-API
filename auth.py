@@ -1,21 +1,41 @@
 # auth.py
+import json
 import logging
-from typing import Optional, Dict
-from datetime import datetime, timedelta
 import random
+import re
+import secrets
+import smtplib
 import string
+from datetime import datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+import time
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.security import OAuth2PasswordBearer
-from werkzeug.security import generate_password_hash, check_password_hash
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    status,
+)
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer
+from pydantic import BaseModel
+from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
     from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 except ImportError:
     from jwt import ExpiredSignatureError, InvalidTokenError
 
+import sentry_sdk
+
 import config
-import mailtrap as mt
 
 auth_router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -23,33 +43,31 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 logger = logging.getLogger(__name__)
 
 
-# --- Email Sending Function ---
+# --- Email Sending Function (For Account Verification/Registration) ---
 def send_verification_email(email: str, code: str):
     """
-    Sends a verification email using Mailtrap.
-
-    Args:
-        email (str): The recipient's email address.
-        code (str): The verification code to send.
+    Sends a general verification email using GMAIL's SMTP.
     """
     try:
-        mail = mt.Mail(
-            sender=mt.Address(email="punoted@noreply.com", name="PUNoted"),
-            to=[mt.Address(email=email)],
-            subject="Email Verification for Your Account",
-            html=f"""
+        # 1. Email Construction
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Email Verification for Your Account"
+        msg["From"] = f"PUNoted <{config.SMTP_USERNAME}>"
+        msg["To"] = email
+
+        html_content = f"""
             <!doctype html>
             <html>
             <head>
                 <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
                 <title>Email Verification</title>
                 <style>
-                    body {{ font-family: sans-serif; line-height: 1.6; color: #333; }}
-                    .container {{ max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9; }}
-                    h1 {{ font-size: 24px; color: #0056b3; margin-bottom: 20px; }}
-                    p {{ margin-bottom: 10px; }}
-                    .code-box {{ background-color: #eee; padding: 15px; border-radius: 5px; font-size: 20px; font-weight: bold; text-align: center; margin: 20px 0; }}
-                    .footer {{ font-size: 12px; color: #777; text-align: center; margin-top: 30px; }}
+                     body {{ font-family: sans-serif; line-height: 1.6; color: #333; }}
+                     .container {{ max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9; }}
+                     h1 {{ font-size: 24px; color: #0056b3; margin-bottom: 20px; }}
+                     p {{ margin-bottom: 10px; }}
+                     .code-box {{ background-color: #eee; padding: 15px; border-radius: 5px; font-size: 20px; font-weight: bold; text-align: center; margin: 20px 0; }}
+                     .footer {{ font-size: 12px; color: #777; text-align: center; margin-top: 30px; }}
                 </style>
             </head>
             <body>
@@ -68,67 +86,141 @@ def send_verification_email(email: str, code: str):
                 </div>
             </body>
             </html>
-            """,
-            category="Email Verification",
-            headers={"X-MT-Header": "Email Verification"}, # Custom header for Mailtrap
-            custom_variables={"year": datetime.now().year} # Dynamic custom variable
-        )
+            """
+        msg.attach(MIMEText(html_content, "html"))
 
-        if not hasattr(config, 'MAILTRAP_API_TOKEN') or not config.MAILTRAP_API_TOKEN:
-            print("Error: MAILTRAP_API_TOKEN is not configured in config.py. Email not sent.")
-            return
+        # 2. SMTP Connection and Sending
+        with smtplib.SMTP_SSL(config.SMTP_SERVER, 465, timeout=120) as server:
+            server.login(config.SMTP_USERNAME, config.SMTP_PASSWORD)
+            server.sendmail(config.SMTP_USERNAME, email, msg.as_string())
 
-        client = mt.MailtrapClient(token=config.MAILTRAP_API_TOKEN)
-        client.send(mail)
-        print(f"Verification email sent to {email}.")
+        print(f"Verification email sent to {email} via Gmail SMTP.")
+        return True
     except Exception as e:
         print(f"Failed to send verification email to {email}: {e}")
+        return False
+
+
+# -----------------------------------------------------------------
+
+
+# --- Email Sending Function for PASSWORD RESET (Using Gmail SMTP) ---
+def send_password_reset_email(email: str, code: str):
+    """
+    Sends a password reset code email using GMAIL's SMTP.
+
+    Args:
+        email (str): The recipient's email address.
+        code (str): The password reset code to send.
+    """
+    try:
+        # 1. Email Construction
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = "Password Reset Request - ACTION REQUIRED"
+        msg["From"] = f"PUNoted <{config.SMTP_USERNAME}>"
+        msg["To"] = email
+
+        html_content = f"""
+            <!doctype html>
+            <html>
+            <head>
+                <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+                <title>Password Reset</title>
+                <style>
+                    body {{ font-family: sans-serif; line-height: 1.6; color: #333; }}
+                    .container {{ max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9; }}
+                    h1 {{ font-size: 24px; color: #b30000; margin-bottom: 20px; }}
+                    p {{ margin-bottom: 10px; }}
+                    /* Warning box style for reset code */
+                    .code-box {{ background-color: #fce4e4; border: 1px solid #b30000; color: #b30000; padding: 15px; border-radius: 5px; font-size: 20px; font-weight: bold; text-align: center; margin: 20px 0; }}
+                    .warning {{ color: #b30000; font-weight: bold; }}
+                    .footer {{ font-size: 12px; color: #777; text-align: center; margin-top: 30px; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>Action Required: Password Reset</h1>
+                    <p>We received a request to reset the password for your account associated with this email address.</p>
+                    <p>To continue, please use the following **one-time code** on the password reset page:</p>
+                    <div class="code-box">
+                        {code}
+                    </div>
+                    <p class="warning">⚠️ IMPORTANT: If you did not request a password reset, please ignore this email immediately. Your password will remain unchanged.</p>
+                    <p>This code will expire in {config.EMAIL_VERIFICATION_CODE_LIFESPAN_SECONDS / 60:.0f} minutes.</p>
+                    <div class="footer">
+                        <p>&copy; {datetime.now().year} PUNoted. All rights reserved.</p>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+        msg.attach(MIMEText(html_content, "html"))
+
+        # 2. SMTP Connection and Sending
+        with smtplib.SMTP_SSL(config.SMTP_SERVER, 465, timeout=120) as server:
+            server.login(config.SMTP_USERNAME, config.SMTP_PASSWORD)
+            server.sendmail(config.SMTP_USERNAME, email, msg.as_string())
+
+        print(f"Password reset email sent to {email} via Gmail SMTP.")
+        return True
+    except Exception as e:
+        print(f"Failed to send password reset email to {email}: {e}")
+        return False
 
 
 # ==============================================================================
 # JWT Token Generation and Validation Functions
 # ==============================================================================
 
-async def generate_token(conn, user_id: str) -> tuple[str, int]:
-    """
-    Generates a new JWT access token for a given user ID with a long expiration time.
-    The token is stored in the 'user_tokens' table using asyncpg.
 
-    Args:
-        conn (asyncpg.Connection): An active database connection from the pool.
-        user_id (str): The ID of the user for whom the token is generated.
+from datetime import datetime, timedelta, timezone
 
-    Returns:
-        tuple[str, int]: A tuple containing:
-            - The generated access token string.
-            - Its expiration timestamp (int).
-    """
-    # Define expiration time (long-lived)
-    expires_at_dt = datetime.now() + timedelta(seconds=config.TOKEN_LIFESPAN_SECONDS)
-    expires_at_ts = int(expires_at_dt.timestamp())
+async def generate_token(conn, user_id: str, request: Request, is_website: bool = False) -> tuple[str, int]:
+    # 1. Setup metadata
+    token_type = "access" if is_website else "extension_access"
+    lifespan = timedelta(days=7) if is_website else timedelta(days=365)
+    
+    user_agent = request.headers.get("user-agent", "Unknown Browser")
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    ip_address = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host or "N/A")
+    iat_id = secrets.token_hex(8) 
 
-    # Create JWT payload
+    now_aware = datetime.now(timezone.utc)
+    expires_at_dt = now_aware + lifespan
+    expires_at_naive = expires_at_dt.replace(tzinfo=None)
+
+    # 2. Generate JWT
     payload = {
         "user_id": user_id,
-        "type": "access",
+        "type": token_type,
+        "iat_id": iat_id,
         "exp": expires_at_dt,
-        "iat": datetime.now().timestamp()
+        "iat": now_aware.timestamp()
     }
+    token = jwt.encode(payload, config.JWT_SECRET_KEY, algorithm="HS256")
 
     try:
-        # Encode the JWT
-        token = jwt.encode(payload, config.JWT_SECRET_KEY, algorithm="HS256")
-        
         await conn.execute(
-            "INSERT INTO user_tokens (userid, token, expiresat) VALUES ($1, $2, $3);",
-            user_id,
-            token,
-            expires_at_dt
+            """
+            WITH inserted AS (
+                INSERT INTO user_tokens (userid, type, token, expiresat, user_agent, last_ip, iat_id, xata_updatedat)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                RETURNING userid, type
+            )
+            DELETE FROM user_tokens 
+            WHERE id IN (
+                SELECT id FROM user_tokens 
+                WHERE userid = (SELECT userid FROM inserted) 
+                  AND type = (SELECT type FROM inserted)
+                ORDER BY expiresat DESC 
+                OFFSET 10
+            ) OR (userid = $1 AND expiresat < NOW());
+            """,
+            user_id, token_type, token, expires_at_naive, user_agent, ip_address, iat_id
         )
-        print(f"Generated new JWT for user ID '{user_id}'. Expires at: {datetime.fromtimestamp(expires_at_ts)}.")
-        return token, expires_at_ts
+        return token, int(expires_at_dt.timestamp())
     except Exception as e:
-        print(f"Error generating or storing token for user ID '{user_id}': {e}")
+        print(f"Database error during token generation: {e}")
         return "", 0
 
 async def validate_token(conn, token: str) -> tuple[Optional[str], Optional[int], Optional[str]]:
@@ -151,33 +243,46 @@ async def validate_token(conn, token: str) -> tuple[Optional[str], Optional[int]
         user_id_from_jwt = decoded_payload.get("user_id")
         token_type = decoded_payload.get("type")
 
-        if not user_id_from_jwt or token_type != "access":
-            return None, None, "Invalid token: User ID or token type missing/incorrect from payload."
+        # Check if it's NOT one of the valid types
+        if not user_id_from_jwt or token_type not in ["access", "extension_access"]:
+            return (
+                None,
+                None,
+                "Invalid token: User ID or token type missing/incorrect from payload.",
+            )
 
         # Check if the token exists in the database
-        db_token_record = await conn.fetch_rows(
+        db_token_record = await conn.fetch(
             """
             SELECT id, userid, expiresat
             FROM user_tokens
             WHERE userid = $1;
             """,
-            user_id_from_jwt
+            user_id_from_jwt,
         )
 
         if not db_token_record:
-            return None, None, "Access token not found in database (possibly revoked or never issued)."
+            return (
+                None,
+                None,
+                "Access token not found in database (possibly revoked or never issued).",
+            )
 
-        if db_token_record[0]['userid'] != user_id_from_jwt:
-            return None, None, "Token mismatch: User ID in token does not match database record."
-            
-        db_expires_at_dt = db_token_record[0]['expiresat']
-        
+        if db_token_record[0]["userid"] != user_id_from_jwt:
+            return (
+                None,
+                None,
+                "Token mismatch: User ID in token does not match database record.",
+            )
+
+        db_expires_at_dt = db_token_record[0]["expiresat"]
+
         # Check if the token has expired
         if datetime.now() > db_expires_at_dt:
             # Token expired, delete it from DB
-            await conn.execute("DELETE FROM user_tokens WHERE id = $1;", db_token_record[0]['id'])
+            await conn.execute("DELETE FROM user_tokens WHERE id = $1;", db_token_record[0]["id"])
             return None, None, "Access token expired (database check)."
-            
+
         return user_id_from_jwt, int(db_expires_at_dt.timestamp()), None
 
     except ExpiredSignatureError:
@@ -187,7 +292,10 @@ async def validate_token(conn, token: str) -> tuple[Optional[str], Optional[int]
         logger.warning(f"Invalid access token: {e}")
         return None, None, f"Invalid access token: {e}"
     except Exception as e:
-        logger.error(f"An unexpected error occurred during access token validation: {e}", exc_info=True)
+        logger.error(
+            f"An unexpected error occurred during access token validation: {e}",
+            exc_info=True,
+        )
         return None, None, f"Server error during access token validation: {e}"
 
 
@@ -195,12 +303,14 @@ async def validate_token(conn, token: str) -> tuple[Optional[str], Optional[int]
 # Email Verification Code Functions
 # ==============================================================================
 
+
 def generate_verification_code_str(length: int = 6) -> str:
     """Generates a random alphanumeric verification code."""
     characters = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(characters) for i in range(length))
+    return "".join(random.choice(characters) for i in range(length))
 
-async def store_verification_code(conn, email: str, code: str) -> Optional[str]:
+
+async def store_verification_code(conn, email: str, code: str, server_code: str) -> Optional[str]:
     """
     Stores a verification code in the database with an expiration.
 
@@ -221,20 +331,21 @@ async def store_verification_code(conn, email: str, code: str) -> Optional[str]:
 
         # Now, insert the new verification code.
         insert_query = """
-        INSERT INTO user_verification_codes (email, code, expiresat)
-        VALUES ($1, $2, $3)
+        INSERT INTO user_verification_codes (email, code, servercode, expiresat)
+        VALUES ($1, $2, $3, $4)
         RETURNING id;
         """
-        record_id = await conn.fetch_rows(insert_query, email, code, expires_at_dt)
-        
+        record_id = await conn.fetch_rows(insert_query, email, code, server_code, expires_at_dt)
+
         if record_id:
             print(f"Stored verification code for {email}. Expires at: {expires_at_dt.isoformat()}")
-            return record_id[0]['id']
+            return record_id[0]["id"]
         else:
             raise Exception("Insert operation returned no ID.")
     except Exception as e:
         print(f"Error storing verification code for {email}: {e}")
         return None
+
 
 async def get_verification_code_from_db(conn, email: str, code: str) -> tuple[Optional[str], Optional[str]]:
     """
@@ -259,17 +370,18 @@ async def get_verification_code_from_db(conn, email: str, code: str) -> tuple[Op
         if not record:
             return None, "Invalid email or verification code."
 
-        db_expires_at_dt = record[0]['expiresat']
+        db_expires_at_dt = record[0]["expiresat"]
 
         if datetime.now(db_expires_at_dt.tzinfo) > db_expires_at_dt:
             # Code expired, delete it
             await conn.execute("DELETE FROM user_verification_codes WHERE id = $1;", record[0]["id"])
             return None, "Verification code expired."
-        
-        return str(record[0]["id"]), None # Return the record ID if valid
+
+        return str(record[0]["id"]), None  # Return the record ID if valid
     except Exception as e:
         print(f"Error retrieving/validating verification code for {email}: {e}")
         return None, f"Server error during code validation: {e}"
+
 
 async def delete_verification_code(conn, record_id: str) -> bool:
     """
@@ -284,42 +396,381 @@ async def delete_verification_code(conn, record_id: str) -> bool:
     """
     try:
         status_string = await conn.execute("DELETE FROM user_verification_codes WHERE id = $1;", int(record_id))
-        
+
         # Check if any rows were actually deleted. The status will be "DELETE 1" for one row.
-        if status_string.split()[-1] == '0':
+        if status_string.split()[-1] == "0":
             print(f"Warning: Verification code record '{record_id}' not found for deletion.")
             return False
-            
+
         print(f"Deleted verification code record '{record_id}'.")
         return True
     except Exception as e:
         print(f"Error deleting verification code record '{record_id}': {e}")
         return False
 
-# dependency function for other routes (Currently running 500 instead of not auth will be fixed later)
-async def get_current_user_id(request: Request,
-    token: str = Depends(oauth2_scheme)) -> str:
-    conn = request.state.db
-    user_id, expires_at, error = await validate_token(conn ,token)
-    if error:
-        print("Error", error)
+
+# TODO: dependency function for other routes (Currently running 500 instead of not auth will be fixed later)
+async def get_current_user_id(request: Request, token: str = Depends(oauth2_scheme)) -> str:
+    pool = request.app.state.db.pool
+
+    try:
+        async with pool.acquire() as conn:
+            user_id, expires_at, error = await validate_token(conn, token)
+            if user_id.startswith("rec_"):
+                user_id = await conn.fetch("SELECT accountid FROM users WHERE xata_id=$1", user_id)
+                user_id = str(user_id[0]["accountid"])
+
+            sentry_sdk.set_user({
+                "id": str(user_id),
+                "ip_address": "{{auto}}", # Let Sentry extract IP
+            })
+
+            if error:
+                print("Error", error)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=error,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=error,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            return user_id
+    except Exception as e:
+        print("failed to get userid", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error,
             headers={"WWW-Authenticate": "Bearer"},
         )
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=error,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user_id
+
+
+async def get_current_user_id_ws(websocket: WebSocket) -> str:
+    """
+    Manually extracts the token from the WebSocket query params and validates it.
+    This works when called directly inside the websocket endpoint.
+    """
+    # 1. Manually get token string from QueryParams
+    #    This fixes the issue where 'token' was a Query() object or None.
+    token = websocket.query_params.get("token")
+
+    if not token:
+        print("WS Auth Failed: Missing 'token' query parameter")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing token")
+        raise Exception("Missing token")
+
+    # 2. Access DB pool from App State
+    pool = websocket.app.state.db.pool
+
+    try:
+        async with pool.acquire() as conn:
+            # 3. Validate Token
+            user_id, expires_at, error = await validate_token(conn, token)
+
+            if error:
+                print(f"WS Token Error: {error}")
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"Auth failed: {error}")
+                raise Exception(error)
+
+            # 4. Handle 'rec_' ID conversion (if using Xata IDs) - This is old and needs to be fixed in DB and backend no more xata and rec_
+            if user_id.startswith("rec_"):
+                row = await conn.fetchrow("SELECT accountid FROM users WHERE xata_id=$1", user_id)
+                if row:
+                    user_id = str(row["accountid"])
+                else:
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="User mismatch")
+                    raise Exception("User record not found")
+
+            return user_id
+
+    except Exception as e:
+        print(f"WS Auth Exception: {e}")
+        # Only close if not already closed
+        from starlette.websockets import WebSocketState
+
+        if websocket.client_state != WebSocketState.DISCONNECTED:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        raise e
+    
+
+
+
+class RequireAuth:
+    def __init__(
+        self, 
+        required_permissions: Optional[List[str]] = None,
+        is_single_user_endpoint: bool = False
+    ):
+        self.required_permissions = required_permissions or []
+        self.is_single_user_endpoint = is_single_user_endpoint
+
+    async def __call__(
+        self,
+        request: Request,
+        token_header: Optional[str] = Header(None, alias="X-Data-Token"),
+        token_query: Optional[str] = Query(None, alias="token"),
+    ) -> str:
+        
+        raw_token = token_header or token_query
+        if not raw_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required.",
+            )
+        
+        final_token = raw_token.replace("Bearer ", "").strip()
+        pool = request.app.state.db.pool
+
+        q_params = request.query_params
+        requested_users_str = q_params.get("usernames") or q_params.get("username")
+        requested_users = [u.strip() for u in requested_users_str.split(",") if u.strip()] if requested_users_str else None
+
+        try:
+            async with pool.acquire() as conn:
+                # ==================================================================
+                # PATH A: GROUP TOKEN
+                # ==================================================================
+                if "grp_" in final_token:
+                    try:
+                        access_key, user_suffix = final_token.rsplit("-", 1)
+                    except ValueError:
+                        raise HTTPException(status_code=403, detail="Invalid token format")
+
+                    # 1. Get Requester
+                    sql_requester = """
+                        SELECT m.user_id, m.status, m.can_read_data, g.id as group_id, u.username, u.accountid
+                        FROM data_sharing_groups g
+                        JOIN data_group_members m ON m.group_id = g.id
+                        JOIN users u ON u.accountid = m.user_id
+                        WHERE g.access_key = $1 AND m.personal_suffix = $2
+                    """
+                    member = await conn.fetchrow(sql_requester, access_key, user_suffix)
+
+                    if not member or member["status"] != 'ACCEPTED':
+                        raise HTTPException(status_code=403, detail="Invalid Group Token")
+                    
+                    group_id = member["group_id"]
+                    requester_username = member["username"]
+                    requester_id = str(member["accountid"])
+                    can_read_data = member["can_read_data"]
+                    
+                    req_perm = self.required_permissions[0] if self.required_permissions else None
+
+                    # 2. Determine Scope
+                    if requested_users:
+                        sql_targets = """
+                            SELECT u.username 
+                            FROM data_group_members gm
+                            JOIN users u ON u.accountid = gm.user_id
+                            LEFT JOIN users_data ud ON ud.userid = u.userdataid
+                            WHERE gm.group_id = $1 
+                            AND gm.status = 'ACCEPTED'
+                            AND (u.username = ANY($2::text[]) OR ud.displayname = ANY($2::text[]))
+                            AND ($3::text IS NULL OR gm.granted_permissions @> jsonb_build_array($3::text) OR gm.granted_permissions @> '["all"]')
+                            AND ($4::boolean IS TRUE OR gm.user_id = $5)
+                        """
+                        valid_rows = await conn.fetch(sql_targets, group_id, requested_users, req_perm, can_read_data, requester_id)
+                        valid_usernames = [r["username"] for r in valid_rows]
+
+                    else:
+                        # Branch behavior based on the endpoint type
+                        if self.is_single_user_endpoint:
+                            valid_usernames = [requester_username]
+                        else:
+                            sql_targets = """
+                                SELECT u.username 
+                                FROM data_group_members gm
+                                JOIN users u ON u.accountid = gm.user_id
+                                WHERE gm.group_id = $1 
+                                AND gm.status = 'ACCEPTED'
+                                AND ($2::text IS NULL OR gm.granted_permissions @> jsonb_build_array($2::text) OR gm.granted_permissions @> '["all"]')
+                                AND ($3::boolean IS TRUE OR gm.user_id = $4)
+                            """
+                            valid_rows = await conn.fetch(sql_targets, group_id, req_perm, can_read_data, requester_id)
+                            valid_usernames = [r["username"] for r in valid_rows]
+
+                            if not valid_usernames and requester_username:
+                                valid_usernames = [requester_username]
+
+                    request.state.valid_target_users = valid_usernames
+                    request.state.rate_limit_key = requester_id
+                    return requester_id
+
+                # ==================================================================
+                # PATH B: PERSONAL TOKEN
+                # ==================================================================
+                else:
+                    query = """
+                        SELECT user_id, permissions, allow_group_access 
+                        FROM user_api_tokens 
+                        WHERE token_hash = $1 AND group_id IS NULL
+                    """
+                    token_data = await conn.fetchrow(query, final_token)
+
+                    if not token_data:
+                        raise HTTPException(status_code=401, detail="Invalid data token")
+
+                    user_id = str(token_data["user_id"])
+                    user_permissions = token_data["permissions"] or []
+                    allow_group_access = token_data.get("allow_group_access", False)
+
+                    if self.required_permissions:
+                        if "all" not in user_permissions:
+                            for perm in self.required_permissions:
+                                if perm not in user_permissions:
+                                    raise HTTPException(status_code=403, detail=f"Missing permission: {perm}")
+
+                    me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+                    req_perm = self.required_permissions[0] if self.required_permissions else None
+                    valid_usernames = []
+
+                    if allow_group_access:
+                        if requested_users:
+                            sql_targets = """
+                                SELECT DISTINCT u.username
+                                FROM users u
+                                LEFT JOIN users_data ud ON ud.userid = u.userdataid
+                                WHERE (
+                                    u.accountid = $1
+                                    OR EXISTS (
+                                        SELECT 1
+                                        FROM data_group_members gm_target
+                                        JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
+                                        WHERE gm_target.user_id = u.accountid
+                                          AND gm_requester.user_id = $1
+                                          AND gm_requester.status = 'ACCEPTED'
+                                          AND gm_requester.can_read_data = TRUE
+                                          AND gm_target.status = 'ACCEPTED'
+                                          AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
+                                    )
+                                )
+                                AND (u.username = ANY($3::text[]) OR ud.displayname = ANY($3::text[]))
+                            """
+                            valid_rows = await conn.fetch(sql_targets, user_id, req_perm, requested_users)
+                            valid_usernames = [r["username"] for r in valid_rows]
+                        
+                        else:
+                            # Branch behavior based on the endpoint type for master personal tokens
+                            if self.is_single_user_endpoint:
+                                valid_usernames = [me_username] if me_username else []
+                            else:
+                                sql_targets = """
+                                    SELECT DISTINCT u.username
+                                    FROM users u
+                                    WHERE (
+                                        u.accountid = $1
+                                        OR EXISTS (
+                                            SELECT 1
+                                            FROM data_group_members gm_target
+                                            JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
+                                            WHERE gm_target.user_id = u.accountid
+                                              AND gm_requester.user_id = $1
+                                              AND gm_requester.status = 'ACCEPTED'
+                                              AND gm_requester.can_read_data = TRUE
+                                              AND gm_target.status = 'ACCEPTED'
+                                              AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
+                                        )
+                                    )
+                                """
+                                valid_rows = await conn.fetch(sql_targets, user_id, req_perm)
+                                valid_usernames = [r["username"] for r in valid_rows]
+
+                    else:
+                        # STANDARD PERSONAL TOKEN (No multi-group access)
+                        if requested_users:
+                            sql_self = """
+                                SELECT u.username
+                                FROM users u
+                                LEFT JOIN users_data ud ON ud.userid = u.userdataid
+                                WHERE u.accountid = $1
+                                AND (u.username = ANY($2::text[]) OR ud.displayname = ANY($2::text[]))
+                            """
+                            valid_rows = await conn.fetch(sql_self, user_id, requested_users)
+                            valid_usernames = [r["username"] for r in valid_rows]
+                        else:
+                            valid_usernames = [me_username] if me_username else []
+
+                    request.state.valid_target_users = valid_usernames
+                    request.state.rate_limit_key = user_id
+
+                    return user_id
+
+        except HTTPException as http_exc:
+            raise http_exc
+        except Exception as e:
+            logger.error(f"Auth error: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Internal authentication error")
+
+# --- Optional Auth ---
+class OptionalAuth(RequireAuth):
+    """
+    Returns None if no token provided (Public Access).
+    Validates token if provided (Authenticated Access).
+    """
+    async def __call__(
+        self,
+        request: Request,
+        token_header: Optional[str] = Header(None, alias="X-Data-Token"),
+        token_query: Optional[str] = Query(None, alias="token"),
+    ) -> Optional[str]:
+        
+        raw_token = token_header or token_query
+        
+        # If no token, allow Public Access
+        if not raw_token:
+            return None
+            
+        # If token exists, validate it strictly
+        return await super().__call__(request, token_header, token_query)
 
 # ==============================================================================
 # Auth Routes
 # ==============================================================================
 
-@auth_router.post('/register')
+security = HTTPBearer()
+
+ALGORITHM = "HS256"
+EXTENSION_TOKEN_EXPIRE_DAYS = 30
+class SyncResponse(BaseModel):
+    success: bool
+    token: str
+    username: str
+    expires_at: int
+
+@auth_router.post("/extension_sync")
+async def extension_sync(
+    request: Request,
+    x_extension_client: str = Header(None),
+    auth: HTTPAuthorizationCredentials = Depends(security)
+):
+    allowed_clients = {"PrunDataExtension", "PrunDataExtension-Chrome", "PrunDataExtension-Firefox"}
+
+    if x_extension_client not in allowed_clients:
+        raise HTTPException(status_code=403, detail="Unauthorized client")
+
+    async with request.app.state.db.pool.acquire() as conn:
+        # Validate the WEB token
+        user_id, _, error = await validate_token(conn, auth.credentials)
+        if error or not user_id:
+            raise HTTPException(status_code=401, detail=error or "Invalid web token")
+
+        user_record = await conn.fetchrow("SELECT username FROM users WHERE accountid = $1", user_id)
+        if not user_record:
+            raise HTTPException(status_code=404, detail="User not found")
+        
+        # GENERATE EXTENSION TOKEN (is_website=False)
+        token, expires_at_ts = await generate_token(conn, user_id, request, is_website=False)
+
+        return {
+            "success": True,
+            "token": token,
+            "username": user_record["username"],
+            "expires_at": expires_at_ts
+        }
+
+@auth_router.post("/register")
 async def register(user_data: Dict[str, str], request: Request):
     """
     Handles user registration.
@@ -327,36 +778,36 @@ async def register(user_data: Dict[str, str], request: Request):
     Generates a verification code and sends it to the user's email.
     Stores user with 'isverified' as False.
     """
-    conn = request.state.db
+    conn = request.app.state.db
 
-    username = user_data.get('username', '').lower()
-    email = user_data.get('email')
-    password = user_data.get('password')
+    username = re.sub(r"[^-a-z0-9_]", "", user_data.get("username", "").lower())
+    email = user_data.get("email")
+    password = user_data.get("password")
 
     if not all([username, email, password]):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username, email, and password are required."
+            detail="Username, email, and password are required.",
         )
 
     # Check if user with this username or email already exists
     existing_users = await conn.fetch_rows(
         "SELECT username, email FROM users WHERE username = $1 OR email = $2;",
         username,
-        email
+        email,
     )
 
     if existing_users:
         for record in existing_users:
-            if record['username'] == username:
+            if record["username"] == username:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Username already exists."
+                    detail="Username already exists.",
                 )
-            if record['email'] == email:
+            if record["email"] == email:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail="Email already registered."
+                    detail="Email already registered.",
                 )
 
     # Hash password before storing
@@ -365,28 +816,32 @@ async def register(user_data: Dict[str, str], request: Request):
     try:
         # Add user to the database with isverified=False
         user_id = await conn.fetch_rows(
-            "INSERT INTO users (username, email, password_hash, isverified) VALUES ($1, $2, $3, $4) RETURNING xata_id;",
-            username, email, password_hash, False
+            "INSERT INTO users (username, email, password_hash, isverified) VALUES ($1, $2, $3, $4) RETURNING accountid;",
+            username,
+            email,
+            password_hash,
+            False,
         )
         if not user_id:
             raise Exception("Failed to get user ID after registration.")
 
         # Generate and store verification code
         verification_code = generate_verification_code_str()
-        code_stored_id = await store_verification_code(conn, email, verification_code)
+        server_code = generate_verification_code_str()
+        code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
 
-        if not code_stored_id:
+        sent_email = send_verification_email(email, verification_code)
+        if not sent_email or not code_stored_id:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Registration successful, but failed to send verification email. Please contact support."
+                detail="Registration successful, but failed to send verification email. Please contact support.",
             )
 
-        # After getting email server uncomment this
-        # Send verification email (placeholder)
-        # send_verification_email(email, verification_code)
-
-        print(f"User '{username}' registered with ID: {user_id[0]['xata_id']}. Verification email sent to {email}.")
-        return {"success": True, "message": "Registration successful! Please check your email for a verification code."}
+        print(f"User '{username}' registered with ID: {user_id[0]['accountid']}. Verification email sent to {email}.")
+        return {
+            "success": True,
+            "message": "Registration successful! Please check your email for a verification code.",
+        }
 
     except HTTPException:
         raise
@@ -394,24 +849,25 @@ async def register(user_data: Dict[str, str], request: Request):
         print(f"Error during registration: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Registration failed: {e}"
+            detail=f"Registration failed: {e}",
         )
 
-@auth_router.post('/verify_email')
+
+@auth_router.post("/verify_email")
 async def verify_email(verification_data: Dict[str, str], request: Request):
     """
     Handles email verification.
     Expects JSON with 'email' and 'code'.
     Validates the code and updates user's 'is_verified' status.
     """
-    conn = request.state.db
-    email = verification_data.get('email')
-    code = verification_data.get('code')
+    conn = request.app.state.db
+    email = verification_data.get("email")
+    code = verification_data.get("code")
 
     if not all([email, code]):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email and verification code are required."
+            detail="Email and verification code are required.",
         )
 
     try:
@@ -419,23 +875,14 @@ async def verify_email(verification_data: Dict[str, str], request: Request):
         code_record_id, validation_error = await get_verification_code_from_db(conn, email, code)
 
         if validation_error:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=validation_error
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation_error)
 
         # Find the user by email to update their verification status
-        user_record = await conn.fetch_rows(
-            "SELECT xata_id, isverified FROM users WHERE email = $1;",
-            email
-        )
+        user_record = await conn.fetch_rows("SELECT accountid, isverified FROM users WHERE email = $1;", email)
 
         if not user_record:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found."
-            )
-        
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
         if user_record[0].get("isverified"):
             # User is already verified, delete the code and inform
             await delete_verification_code(conn, code_record_id)
@@ -443,9 +890,40 @@ async def verify_email(verification_data: Dict[str, str], request: Request):
 
         # Update user's is_verified status to True
         await conn.execute(
-            "UPDATE users SET isverified = TRUE WHERE xata_id = $1;",
-            user_record[0]["xata_id"]
+            "UPDATE users SET isverified = TRUE WHERE accountid = $1;",
+            user_record[0]["accountid"],
         )
+
+        default_web_settings = [
+            {
+                "page_context": "DASHBOARD",
+                "preferences": {"site_data": True, "ships_data": True, "flight_data": True}
+            },
+            {
+                "page_context": "CORP_PAGE",
+                "preferences": {"storage_data": True, "site_data": True, "production_data": True}
+            },
+            {
+                "page_context": "COOPERATION",
+                "preferences": {"site_data": True, "storage_data": True, "production_data": True}
+            }
+        ]
+        
+        # 2. Bulk Insert Query
+        settings_query = """
+            INSERT INTO user_web_settings (user_id, page_context, preferences, updated_at)
+            VALUES ($1, $2, $3::jsonb, NOW())
+            ON CONFLICT DO NOTHING
+        """
+        
+        # 3. Execute
+        for setting in default_web_settings:
+            await conn.execute(
+                settings_query, 
+                user_record[0]["accountid"],
+                setting["page_context"], 
+                json.dumps(setting["preferences"])
+            )
 
         # Delete the used verification code
         await delete_verification_code(conn, code_record_id)
@@ -459,83 +937,359 @@ async def verify_email(verification_data: Dict[str, str], request: Request):
         print(f"Error during email verification: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Email verification failed: {e}"
+            detail=f"Email verification failed: {e}",
         )
 
 
-@auth_router.post('/login')
-async def login(login_data: Dict[str, str], request: Request):
+@auth_router.post("/forget_password")
+async def forget_password(forgot_data: Dict[str, str], request: Request):
     """
-    Handles user login requests.
+    Handles password reset requests.
+    Generates a verification code and sends it to the user's email.
     """
-    conn = request.state.db
-    username = login_data.get('username', '').lower()
-    password = login_data.get('password')
-    isWebsite = login_data.get('isWebsite')
-    
-    if not username or not password:
+    conn = request.app.state.db
+    email = forgot_data.get("email")
+
+    if not email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required.")
+
+    # Check if a user with this email exists
+    user = await conn.fetch_rows("SELECT accountid FROM users WHERE email = $1;", email)
+    if not user:
+        return {
+            "success": True,
+            "message": "If this email is registered, a verification code has been sent.",
+        }
+
+    try:
+        # Generate and store a new verification code
+        verification_code = generate_verification_code_str()
+        server_code = generate_verification_code_str()
+        code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
+
+        if not code_stored_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store verification code.",
+            )
+
+        send_email = send_password_reset_email(email, verification_code)
+        if not send_email:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification email. Please contact support.",
+            )
+
+        # Send the email with the code (placeholder, needs real server)
+
+        print(f"Password reset code '{verification_code}' sent to {email}.")
+        return {
+            "success": True,
+            "message": "A verification code has been sent to your email.",
+        }
+
+    except Exception as e:
+        print(f"Error during forgot password process: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred. Please try again later.",
+        )
+
+
+@auth_router.post("/code_verification")
+async def verify_forgot_password_code(verification_data: Dict[str, str], request: Request):
+    """
+    Verifies the code sent for the password reset.
+    """
+    conn = request.app.state.db
+    code = verification_data.get("code")
+
+    if not code:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username and password are required."
+            detail="Verification code is required.",
         )
 
     try:
-        query = ""
-        if isWebsite:
-            query = f"""SELECT us.xata_id, us.username, us.password_hash, us.isverified, ud.displayname, cd.companyname, cd.companycode
-                    FROM users as us
-                    INNER JOIN users_data as ud ON ud.userid = us.userdataid
-                    INNER JOIN company_data as cd ON cd.userdataid = ud.userid
-                    WHERE username = $1;"""
-        else:
-            query = f"SELECT xata_id, username, password_hash, isverified FROM users WHERE username = $1;"
-        users = await conn.fetch_rows(query, username)
-        
-        # Check if a user was found and if the password is correct
-        if users and check_password_hash(users[0]['password_hash'], password):
-            user = users[0]
-            if not user['isverified']:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Please verify your email address first."
-                )
+        verification_record = await conn.fetch_rows("SELECT * FROM user_verification_codes WHERE code = $1;", code)
 
-            token, expires_at = await generate_token(conn ,str(user['xata_id']))
-            if not token:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Failed to generate token"
-                )
-            if isWebsite == "true":
-                return {
-                    "success": True,
-                    "message": "Login successful",
-                    "token": token,
-                    "expires_at": expires_at,
-                    "username": user['username'],
-                    "displayName": user['displayname'],
-                    "companyName": user['companyname'],
-                    "companyCode": user['companycode']
-                }
-            else:
-                return {
-                    "success": True,
-                    "message": "Login successful",
-                    "token": token,
-                    "expires_at": expires_at,
-                    "username": user['username']
-                }
-        else:
+        if not verification_record:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid username or password"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code.",
             )
-            
+
+        # Check if the code has expired
+        if datetime.now() > verification_record[0]["expiresat"]:
+            await delete_verification_code(conn, str(verification_record[0]["id"]))
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code has expired.",
+            )
+
+        return {"success": True, "message": "Code verified successfully."}
+
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during login: {e}")
+        print(f"Error during code verification: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred during login."
+            detail="An unexpected error occurred during code verification.",
+        )
+
+
+@auth_router.post("/forget_password_set_new_password")
+async def set_new_password(password_data: Dict[str, str], request: Request):
+    """
+    Sets a new password after a successful verification code check.
+    """
+    conn = request.app.state.db
+    code = password_data.get("code")
+    new_password = password_data.get("newPassword")
+
+    if not code or not new_password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification code and new password are required.",
+        )
+
+    try:
+        # Validate the code one more time and get the email associated with it
+        verification_record = await conn.fetch_rows(
+            "SELECT id, email FROM user_verification_codes WHERE code = $1;", code
+        )
+
+        if not verification_record:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code.",
+            )
+
+        email = verification_record[0]["email"]
+
+        # Hash the new password
+        password_hash = generate_password_hash(new_password)
+
+        # Update the user's password
+        await conn.execute(
+            "UPDATE users SET password_hash = $1 WHERE email = $2;",
+            password_hash,
+            email,
+        )
+
+        # Delete the used verification code
+        await delete_verification_code(conn, str(verification_record[0]["id"]))
+
+        return {"success": True, "message": "Password updated successfully."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error setting new password: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred during password change.",
+        )
+
+
+@auth_router.post("/login")
+async def login(login_data: Dict[str, str], request: Request):
+    raw_identifier = login_data.get("username", "")
+    password = login_data.get("password")
+    is_web_bool = str(login_data.get("isWebsite")).lower() == "true"
+
+    # 1. Sanitize Username/Email
+    if "@" in raw_identifier:
+        username = raw_identifier.lower()
+    else:
+        username = re.sub(r"[^-a-z0-9_]", "", raw_identifier.lower())
+
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="Username and password are required.")
+
+    try:
+        async with request.app.state.db.pool.acquire() as conn:
+            # 2. Select the correct Query based on source
+            if is_web_bool:
+                query = """
+                    SELECT us.accountid, us.username, us.password_hash, us.isverified, 
+                           COALESCE(ud.displayname, us.displayname) AS displayname,
+                           cd.companyname, cd.companycode, c.name as corpname, us.is_synchronized
+                    FROM users AS us
+                    LEFT JOIN users_data AS ud ON ud.userid = us.userdataid
+                    LEFT JOIN company_data AS cd ON cd.userdataid = ud.userid
+                    LEFT JOIN corporation_shareholders cs ON cs.companyid = ud.companyid
+                    LEFT JOIN corporations c ON c.id = cs.corporationid
+                    WHERE us.username = $1 OR us.email = $1;
+                """
+            else:
+                query = "SELECT accountid, username, password_hash, isverified FROM users WHERE username = $1 OR email = $1;"
+    
+            users = await conn.fetch(query, username)
+    
+            # 3. Validate Password
+            if users and check_password_hash(users[0]["password_hash"], password):
+                user = users[0]
+                if not user["isverified"]:
+                    raise HTTPException(status_code=403, detail="Please verify your email address first.")
+    
+                # 4. Generate Token
+                token, expires_at = await generate_token(conn, str(user["accountid"]), request, is_website=is_web_bool)
+                
+                if not token:
+                    raise HTTPException(status_code=500, detail="Failed to generate token")
+    
+                # 5. Build Response
+                response = {
+                    "success": True,
+                    "message": "Login successful",
+                    "token": token,
+                    "expires_at": expires_at,
+                    "username": user["username"],
+                }
+    
+                if is_web_bool:
+                    response.update({
+                        "displayName": user["displayname"],
+                        "companyName": user.get("companyname"),
+                        "companyCode": user.get("companycode"),
+                        "currentUserId": user["accountid"],
+                        "corpName": user.get("corpname"),
+                        "isSynchronized": user.get("is_synchronized"),
+                    })
+                
+                return response
+    
+            else:
+                raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during login: {e}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+
+
+@auth_router.put("/change-password-final")
+async def change_password_final(
+    password_data: Dict[str, str],
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Handles password change final steps.
+    """
+    db = request.app.state.db
+
+    current_password = password_data.get("currentPassword")
+    new_password = password_data.get("newPassword")
+    verification_code = password_data.get("verificationCode")
+
+    if not current_password or not new_password or not verification_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password, new password, and verification code are required.",
+        )
+
+    try:
+        async with db.pool.acquire() as conn:
+            # Check if the verification code is correct AND belongs to the user
+            verification_record = await conn.fetchrow(
+                "SELECT * FROM user_verification_codes uvc INNER JOIN users u ON u.email = uvc.email WHERE uvc.code = $1 AND u.accountid = $2;",
+                verification_code,
+                user_id,
+            )
+
+            if not verification_record:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid verification code.",
+                )
+
+            if datetime.now() > verification_record["expiresat"]:
+                await delete_verification_code(db, str(verification_record["id"]))
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Verification code has expired.",
+                )
+
+            password_hash = generate_password_hash(new_password)
+
+            await conn.execute(
+                "UPDATE users SET password_hash = $1 WHERE accountid = $2;",
+                password_hash,
+                user_id,
+            )
+
+            # Delete code after successful use
+            await conn.execute(
+                "DELETE FROM user_verification_codes WHERE id = $1",
+                verification_record["id"],
+            )
+
+            return {"success": True, "message": "Password changed successfully."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error during password change: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal Server Error",
+        )
+
+
+@auth_router.post("/change-password")
+async def change_password(request: Request, user_id: str = Depends(get_current_user_id)):
+    """
+    Handles password change requests.
+    """
+    conn = await request.app.state.db.pool.acquire()
+
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required.")
+
+    try:
+        # Check if a user with this email exists
+        email = await conn.fetch("SELECT email FROM users WHERE accountid = $1;", user_id)
+        if not email:
+            return {
+                "success": True,
+                "message": "If this email is registered, a verification code has been sent.",
+            }
+
+        email = email[0]["email"]
+
+        # Generate and store a new verification code
+        verification_code = generate_verification_code_str()
+        server_code = generate_verification_code_str()
+        code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
+
+        if not code_stored_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store verification code.",
+            )
+
+        send_email = send_password_reset_email(email, verification_code)
+        if not send_email:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification email. Please contact support.",
+            )
+
+        # Send the email with the code
+
+        print(f"Password change code '{verification_code}' sent to {email}.")
+        return {
+            "success": True,
+            "message": "A verification code has been sent to your email.",
+        }
+
+    except Exception as e:
+        print(f"Error during forgot password process: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred. Please try again later.",
         )

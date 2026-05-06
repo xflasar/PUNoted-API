@@ -1,13 +1,14 @@
 # db.py
-import os
-import asyncpg
-import logging
 import asyncio
+import logging
 from typing import Any, List, Optional
+
+import asyncpg
 
 from config import XATA_DATABASE_URL
 
 logger = logging.getLogger(__name__)
+
 
 class Database:
     def __init__(self):
@@ -35,16 +36,22 @@ class Database:
         """Sets a statement timeout on the connection."""
         await con.execute("SET statement_timeout = '15s'")
 
-    async def create_pool(self, loop):
+    async def create_pool(self):
         self.poolInit = True
-        dsn = (XATA_DATABASE_URL)
-        self.pool = await asyncpg.create_pool(dsn=dsn, reset=self.no_op_reset, max_size=12, loop=loop, command_timeout=60, timeout=15, init=self.init_connection)
-        logger.info("Database pool created successfully.")
+        dsn = XATA_DATABASE_URL
+        self.pool = await asyncpg.create_pool(
+            dsn=dsn,
+            reset=self.no_op_reset,
+            command_timeout=60,
+            timeout=30,
+            init=self.init_connection,
+        )
+        logger.debug("Database pool created successfully.")
 
     async def close_pool(self):
         if self.pool:
             await self.pool.close()
-            logger.info("Database pool closed.")
+            logger.debug("Database pool closed.")
             self.pool = None
 
     async def fetch_rows(self, query: str, *params: Any, timeout: float = None) -> Optional[List[asyncpg.Record]]:
@@ -95,7 +102,7 @@ class Database:
         else:
             logger.error("Database not initialized.")
             return None
-        
+
     async def executemany(self, query: str, args: list[list[Any]], timeout: float = None) -> None:
         timeout = self.timeout
         """
@@ -110,7 +117,7 @@ class Database:
                     raise
         else:
             raise ConnectionError("Database pool not initialized.")
-    
+
     # Not really needed
     async def transaction(self):
         """

@@ -1,0 +1,20 @@
+[tool.ruff]
+# Target Python 3.11 (matches your container)
+target-version = "py311"
+line-length = 120  # 88 is standard but often too short for modern screens
+
+[tool.ruff.lint]
+# Enable Pyflakes (`F`) and a subset of the E/W codes (`E`, `W`) by default.
+# Unlike Flake8, Ruff doesn't enable pycodestyle warnings (`W`) or
+# McCabe complexity (`C901`) by default.
+select = ["E", "F", "W", "I", "B"]
+
+ignore = [
+    "E501",  # Ignore line length violations (let the formatter handle it)
+    "F403",  # Ignore 'from module import *' (bad practice, but common in old code)
+    "F405",  # Ignore undefined names from star imports
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore unused imports in __init__.py files (standard practice)
+"__init__.py" = ["F401"]
