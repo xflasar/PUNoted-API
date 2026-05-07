@@ -24,9 +24,9 @@ COPY . .
 EXPOSE 8000
 
 # Run Gunicorn
-# -w 4: Number of workers (adjust based on CPU)
+# -w: Number of workers (adjust based on CPU)
 # -k uvicorn.workers.UvicornWorker: Use Uvicorn class
-# -b 0.0.0.0:8000: Bind to all interfaces inside container
+# -b: Address to bind to
 CMD ["gunicorn", "main:app", \
      "-w", "6", \
      "-k", "uvicorn.workers.UvicornWorker", \
