@@ -1,4 +1,3 @@
-# auth.py
 import json
 import logging
 import random
@@ -9,8 +8,6 @@ import string
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import time
-from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import jwt
@@ -26,6 +23,7 @@ from fastapi import (
 )
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordBearer
 from pydantic import BaseModel
+from starlette.websockets import WebSocketState
 from werkzeug.security import check_password_hash, generate_password_hash
 
 try:
@@ -173,8 +171,6 @@ def send_password_reset_email(email: str, code: str):
 # ==============================================================================
 
 
-from datetime import datetime, timedelta, timezone
-
 async def generate_token(conn, user_id: str, request: Request, is_website: bool = False) -> tuple[str, int]:
     # 1. Setup metadata
     token_type = "access" if is_website else "extension_access"
@@ -240,63 +236,57 @@ async def validate_token(conn, token: str) -> tuple[Optional[str], Optional[int]
     try:
         # Decode the JWT with a leeway to account for clock skew
         decoded_payload = jwt.decode(token, config.JWT_SECRET_KEY, algorithms=["HS256"], leeway=5)
-        user_id_from_jwt = decoded_payload.get("user_id")
-        token_type = decoded_payload.get("type")
-
-        # Check if it's NOT one of the valid types
-        if not user_id_from_jwt or token_type not in ["access", "extension_access"]:
-            return (
-                None,
-                None,
-                "Invalid token: User ID or token type missing/incorrect from payload.",
-            )
-
-        # Check if the token exists in the database
-        db_token_record = await conn.fetch(
-            """
-            SELECT id, userid, expiresat
-            FROM user_tokens
-            WHERE userid = $1;
-            """,
-            user_id_from_jwt,
-        )
-
-        if not db_token_record:
-            return (
-                None,
-                None,
-                "Access token not found in database (possibly revoked or never issued).",
-            )
-
-        if db_token_record[0]["userid"] != user_id_from_jwt:
-            return (
-                None,
-                None,
-                "Token mismatch: User ID in token does not match database record.",
-            )
-
-        db_expires_at_dt = db_token_record[0]["expiresat"]
-
-        # Check if the token has expired
-        if datetime.now() > db_expires_at_dt:
-            # Token expired, delete it from DB
-            await conn.execute("DELETE FROM user_tokens WHERE id = $1;", db_token_record[0]["id"])
-            return None, None, "Access token expired (database check)."
-
-        return user_id_from_jwt, int(db_expires_at_dt.timestamp()), None
-
     except ExpiredSignatureError:
         logger.warning("Access token expired")
         return None, None, "Access token expired"
     except InvalidTokenError as e:
         logger.warning(f"Invalid access token: {e}")
         return None, None, f"Invalid access token: {e}"
-    except Exception as e:
-        logger.error(
-            f"An unexpected error occurred during access token validation: {e}",
-            exc_info=True,
+
+    user_id_from_jwt = decoded_payload.get("user_id")
+    token_type = decoded_payload.get("type")
+
+    # Check if it's NOT one of the valid types
+    if not user_id_from_jwt or token_type not in ["access", "extension_access"]:
+        return (
+            None,
+            None,
+            "Invalid token: User ID or token type missing/incorrect from payload.",
         )
-        return None, None, f"Server error during access token validation: {e}"
+
+    # Check if the token exists in the database
+    db_token_record = await conn.fetch(
+        """
+        SELECT id, userid, expiresat
+        FROM user_tokens
+        WHERE userid = $1;
+        """,
+        user_id_from_jwt,
+    )
+
+    if not db_token_record:
+        return (
+            None,
+            None,
+            "Access token not found in database (possibly revoked or never issued).",
+        )
+
+    if db_token_record[0]["userid"] != user_id_from_jwt:
+        return (
+            None,
+            None,
+            "Token mismatch: User ID in token does not match database record.",
+        )
+
+    db_expires_at_dt = db_token_record[0]["expiresat"]
+
+    # Check if the token has expired
+    if datetime.now() > db_expires_at_dt:
+        # Token expired, delete it from DB
+        await conn.execute("DELETE FROM user_tokens WHERE id = $1;", db_token_record[0]["id"])
+        return None, None, "Access token expired (database check)."
+
+    return user_id_from_jwt, int(db_expires_at_dt.timestamp()), None
 
 
 # ==============================================================================
@@ -488,18 +478,16 @@ async def get_current_user_id_ws(websocket: WebSocket) -> str:
     except Exception as e:
         print(f"WS Auth Exception: {e}")
         # Only close if not already closed
-        from starlette.websockets import WebSocketState
-
         if websocket.client_state != WebSocketState.DISCONNECTED:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        raise e
-    
+        raise
+
 
 
 
 class RequireAuth:
     def __init__(
-        self, 
+        self,
         required_permissions: Optional[List[str]] = None,
         is_single_user_endpoint: bool = False
     ):
@@ -512,14 +500,13 @@ class RequireAuth:
         token_header: Optional[str] = Header(None, alias="X-Data-Token"),
         token_query: Optional[str] = Query(None, alias="token"),
     ) -> str:
-        
         raw_token = token_header or token_query
         if not raw_token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required.",
             )
-        
+
         final_token = raw_token.replace("Bearer ", "").strip()
         pool = request.app.state.db.pool
 
@@ -550,22 +537,22 @@ class RequireAuth:
 
                     if not member or member["status"] != 'ACCEPTED':
                         raise HTTPException(status_code=403, detail="Invalid Group Token")
-                    
+
                     group_id = member["group_id"]
                     requester_username = member["username"]
                     requester_id = str(member["accountid"])
                     can_read_data = member["can_read_data"]
-                    
+
                     req_perm = self.required_permissions[0] if self.required_permissions else None
 
                     # 2. Determine Scope
                     if requested_users:
                         sql_targets = """
-                            SELECT u.username 
+                            SELECT u.username
                             FROM data_group_members gm
                             JOIN users u ON u.accountid = gm.user_id
                             LEFT JOIN users_data ud ON ud.userid = u.userdataid
-                            WHERE gm.group_id = $1 
+                            WHERE gm.group_id = $1
                             AND gm.status = 'ACCEPTED'
                             AND (u.username = ANY($2::text[]) OR ud.displayname = ANY($2::text[]))
                             AND ($3::text IS NULL OR gm.granted_permissions @> jsonb_build_array($3::text) OR gm.granted_permissions @> '["all"]')
@@ -580,10 +567,10 @@ class RequireAuth:
                             valid_usernames = [requester_username]
                         else:
                             sql_targets = """
-                                SELECT u.username 
+                                SELECT u.username
                                 FROM data_group_members gm
                                 JOIN users u ON u.accountid = gm.user_id
-                                WHERE gm.group_id = $1 
+                                WHERE gm.group_id = $1
                                 AND gm.status = 'ACCEPTED'
                                 AND ($2::text IS NULL OR gm.granted_permissions @> jsonb_build_array($2::text) OR gm.granted_permissions @> '["all"]')
                                 AND ($3::boolean IS TRUE OR gm.user_id = $4)
@@ -603,8 +590,8 @@ class RequireAuth:
                 # ==================================================================
                 else:
                     query = """
-                        SELECT user_id, permissions, allow_group_access 
-                        FROM user_api_tokens 
+                        SELECT user_id, permissions, allow_group_access
+                        FROM user_api_tokens
                         WHERE token_hash = $1 AND group_id IS NULL
                     """
                     token_data = await conn.fetchrow(query, final_token)
@@ -650,7 +637,7 @@ class RequireAuth:
                             """
                             valid_rows = await conn.fetch(sql_targets, user_id, req_perm, requested_users)
                             valid_usernames = [r["username"] for r in valid_rows]
-                        
+
                         else:
                             # Branch behavior based on the endpoint type for master personal tokens
                             if self.is_single_user_endpoint:
@@ -699,9 +686,6 @@ class RequireAuth:
 
         except HTTPException as http_exc:
             raise http_exc
-        except Exception as e:
-            logger.error(f"Auth error: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail="Internal authentication error")
 
 # --- Optional Auth ---
 class OptionalAuth(RequireAuth):
@@ -715,13 +699,12 @@ class OptionalAuth(RequireAuth):
         token_header: Optional[str] = Header(None, alias="X-Data-Token"),
         token_query: Optional[str] = Query(None, alias="token"),
     ) -> Optional[str]:
-        
         raw_token = token_header or token_query
-        
+
         # If no token, allow Public Access
         if not raw_token:
             return None
-            
+
         # If token exists, validate it strictly
         return await super().__call__(request, token_header, token_query)
 
@@ -759,7 +742,7 @@ async def extension_sync(
         user_record = await conn.fetchrow("SELECT username FROM users WHERE accountid = $1", user_id)
         if not user_record:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # GENERATE EXTENSION TOKEN (is_website=False)
         token, expires_at_ts = await generate_token(conn, user_id, request, is_website=False)
 
@@ -797,60 +780,48 @@ async def register(user_data: Dict[str, str], request: Request):
         email,
     )
 
-    if existing_users:
-        for record in existing_users:
-            if record["username"] == username:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Username already exists.",
-                )
-            if record["email"] == email:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Email already registered.",
-                )
-
-    # Hash password before storing
-    password_hash = generate_password_hash(password)
-
-    try:
-        # Add user to the database with isverified=False
-        user_id = await conn.fetch_rows(
-            "INSERT INTO users (username, email, password_hash, isverified) VALUES ($1, $2, $3, $4) RETURNING accountid;",
-            username,
-            email,
-            password_hash,
-            False,
-        )
-        if not user_id:
-            raise Exception("Failed to get user ID after registration.")
-
-        # Generate and store verification code
-        verification_code = generate_verification_code_str()
-        server_code = generate_verification_code_str()
-        code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
-
-        sent_email = send_verification_email(email, verification_code)
-        if not sent_email or not code_stored_id:
+    for record in existing_users:
+        if record["username"] == username:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Registration successful, but failed to send verification email. Please contact support.",
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Username already exists.",
+            )
+        if record["email"] == email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Email already registered.",
             )
 
-        print(f"User '{username}' registered with ID: {user_id[0]['accountid']}. Verification email sent to {email}.")
-        return {
-            "success": True,
-            "message": "Registration successful! Please check your email for a verification code.",
-        }
+    password_hash = generate_password_hash(password)
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error during registration: {e}")
+    # Add user to the database with isverified=False
+    user_id = await conn.fetch_rows(
+        "INSERT INTO users (username, email, password_hash, isverified) VALUES ($1, $2, $3, $4) RETURNING accountid;",
+        username,
+        email,
+        password_hash,
+        False,
+    )
+    if not user_id:
+        raise Exception("Failed to get user ID after registration.")
+
+    # Generate and store verification code
+    verification_code = generate_verification_code_str()
+    server_code = generate_verification_code_str()
+    code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
+
+    sent_email = send_verification_email(email, verification_code)
+    if not sent_email or not code_stored_id:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Registration failed: {e}",
+            detail="Registration successful, but failed to send verification email. Please contact support.",
         )
+
+    print(f"User '{username}' registered with ID: {user_id[0]['accountid']}. Verification email sent to {email}.")
+    return {
+        "success": True,
+        "message": "Registration successful! Please check your email for a verification code.",
+    }
 
 
 @auth_router.post("/verify_email")
@@ -870,75 +841,65 @@ async def verify_email(verification_data: Dict[str, str], request: Request):
             detail="Email and verification code are required.",
         )
 
-    try:
-        # Validate the code against the database
-        code_record_id, validation_error = await get_verification_code_from_db(conn, email, code)
+    # Validate the code against the database
+    code_record_id, validation_error = await get_verification_code_from_db(conn, email, code)
 
-        if validation_error:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation_error)
+    if validation_error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=validation_error)
 
-        # Find the user by email to update their verification status
-        user_record = await conn.fetch_rows("SELECT accountid, isverified FROM users WHERE email = $1;", email)
+    # Find the user by email to update their verification status
+    user_record = await conn.fetch_rows("SELECT accountid, isverified FROM users WHERE email = $1;", email)
 
-        if not user_record:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    if not user_record:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-        if user_record[0].get("isverified"):
-            # User is already verified, delete the code and inform
-            await delete_verification_code(conn, code_record_id)
-            return {"success": True, "message": "Email already verified."}
-
-        # Update user's is_verified status to True
-        await conn.execute(
-            "UPDATE users SET isverified = TRUE WHERE accountid = $1;",
-            user_record[0]["accountid"],
-        )
-
-        default_web_settings = [
-            {
-                "page_context": "DASHBOARD",
-                "preferences": {"site_data": True, "ships_data": True, "flight_data": True}
-            },
-            {
-                "page_context": "CORP_PAGE",
-                "preferences": {"storage_data": True, "site_data": True, "production_data": True}
-            },
-            {
-                "page_context": "COOPERATION",
-                "preferences": {"site_data": True, "storage_data": True, "production_data": True}
-            }
-        ]
-        
-        # 2. Bulk Insert Query
-        settings_query = """
-            INSERT INTO user_web_settings (user_id, page_context, preferences, updated_at)
-            VALUES ($1, $2, $3::jsonb, NOW())
-            ON CONFLICT DO NOTHING
-        """
-        
-        # 3. Execute
-        for setting in default_web_settings:
-            await conn.execute(
-                settings_query, 
-                user_record[0]["accountid"],
-                setting["page_context"], 
-                json.dumps(setting["preferences"])
-            )
-
-        # Delete the used verification code
+    if user_record[0].get("isverified"):
+        # User is already verified, delete the code and inform
         await delete_verification_code(conn, code_record_id)
+        return {"success": True, "message": "Email already verified."}
 
-        print(f"Email '{email}' successfully verified.")
-        return {"success": True, "message": "Email successfully verified!"}
+    # Update user's is_verified status to True
+    await conn.execute(
+        "UPDATE users SET isverified = TRUE WHERE accountid = $1;",
+        user_record[0]["accountid"],
+    )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error during email verification: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Email verification failed: {e}",
+    default_web_settings = [
+        {
+            "page_context": "DASHBOARD",
+            "preferences": {"site_data": True, "ships_data": True, "flight_data": True}
+        },
+        {
+            "page_context": "CORP_PAGE",
+            "preferences": {"storage_data": True, "site_data": True, "production_data": True}
+        },
+        {
+            "page_context": "COOPERATION",
+            "preferences": {"site_data": True, "storage_data": True, "production_data": True}
+        }
+    ]
+
+    # 2. Bulk Insert Query
+    settings_query = """
+        INSERT INTO user_web_settings (user_id, page_context, preferences, updated_at)
+        VALUES ($1, $2, $3::jsonb, NOW())
+        ON CONFLICT DO NOTHING
+    """
+
+    # 3. Execute
+    for setting in default_web_settings:
+        await conn.execute(
+            settings_query, 
+            user_record[0]["accountid"],
+            setting["page_context"], 
+            json.dumps(setting["preferences"])
         )
+
+    # Delete the used verification code
+    await delete_verification_code(conn, code_record_id)
+
+    print(f"Email '{email}' successfully verified.")
+    return {"success": True, "message": "Email successfully verified!"}
 
 
 @auth_router.post("/forget_password")
@@ -961,39 +922,31 @@ async def forget_password(forgot_data: Dict[str, str], request: Request):
             "message": "If this email is registered, a verification code has been sent.",
         }
 
-    try:
-        # Generate and store a new verification code
-        verification_code = generate_verification_code_str()
-        server_code = generate_verification_code_str()
-        code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
+    # Generate and store a new verification code
+    verification_code = generate_verification_code_str()
+    server_code = generate_verification_code_str()
+    code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
 
-        if not code_stored_id:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to store verification code.",
-            )
-
-        send_email = send_password_reset_email(email, verification_code)
-        if not send_email:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send verification email. Please contact support.",
-            )
-
-        # Send the email with the code (placeholder, needs real server)
-
-        print(f"Password reset code '{verification_code}' sent to {email}.")
-        return {
-            "success": True,
-            "message": "A verification code has been sent to your email.",
-        }
-
-    except Exception as e:
-        print(f"Error during forgot password process: {e}")
+    if not code_stored_id:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred. Please try again later.",
+            detail="Failed to store verification code.",
         )
+
+    send_email = send_password_reset_email(email, verification_code)
+    if not send_email:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send verification email. Please contact support.",
+        )
+
+    # Send the email with the code (placeholder, needs real server)
+
+    print(f"Password reset code '{verification_code}' sent to {email}.")
+    return {
+        "success": True,
+        "message": "A verification code has been sent to your email.",
+    }
 
 
 @auth_router.post("/code_verification")
@@ -1010,33 +963,23 @@ async def verify_forgot_password_code(verification_data: Dict[str, str], request
             detail="Verification code is required.",
         )
 
-    try:
-        verification_record = await conn.fetch_rows("SELECT * FROM user_verification_codes WHERE code = $1;", code)
+    verification_record = await conn.fetch_rows("SELECT * FROM user_verification_codes WHERE code = $1;", code)
 
-        if not verification_record:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid verification code.",
-            )
-
-        # Check if the code has expired
-        if datetime.now() > verification_record[0]["expiresat"]:
-            await delete_verification_code(conn, str(verification_record[0]["id"]))
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Verification code has expired.",
-            )
-
-        return {"success": True, "message": "Code verified successfully."}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error during code verification: {e}")
+    if not verification_record:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred during code verification.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid verification code.",
         )
+
+    # Check if the code has expired
+    if datetime.now() > verification_record[0]["expiresat"]:
+        await delete_verification_code(conn, str(verification_record[0]["id"]))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Verification code has expired.",
+        )
+
+    return {"success": True, "message": "Code verified successfully."}
 
 
 @auth_router.post("/forget_password_set_new_password")
@@ -1054,43 +997,29 @@ async def set_new_password(password_data: Dict[str, str], request: Request):
             detail="Verification code and new password are required.",
         )
 
-    try:
-        # Validate the code one more time and get the email associated with it
-        verification_record = await conn.fetch_rows(
-            "SELECT id, email FROM user_verification_codes WHERE code = $1;", code
-        )
+    # Validate the code one more time and get the email associated with it
+    verification_record = await conn.fetch_rows(
+        "SELECT id, email FROM user_verification_codes WHERE code = $1;", code
+    )
 
-        if not verification_record:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid verification code.",
-            )
-
-        email = verification_record[0]["email"]
-
-        # Hash the new password
-        password_hash = generate_password_hash(new_password)
-
-        # Update the user's password
-        await conn.execute(
-            "UPDATE users SET password_hash = $1 WHERE email = $2;",
-            password_hash,
-            email,
-        )
-
-        # Delete the used verification code
-        await delete_verification_code(conn, str(verification_record[0]["id"]))
-
-        return {"success": True, "message": "Password updated successfully."}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error setting new password: {e}")
+    if not verification_record:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred during password change.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid verification code.",
         )
+
+    email = verification_record[0]["email"]
+    password_hash = generate_password_hash(new_password)
+    await conn.execute(
+        "UPDATE users SET password_hash = $1 WHERE email = $2;",
+        password_hash,
+        email,
+    )
+
+    # Delete the used verification code
+    await delete_verification_code(conn, str(verification_record[0]["id"]))
+
+    return {"success": True, "message": "Password updated successfully."}
 
 
 @auth_router.post("/login")
@@ -1108,67 +1037,60 @@ async def login(login_data: Dict[str, str], request: Request):
     if not username or not password:
         raise HTTPException(status_code=400, detail="Username and password are required.")
 
-    try:
-        async with request.app.state.db.pool.acquire() as conn:
-            # 2. Select the correct Query based on source
-            if is_web_bool:
-                query = """
-                    SELECT us.accountid, us.username, us.password_hash, us.isverified, 
-                           COALESCE(ud.displayname, us.displayname) AS displayname,
-                           cd.companyname, cd.companycode, c.name as corpname, us.is_synchronized
-                    FROM users AS us
-                    LEFT JOIN users_data AS ud ON ud.userid = us.userdataid
-                    LEFT JOIN company_data AS cd ON cd.userdataid = ud.userid
-                    LEFT JOIN corporation_shareholders cs ON cs.companyid = ud.companyid
-                    LEFT JOIN corporations c ON c.id = cs.corporationid
-                    WHERE us.username = $1 OR us.email = $1;
-                """
-            else:
-                query = "SELECT accountid, username, password_hash, isverified FROM users WHERE username = $1 OR email = $1;"
-    
-            users = await conn.fetch(query, username)
-    
-            # 3. Validate Password
-            if users and check_password_hash(users[0]["password_hash"], password):
-                user = users[0]
-                if not user["isverified"]:
-                    raise HTTPException(status_code=403, detail="Please verify your email address first.")
-    
-                # 4. Generate Token
-                token, expires_at = await generate_token(conn, str(user["accountid"]), request, is_website=is_web_bool)
-                
-                if not token:
-                    raise HTTPException(status_code=500, detail="Failed to generate token")
-    
-                # 5. Build Response
-                response = {
-                    "success": True,
-                    "message": "Login successful",
-                    "token": token,
-                    "expires_at": expires_at,
-                    "username": user["username"],
-                }
-    
-                if is_web_bool:
-                    response.update({
-                        "displayName": user["displayname"],
-                        "companyName": user.get("companyname"),
-                        "companyCode": user.get("companycode"),
-                        "currentUserId": user["accountid"],
-                        "corpName": user.get("corpname"),
-                        "isSynchronized": user.get("is_synchronized"),
-                    })
-                
-                return response
-    
-            else:
-                raise HTTPException(status_code=401, detail="Invalid username or password")
+    async with request.app.state.db.pool.acquire() as conn:
+        # 2. Select the correct Query based on source
+        if is_web_bool:
+            query = """
+                SELECT us.accountid, us.username, us.password_hash, us.isverified, 
+                        COALESCE(ud.displayname, us.displayname) AS displayname,
+                        cd.companyname, cd.companycode, c.name as corpname, us.is_synchronized
+                FROM users AS us
+                LEFT JOIN users_data AS ud ON ud.userid = us.userdataid
+                LEFT JOIN company_data AS cd ON cd.userdataid = ud.userid
+                LEFT JOIN corporation_shareholders cs ON cs.companyid = ud.companyid
+                LEFT JOIN corporations c ON c.id = cs.corporationid
+                WHERE us.username = $1 OR us.email = $1;
+            """
+        else:
+            query = "SELECT accountid, username, password_hash, isverified FROM users WHERE username = $1 OR email = $1;"
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error during login: {e}")
-        raise HTTPException(status_code=500, detail="An unexpected error occurred.")
+        users = await conn.fetch(query, username)
+
+        # 3. Validate Password
+        if users and check_password_hash(users[0]["password_hash"], password):
+            user = users[0]
+            if not user["isverified"]:
+                raise HTTPException(status_code=403, detail="Please verify your email address first.")
+
+            # 4. Generate Token
+            token, expires_at = await generate_token(conn, str(user["accountid"]), request, is_website=is_web_bool)
+
+            if not token:
+                raise HTTPException(status_code=500, detail="Failed to generate token")
+
+            # 5. Build Response
+            response = {
+                "success": True,
+                "message": "Login successful",
+                "token": token,
+                "expires_at": expires_at,
+                "username": user["username"],
+            }
+
+            if is_web_bool:
+                response.update({
+                    "displayName": user["displayname"],
+                    "companyName": user.get("companyname"),
+                    "companyCode": user.get("companycode"),
+                    "currentUserId": user["accountid"],
+                    "corpName": user.get("corpname"),
+                    "isSynchronized": user.get("is_synchronized"),
+                })
+
+            return response
+
+        else:
+            raise HTTPException(status_code=403, detail="Invalid username or password")
 
 
 @auth_router.put("/change-password-final")
@@ -1192,52 +1114,42 @@ async def change_password_final(
             detail="Current password, new password, and verification code are required.",
         )
 
-    try:
-        async with db.pool.acquire() as conn:
-            # Check if the verification code is correct AND belongs to the user
-            verification_record = await conn.fetchrow(
-                "SELECT * FROM user_verification_codes uvc INNER JOIN users u ON u.email = uvc.email WHERE uvc.code = $1 AND u.accountid = $2;",
-                verification_code,
-                user_id,
-            )
-
-            if not verification_record:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid verification code.",
-                )
-
-            if datetime.now() > verification_record["expiresat"]:
-                await delete_verification_code(db, str(verification_record["id"]))
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Verification code has expired.",
-                )
-
-            password_hash = generate_password_hash(new_password)
-
-            await conn.execute(
-                "UPDATE users SET password_hash = $1 WHERE accountid = $2;",
-                password_hash,
-                user_id,
-            )
-
-            # Delete code after successful use
-            await conn.execute(
-                "DELETE FROM user_verification_codes WHERE id = $1",
-                verification_record["id"],
-            )
-
-            return {"success": True, "message": "Password changed successfully."}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"Error during password change: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal Server Error",
+    async with db.pool.acquire() as conn:
+        # Check if the verification code is correct AND belongs to the user
+        verification_record = await conn.fetchrow(
+            "SELECT * FROM user_verification_codes uvc INNER JOIN users u ON u.email = uvc.email WHERE uvc.code = $1 AND u.accountid = $2;",
+            verification_code,
+            user_id,
         )
+
+        if not verification_record:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code.",
+            )
+
+        if datetime.now() > verification_record["expiresat"]:
+            await delete_verification_code(db, str(verification_record["id"]))
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code has expired.",
+            )
+
+        password_hash = generate_password_hash(new_password)
+
+        await conn.execute(
+            "UPDATE users SET password_hash = $1 WHERE accountid = $2;",
+            password_hash,
+            user_id,
+        )
+
+        # Delete code after successful use
+        await conn.execute(
+            "DELETE FROM user_verification_codes WHERE id = $1",
+            verification_record["id"],
+        )
+
+        return {"success": True, "message": "Password changed successfully."}
 
 
 @auth_router.post("/change-password")
@@ -1245,51 +1157,42 @@ async def change_password(request: Request, user_id: str = Depends(get_current_u
     """
     Handles password change requests.
     """
-    conn = await request.app.state.db.pool.acquire()
-
     if not user_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required.")
 
-    try:
-        # Check if a user with this email exists
-        email = await conn.fetch("SELECT email FROM users WHERE accountid = $1;", user_id)
-        if not email:
-            return {
-                "success": True,
-                "message": "If this email is registered, a verification code has been sent.",
-            }
-
-        email = email[0]["email"]
-
-        # Generate and store a new verification code
-        verification_code = generate_verification_code_str()
-        server_code = generate_verification_code_str()
-        code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
-
-        if not code_stored_id:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to store verification code.",
-            )
-
-        send_email = send_password_reset_email(email, verification_code)
-        if not send_email:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to send verification email. Please contact support.",
-            )
-
-        # Send the email with the code
-
-        print(f"Password change code '{verification_code}' sent to {email}.")
+    conn = await request.app.state.db.pool.acquire()
+    # Check if a user with this email exists
+    email = await conn.fetch("SELECT email FROM users WHERE accountid = $1;", user_id)
+    if not email:
         return {
             "success": True,
-            "message": "A verification code has been sent to your email.",
+            "message": "If this email is registered, a verification code has been sent.",
         }
 
-    except Exception as e:
-        print(f"Error during forgot password process: {e}")
+    email = email[0]["email"]
+
+    # Generate and store a new verification code
+    verification_code = generate_verification_code_str()
+    server_code = generate_verification_code_str()
+    code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
+
+    if not code_stored_id:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred. Please try again later.",
+            detail="Failed to store verification code.",
         )
+
+    send_email = send_password_reset_email(email, verification_code)
+    if not send_email:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to send verification email. Please contact support.",
+        )
+
+    # Send the email with the code
+
+    print(f"Password change code '{verification_code}' sent to {email}.")
+    return {
+        "success": True,
+        "message": "A verification code has been sent to your email.",
+    }
