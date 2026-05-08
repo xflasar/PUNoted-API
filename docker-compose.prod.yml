@@ -9,7 +9,6 @@ services:
   prod_db:
     image: postgres:15.12-alpine
     container_name: punoted_prod_db
-    restart: always
     environment:
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASS}
@@ -32,7 +31,6 @@ services:
   redis_cache:
     image: redis:alpine
     container_name: punoted_redis_prod
-    restart: always
     command: redis-server --save 60 1 --loglevel warning
     ports:
       - "6379:6379"
@@ -47,7 +45,6 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: punoted_backend_prod
-    restart: always
     depends_on:
       redis_cache:
         condition: service_started
@@ -59,20 +56,6 @@ services:
       - REDIS_URL=redis://redis_cache:6379/0
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@prod_db:5432/${DB_NAME}
       - XATA_DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@prod_db:5432/${DB_NAME}
-      - DEBUG_MODE=False
-      - application_name=${application_name}
-      - application_version=${application_version}
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - SHIPS_PRODUCTION_GOOGLE_SHEET=${SHIPS_PRODUCTION_GOOGLE_SHEET}
-      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
-      - DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}
-      - DISCORD_APP_ID=${DISCORD_APP_ID}
-      - ffApi=${ffApi}
-      - SMTP_SERVER=${SMTP_SERVER}
-      - SMTP_PORT=${SMTP_PORT}
-      - SMTP_USERNAME=${SMTP_USERNAME}
-      - SMTP_PASSWORD=${SMTP_PASSWORD}
-      - SENTRY_DSN=${SENTRY_DSN}
     ports:
       - "9901:9901"
     networks:
@@ -90,7 +73,6 @@ services:
   prometheus:
     image: prom/prometheus:latest
     container_name: punoted_prometheus
-    restart: always
     volumes:
       - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -107,7 +89,6 @@ services:
   grafana:
     image: grafana/grafana:latest
     container_name: punoted_grafana
-    restart: always
     ports:
       - "3000:3000"
     volumes:
@@ -122,7 +103,6 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
     container_name: punoted_cadvisor
-    restart: always
     ports:
       - "8080:8080"
     volumes:
@@ -143,7 +123,6 @@ services:
   glitchtip_db:
     image: postgres:15.12-alpine
     container_name: punoted_glitchtip_db
-    restart: always
     environment:
       POSTGRES_USER: glitchtip
       POSTGRES_PASSWORD: ${DB_PASS}
@@ -161,7 +140,6 @@ services:
   glitchtip-web:
     image: glitchtip/glitchtip:latest
     container_name: punoted_glitchtip_web
-    restart: always
     depends_on:
       redis_cache:
         condition: service_started
@@ -184,7 +162,6 @@ services:
   glitchtip_worker:
     image: glitchtip/glitchtip:latest
     container_name: punoted_glitchtip_worker
-    restart: always
     command: ./bin/run-celery-with-beat.sh
     depends_on:
       redis_cache:
@@ -201,7 +178,6 @@ services:
   db_maintenance:
     build: ./maintenance
     container_name: db_maintenance_worker
-    restart: always
     environment:
       PGHOST: prod_db
       PGUSER: ${DB_USER}
