@@ -175,11 +175,11 @@ async def generate_token(conn, user_id: str, request: Request, is_website: bool 
     # 1. Setup metadata
     token_type = "access" if is_website else "extension_access"
     lifespan = timedelta(days=7) if is_website else timedelta(days=365)
-    
+
     user_agent = request.headers.get("user-agent", "Unknown Browser")
     x_forwarded_for = request.headers.get("X-Forwarded-For")
     ip_address = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host or "N/A")
-    iat_id = secrets.token_hex(8) 
+    iat_id = secrets.token_hex(8)
 
     now_aware = datetime.now(timezone.utc)
     expires_at_dt = now_aware + lifespan
@@ -203,12 +203,12 @@ async def generate_token(conn, user_id: str, request: Request, is_website: bool 
                 VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
                 RETURNING userid, type
             )
-            DELETE FROM user_tokens 
+            DELETE FROM user_tokens
             WHERE id IN (
-                SELECT id FROM user_tokens 
-                WHERE userid = (SELECT userid FROM inserted) 
+                SELECT id FROM user_tokens
+                WHERE userid = (SELECT userid FROM inserted)
                   AND type = (SELECT type FROM inserted)
-                ORDER BY expiresat DESC 
+                ORDER BY expiresat DESC
                 OFFSET 10
             ) OR (userid = $1 AND expiresat < NOW());
             """,
@@ -245,7 +245,6 @@ async def validate_token(conn, token: str) -> tuple[Optional[str], Optional[int]
 
     user_id_from_jwt = decoded_payload.get("user_id")
     token_type = decoded_payload.get("type")
-
     # Check if it's NOT one of the valid types
     if not user_id_from_jwt or token_type not in ["access", "extension_access"]:
         return (
