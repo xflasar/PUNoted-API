@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- Xata Configuration ---
-XATA_API_KEY = os.environ.get("XATA_API_KEY")
 XATA_DATABASE_URL = os.environ.get("XATA_DATABASE_URL")
 
 # --- JWT Configuration ---

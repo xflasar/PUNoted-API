@@ -1,32 +1,28 @@
-import asyncio
 import gzip
 import logging
-import time
-import sentry_sdk
 import os
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from slowapi.errors import RateLimitExceeded
-from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.redis import RedisBackend
-from redis import asyncio as aioredis
-from prometheus_fastapi_instrumentator import Instrumentator
+import time
 from contextlib import asynccontextmanager
 
-# Service & Logic Imports
+import sentry_sdk
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.redis import RedisBackend
+from prometheus_fastapi_instrumentator import Instrumentator
+from redis import asyncio as aioredis
+from slowapi.errors import RateLimitExceeded
+from starlette.types import ASGIApp, Receive, Scope, Send
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
 from app.core.docs import api_v1_docs, custom_openapi
 from app.core.event_manager import EventManager
 from app.core.limiter import limiter, rate_limit_exceeded_handler
-from app.services.background import scrape_and_save_data, scrape_prices_and_save_data
+from app.routers.buildings import buildings_router as internal_buildings_router
+from app.routers.materials import materials_router as internal_materials_router
 from auth import auth_router
 from data_handlers import BackgroundTasks, data_router
-
-# Core Imports
 from db import Database
 from discord_bot.webhook import router as discord_router
 from endpoints.Protected.routers.accounting import (
@@ -35,6 +31,7 @@ from endpoints.Protected.routers.accounting import (
 from endpoints.Protected.routers.contracts import (
     contracts_router as api_usercontracts_external_router,
 )
+from endpoints.Protected.routers.corporation import corporation_router as corporation_external_router
 from endpoints.Protected.routers.cxuser import cxuser_router as api_cxuser_router
 from endpoints.Protected.routers.flights import (
     flights_router as api_userflights_external_router,
@@ -51,52 +48,31 @@ from endpoints.Protected.routers.sites import (
 from endpoints.Protected.routers.storageuser import (
     storage_router as api_storageuser_router,
 )
-
+from endpoints.Protected.routers.user import user_router as api_user_router
 from endpoints.Protected.routers.workforce import (
     workforce_router as api_userworkforce_external_router,
 )
-
-# Protected API v1 Router Imports
-from endpoints.Protected.routers.user import user_router as api_user_router
-
-# Public API v1 Router Imports
+from endpoints.Public.routers.buildings import buildings_router as buildings_public_external_router
+from endpoints.Public.routers.company import company_router as company_public_external_router
+from endpoints.Public.routers.corp import corporation_router as corporation_public_external_router
+from endpoints.Public.routers.cx import cx_router as api_cx_external_router
+from endpoints.Public.routers.materials import materials_router as api_materials_external_router
+from endpoints.Public.routers.planets import planets_router as api_planets_external_router
 from endpoints.Public.routers.vendors import (
     vendors_router as api_vendors_external_router,
 )
-from endpoints.Public.routers.cx import (
-    cx_router as api_cx_external_router
-)
-from endpoints.Public.routers.materials import (
-    materials_router as api_materials_external_router
-)
-from endpoints.Public.routers.planets import (
-    planets_router as api_planets_external_router
-)
-from endpoints.Public.routers.corp import (
-    corporation_router as corporation_public_external_router
-)
-from endpoints.Protected.routers.corporation import (
-    corporation_router as corporation_external_router
-)
-from endpoints.Public.routers.buildings import (
-    buildings_router as buildings_public_external_router
-)
-from endpoints.Public.routers.company import (
-    company_router as company_public_external_router
-)
-
-
 from routers.cxuser import cx_router
 from routers.flights import flights_router
 from routers.governance import governance_router
-
-# Router Imports
 from routers.group import group_router
+from routers.internal.contracts import contracts_router
 from routers.internal.corporation import corporation_internal_router
+from routers.internal.cx import cx_internal_router
+from routers.internal.data_group import group_router as internal_data_group_router
+from routers.internal.finances import finances_router
+from routers.internal.leaderboard import leaderboard_router
 from routers.internal.production import production_router
 from routers.internal.storage import storage_router
-from routers.internal.data_group import group_router as internal_data_group_router
-from routers.internal.contracts import contracts_router
 from routers.logistics import logistics_router
 from routers.map import map_router
 from routers.planets import planets_router
@@ -104,12 +80,6 @@ from routers.user import user_router
 from routers.usersettings import user_settings_router as settings_router
 from routers.vendor import vendor_router
 from routers.websocket_router import ws_router
-from routers.internal.leaderboard import leaderboard_router
-from routers.internal.finances import finances_router
-from routers.internal.cx import cx_internal_router
-
-from app.routers.buildings import buildings_router as internal_buildings_router
-from app.routers.materials import materials_router as internal_materials_router
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
@@ -126,41 +96,34 @@ sentry_sdk.init(
 # --- Lifecycle Events ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # --- STARTUP ---
-    try:
-        # 1. Database
-        await db.create_pool() 
-        app.state.db = db
-        print("Database connected.")
+    # 1. Database
+    await db.create_pool()
+    app.state.db = db
+    print("Database connected.")
 
-        # 2. Redis Cache
-        redis = aioredis.from_url("redis://redis_cache:6379/0", encoding="utf8", decode_responses=True)
-        FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
-        print("Redis initialized.")
+    # 2. Redis Cache
+    redis = aioredis.from_url("redis://redis_cache:6379/0", encoding="utf8", decode_responses=True)
+    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
+    print("Redis initialized.")
 
-        # TEMPORARY SCRAPING SHIP SHEET AND CORP PRICE SHEET
-        #await scrape_and_save_data(db.pool)
-        #await scrape_prices_and_save_data(db.pool)
+    # TEMPORARY SCRAPING SHIP SHEET AND CORP PRICE SHEET
+    #await scrape_and_save_data(db.pool)
+    #await scrape_prices_and_save_data(db.pool)
 
-        event_manager = EventManager(db.pool)
-        app.state.event_manager = event_manager
+    event_manager = EventManager(db.pool)
+    app.state.event_manager = event_manager
 
 
-        # 3. Scheduler
-        #scheduler.add_job(scrape_and_save_data, "interval", minutes=30, args=[db.pool])
-        #scheduler.add_job(scrape_prices_and_save_data, "interval", minutes=30, args=[db.pool])
-        #scheduler.start()
-        #print("Scheduler started.")
+    # 3. Scheduler
+    #scheduler.add_job(scrape_and_save_data, "interval", minutes=30, args=[db.pool])
+    #scheduler.add_job(scrape_prices_and_save_data, "interval", minutes=30, args=[db.pool])
+    #scheduler.start()
+    #print("Scheduler started.")
 
-        print("System initialized successfully.")
-        
-    except Exception as e:
-        print(f"Startup Failure: {e}")
-        raise e
+    print("System initialized successfully.")
 
     yield
 
-    # --- SHUTDOWN ---
     print("Shutting down...")
     if hasattr(db, 'pool') and db.pool:
         await db.pool.close()
@@ -182,8 +145,6 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 Instrumentator().instrument(app).expose(app)
-
-from starlette.types import ASGIApp, Scope, Receive, Send
 
 class SecurityLoggerMiddleware:
     def __init__(self, app: ASGIApp):
