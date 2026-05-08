@@ -219,19 +219,14 @@ async def generate_token(conn, user_id: str, request: Request, is_website: bool 
         print(f"Database error during token generation: {e}")
         return "", 0
 
-async def validate_token(conn, token: str) -> tuple[Optional[str], Optional[int], Optional[str]]:
+async def validate_token(conn, token: str) -> tuple[str, int, None] | tuple[None, None, str]:
     """
-    Asynchronously validates a JWT access token and checks its expiration against the database.
-
-    Args:
-        conn (asyncpg.Connection): The database connection object from an asyncpg pool.
-        token (str): The JWT access token string to validate.
+    Validate a JWT access token and check its expiration against the database.
 
     Returns:
-        tuple[Optional[str], Optional[int], Optional[str]]: A tuple containing:
-            - The user ID (str) if valid.
-            - The access token's expiration timestamp (int) from the DB record.
-            - An error message (str) if not valid.
+        - The user ID (str) if valid.
+        - The access token's expiration timestamp (int) from the DB record.
+        - An error message (str) if not valid.
     """
     try:
         # Decode the JWT with a leeway to account for clock skew
@@ -336,18 +331,11 @@ async def store_verification_code(conn, email: str, code: str, server_code: str)
         return None
 
 
-async def get_verification_code_from_db(conn, email: str, code: str) -> tuple[Optional[str], Optional[str]]:
+async def get_verification_code_from_db(conn, email: str, code: str) -> tuple[str, None] | tuple[None, str]:
     """
     Asynchronously retrieves and validates a verification code from the database.
 
-    Args:
-        pool (asyncpg.Pool): The asyncpg connection pool.
-        email (str): The email address.
-        code (str): The code to validate.
-
-    Returns:
-        tuple[Optional[str], Optional[str]]: A tuple containing the record ID of the code
-                                             if valid, and an error message if not.
+    Returns: A tuple containing the record ID of the code if valid and an error message if not.
     """
     try:
         query = """
@@ -376,10 +364,6 @@ async def delete_verification_code(conn, record_id: str) -> bool:
     """
     Asynchronously deletes a verification code record from the database.
 
-    Args:
-        pool (asyncpg.Pool): The asyncpg connection pool.
-        record_id (str): The ID of the verification code record.
-
     Returns:
         bool: True if deletion was successful, False otherwise.
     """
@@ -402,38 +386,24 @@ async def delete_verification_code(conn, record_id: str) -> bool:
 async def get_current_user_id(request: Request, token: str = Depends(oauth2_scheme)) -> str:
     pool = request.app.state.db.pool
 
-    try:
-        async with pool.acquire() as conn:
-            user_id, expires_at, error = await validate_token(conn, token)
-            if user_id.startswith("rec_"):
-                user_id = await conn.fetch("SELECT accountid FROM users WHERE xata_id=$1", user_id)
-                user_id = str(user_id[0]["accountid"])
+    async with pool.acquire() as conn:
+        user_id, expires_at, error = await validate_token(conn, token)
+        if error is not None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=error,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        if user_id.startswith("rec_"):
+            user_id = await conn.fetch("SELECT accountid FROM users WHERE xata_id=$1", user_id)
+            user_id = str(user_id[0]["accountid"])
 
-            sentry_sdk.set_user({
-                "id": str(user_id),
-                "ip_address": "{{auto}}", # Let Sentry extract IP
-            })
+        sentry_sdk.set_user({
+            "id": str(user_id),
+            "ip_address": "{{auto}}", # Let Sentry extract IP
+        })
 
-            if error:
-                print("Error", error)
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=error,
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=error,
-                    headers={"WWW-Authenticate": "Bearer"},
-                )
-            return user_id
-    except Exception as e:
-        print("failed to get userid", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=error,
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        return user_id
 
 
 async def get_current_user_id_ws(websocket: WebSocket) -> str:
@@ -444,7 +414,6 @@ async def get_current_user_id_ws(websocket: WebSocket) -> str:
     # 1. Manually get token string from QueryParams
     #    This fixes the issue where 'token' was a Query() object or None.
     token = websocket.query_params.get("token")
-
     if not token:
         print("WS Auth Failed: Missing 'token' query parameter")
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Missing token")
@@ -457,8 +426,7 @@ async def get_current_user_id_ws(websocket: WebSocket) -> str:
         async with pool.acquire() as conn:
             # 3. Validate Token
             user_id, expires_at, error = await validate_token(conn, token)
-
-            if error:
+            if error is not None:
                 print(f"WS Token Error: {error}")
                 await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=f"Auth failed: {error}")
                 raise Exception(error)
@@ -480,8 +448,6 @@ async def get_current_user_id_ws(websocket: WebSocket) -> str:
         if websocket.client_state != WebSocketState.DISCONNECTED:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         raise
-
-
 
 
 class RequireAuth:
@@ -506,118 +472,140 @@ class RequireAuth:
                 detail="Authentication required.",
             )
 
-        final_token = raw_token.replace("Bearer ", "").strip()
+        final_token = raw_token.removeprefix("Bearer ")
         pool = request.app.state.db.pool
 
         q_params = request.query_params
         requested_users_str = q_params.get("usernames") or q_params.get("username")
         requested_users = [u.strip() for u in requested_users_str.split(",") if u.strip()] if requested_users_str else None
 
-        try:
-            async with pool.acquire() as conn:
-                # ==================================================================
-                # PATH A: GROUP TOKEN
-                # ==================================================================
-                if "grp_" in final_token:
-                    try:
-                        access_key, user_suffix = final_token.rsplit("-", 1)
-                    except ValueError:
-                        raise HTTPException(status_code=403, detail="Invalid token format")
+        async with pool.acquire() as conn:
+            # ==================================================================
+            # PATH A: GROUP TOKEN
+            # ==================================================================
+            if "grp_" in final_token:
+                try:
+                    access_key, user_suffix = final_token.rsplit("-", 1)
+                except ValueError:
+                    raise HTTPException(status_code=403, detail="Invalid token format")
 
-                    # 1. Get Requester
-                    sql_requester = """
-                        SELECT m.user_id, m.status, m.can_read_data, g.id as group_id, u.username, u.accountid
-                        FROM data_sharing_groups g
-                        JOIN data_group_members m ON m.group_id = g.id
-                        JOIN users u ON u.accountid = m.user_id
-                        WHERE g.access_key = $1 AND m.personal_suffix = $2
+                # 1. Get Requester
+                sql_requester = """
+                    SELECT m.user_id, m.status, m.can_read_data, g.id as group_id, u.username, u.accountid
+                    FROM data_sharing_groups g
+                    JOIN data_group_members m ON m.group_id = g.id
+                    JOIN users u ON u.accountid = m.user_id
+                    WHERE g.access_key = $1 AND m.personal_suffix = $2
+                """
+                member = await conn.fetchrow(sql_requester, access_key, user_suffix)
+
+                if not member or member["status"] != 'ACCEPTED':
+                    raise HTTPException(status_code=403, detail="Invalid Group Token")
+
+                group_id = member["group_id"]
+                requester_username = member["username"]
+                requester_id = str(member["accountid"])
+                can_read_data = member["can_read_data"]
+
+                req_perm = self.required_permissions[0] if self.required_permissions else None
+
+                # 2. Determine Scope
+                if requested_users:
+                    sql_targets = """
+                        SELECT u.username
+                        FROM data_group_members gm
+                        JOIN users u ON u.accountid = gm.user_id
+                        LEFT JOIN users_data ud ON ud.userid = u.userdataid
+                        WHERE gm.group_id = $1
+                        AND gm.status = 'ACCEPTED'
+                        AND (u.username = ANY($2::text[]) OR ud.displayname = ANY($2::text[]))
+                        AND ($3::text IS NULL OR gm.granted_permissions @> jsonb_build_array($3::text) OR gm.granted_permissions @> '["all"]')
+                        AND ($4::boolean IS TRUE OR gm.user_id = $5)
                     """
-                    member = await conn.fetchrow(sql_requester, access_key, user_suffix)
+                    valid_rows = await conn.fetch(sql_targets, group_id, requested_users, req_perm, can_read_data, requester_id)
+                    valid_usernames = [r["username"] for r in valid_rows]
 
-                    if not member or member["status"] != 'ACCEPTED':
-                        raise HTTPException(status_code=403, detail="Invalid Group Token")
-
-                    group_id = member["group_id"]
-                    requester_username = member["username"]
-                    requester_id = str(member["accountid"])
-                    can_read_data = member["can_read_data"]
-
-                    req_perm = self.required_permissions[0] if self.required_permissions else None
-
-                    # 2. Determine Scope
-                    if requested_users:
+                else:
+                    # Branch behavior based on the endpoint type
+                    if self.is_single_user_endpoint:
+                        valid_usernames = [requester_username]
+                    else:
                         sql_targets = """
                             SELECT u.username
                             FROM data_group_members gm
                             JOIN users u ON u.accountid = gm.user_id
-                            LEFT JOIN users_data ud ON ud.userid = u.userdataid
                             WHERE gm.group_id = $1
                             AND gm.status = 'ACCEPTED'
-                            AND (u.username = ANY($2::text[]) OR ud.displayname = ANY($2::text[]))
-                            AND ($3::text IS NULL OR gm.granted_permissions @> jsonb_build_array($3::text) OR gm.granted_permissions @> '["all"]')
-                            AND ($4::boolean IS TRUE OR gm.user_id = $5)
+                            AND ($2::text IS NULL OR gm.granted_permissions @> jsonb_build_array($2::text) OR gm.granted_permissions @> '["all"]')
+                            AND ($3::boolean IS TRUE OR gm.user_id = $4)
                         """
-                        valid_rows = await conn.fetch(sql_targets, group_id, requested_users, req_perm, can_read_data, requester_id)
+                        valid_rows = await conn.fetch(sql_targets, group_id, req_perm, can_read_data, requester_id)
+                        valid_usernames = [r["username"] for r in valid_rows]
+
+                        if not valid_usernames and requester_username:
+                            valid_usernames = [requester_username]
+
+                request.state.valid_target_users = valid_usernames
+                request.state.rate_limit_key = requester_id
+                return requester_id
+
+            # ==================================================================
+            # PATH B: PERSONAL TOKEN
+            # ==================================================================
+            else:
+                query = """
+                    SELECT user_id, permissions, allow_group_access
+                    FROM user_api_tokens
+                    WHERE token_hash = $1 AND group_id IS NULL
+                """
+                token_data = await conn.fetchrow(query, final_token)
+                if not token_data:
+                    raise HTTPException(status_code=401, detail="Invalid data token")
+
+                user_id = str(token_data["user_id"])
+                user_permissions = frozenset(token_data["permissions"] or [])
+                allow_group_access = token_data.get("allow_group_access", False)
+
+                if self.required_permissions and "all" not in user_permissions:
+                    if not user_permissions.issuperset(self.required_permissions):
+                        raise HTTPException(status_code=403, detail=f"Missing permissions: {frozenset(self.required_permissions) - user_permissions}")
+
+                me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+                req_perm = self.required_permissions[0] if self.required_permissions else None
+
+                if allow_group_access:
+                    if requested_users:
+                        sql_targets = """
+                            SELECT DISTINCT u.username
+                            FROM users u
+                            LEFT JOIN users_data ud ON ud.userid = u.userdataid
+                            WHERE (
+                                u.accountid = $1
+                                OR EXISTS (
+                                    SELECT 1
+                                    FROM data_group_members gm_target
+                                    JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
+                                    WHERE gm_target.user_id = u.accountid
+                                        AND gm_requester.user_id = $1
+                                        AND gm_requester.status = 'ACCEPTED'
+                                        AND gm_requester.can_read_data = TRUE
+                                        AND gm_target.status = 'ACCEPTED'
+                                        AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
+                                )
+                            )
+                            AND (u.username = ANY($3::text[]) OR ud.displayname = ANY($3::text[]))
+                        """
+                        valid_rows = await conn.fetch(sql_targets, user_id, req_perm, requested_users)
                         valid_usernames = [r["username"] for r in valid_rows]
 
                     else:
-                        # Branch behavior based on the endpoint type
+                        # Branch behavior based on the endpoint type for master personal tokens
                         if self.is_single_user_endpoint:
-                            valid_usernames = [requester_username]
+                            valid_usernames = [me_username] if me_username else []
                         else:
-                            sql_targets = """
-                                SELECT u.username
-                                FROM data_group_members gm
-                                JOIN users u ON u.accountid = gm.user_id
-                                WHERE gm.group_id = $1
-                                AND gm.status = 'ACCEPTED'
-                                AND ($2::text IS NULL OR gm.granted_permissions @> jsonb_build_array($2::text) OR gm.granted_permissions @> '["all"]')
-                                AND ($3::boolean IS TRUE OR gm.user_id = $4)
-                            """
-                            valid_rows = await conn.fetch(sql_targets, group_id, req_perm, can_read_data, requester_id)
-                            valid_usernames = [r["username"] for r in valid_rows]
-
-                            if not valid_usernames and requester_username:
-                                valid_usernames = [requester_username]
-
-                    request.state.valid_target_users = valid_usernames
-                    request.state.rate_limit_key = requester_id
-                    return requester_id
-
-                # ==================================================================
-                # PATH B: PERSONAL TOKEN
-                # ==================================================================
-                else:
-                    query = """
-                        SELECT user_id, permissions, allow_group_access
-                        FROM user_api_tokens
-                        WHERE token_hash = $1 AND group_id IS NULL
-                    """
-                    token_data = await conn.fetchrow(query, final_token)
-
-                    if not token_data:
-                        raise HTTPException(status_code=401, detail="Invalid data token")
-
-                    user_id = str(token_data["user_id"])
-                    user_permissions = token_data["permissions"] or []
-                    allow_group_access = token_data.get("allow_group_access", False)
-
-                    if self.required_permissions:
-                        if "all" not in user_permissions:
-                            for perm in self.required_permissions:
-                                if perm not in user_permissions:
-                                    raise HTTPException(status_code=403, detail=f"Missing permission: {perm}")
-
-                    me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
-                    req_perm = self.required_permissions[0] if self.required_permissions else None
-                    valid_usernames = []
-
-                    if allow_group_access:
-                        if requested_users:
                             sql_targets = """
                                 SELECT DISTINCT u.username
                                 FROM users u
-                                LEFT JOIN users_data ud ON ud.userid = u.userdataid
                                 WHERE (
                                     u.accountid = $1
                                     OR EXISTS (
@@ -625,66 +613,37 @@ class RequireAuth:
                                         FROM data_group_members gm_target
                                         JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
                                         WHERE gm_target.user_id = u.accountid
-                                          AND gm_requester.user_id = $1
-                                          AND gm_requester.status = 'ACCEPTED'
-                                          AND gm_requester.can_read_data = TRUE
-                                          AND gm_target.status = 'ACCEPTED'
-                                          AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
+                                            AND gm_requester.user_id = $1
+                                            AND gm_requester.status = 'ACCEPTED'
+                                            AND gm_requester.can_read_data = TRUE
+                                            AND gm_target.status = 'ACCEPTED'
+                                            AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
                                     )
                                 )
-                                AND (u.username = ANY($3::text[]) OR ud.displayname = ANY($3::text[]))
                             """
-                            valid_rows = await conn.fetch(sql_targets, user_id, req_perm, requested_users)
+                            valid_rows = await conn.fetch(sql_targets, user_id, req_perm)
                             valid_usernames = [r["username"] for r in valid_rows]
 
-                        else:
-                            # Branch behavior based on the endpoint type for master personal tokens
-                            if self.is_single_user_endpoint:
-                                valid_usernames = [me_username] if me_username else []
-                            else:
-                                sql_targets = """
-                                    SELECT DISTINCT u.username
-                                    FROM users u
-                                    WHERE (
-                                        u.accountid = $1
-                                        OR EXISTS (
-                                            SELECT 1
-                                            FROM data_group_members gm_target
-                                            JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
-                                            WHERE gm_target.user_id = u.accountid
-                                              AND gm_requester.user_id = $1
-                                              AND gm_requester.status = 'ACCEPTED'
-                                              AND gm_requester.can_read_data = TRUE
-                                              AND gm_target.status = 'ACCEPTED'
-                                              AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
-                                        )
-                                    )
-                                """
-                                valid_rows = await conn.fetch(sql_targets, user_id, req_perm)
-                                valid_usernames = [r["username"] for r in valid_rows]
-
+                else:
+                    # STANDARD PERSONAL TOKEN (No multi-group access)
+                    if requested_users:
+                        sql_self = """
+                            SELECT u.username
+                            FROM users u
+                            LEFT JOIN users_data ud ON ud.userid = u.userdataid
+                            WHERE u.accountid = $1
+                            AND (u.username = ANY($2::text[]) OR ud.displayname = ANY($2::text[]))
+                        """
+                        valid_rows = await conn.fetch(sql_self, user_id, requested_users)
+                        valid_usernames = [r["username"] for r in valid_rows]
                     else:
-                        # STANDARD PERSONAL TOKEN (No multi-group access)
-                        if requested_users:
-                            sql_self = """
-                                SELECT u.username
-                                FROM users u
-                                LEFT JOIN users_data ud ON ud.userid = u.userdataid
-                                WHERE u.accountid = $1
-                                AND (u.username = ANY($2::text[]) OR ud.displayname = ANY($2::text[]))
-                            """
-                            valid_rows = await conn.fetch(sql_self, user_id, requested_users)
-                            valid_usernames = [r["username"] for r in valid_rows]
-                        else:
-                            valid_usernames = [me_username] if me_username else []
+                        valid_usernames = [me_username] if me_username else []
 
-                    request.state.valid_target_users = valid_usernames
-                    request.state.rate_limit_key = user_id
+                request.state.valid_target_users = valid_usernames
+                request.state.rate_limit_key = user_id
 
-                    return user_id
+                return user_id
 
-        except HTTPException as http_exc:
-            raise http_exc
 
 # --- Optional Auth ---
 class OptionalAuth(RequireAuth):
@@ -774,7 +733,7 @@ async def register(user_data: Dict[str, str], request: Request):
 
     # Check if user with this username or email already exists
     existing_users = await conn.fetch_rows(
-        "SELECT username, email FROM users WHERE username = $1 OR email = $2;",
+        "SELECT username, email FROM users WHERE username = $1 OR email = $2 LIMIT 1;",
         username,
         email,
     )
@@ -878,19 +837,16 @@ async def verify_email(verification_data: Dict[str, str], request: Request):
         }
     ]
 
-    # 2. Bulk Insert Query
     settings_query = """
         INSERT INTO user_web_settings (user_id, page_context, preferences, updated_at)
         VALUES ($1, $2, $3::jsonb, NOW())
         ON CONFLICT DO NOTHING
     """
-
-    # 3. Execute
     for setting in default_web_settings:
         await conn.execute(
-            settings_query, 
+            settings_query,
             user_record[0]["accountid"],
-            setting["page_context"], 
+            setting["page_context"],
             json.dumps(setting["preferences"])
         )
 
@@ -1135,7 +1091,6 @@ async def change_password_final(
             )
 
         password_hash = generate_password_hash(new_password)
-
         await conn.execute(
             "UPDATE users SET password_hash = $1 WHERE accountid = $2;",
             password_hash,
