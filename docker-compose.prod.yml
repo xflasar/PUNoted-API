@@ -17,8 +17,6 @@ services:
       - "127.0.0.1:5445:5432"
     volumes:
       - prod_data:/var/lib/postgresql/data
-      - ./config/pg_hba.conf:/etc/postgresql/pg_hba.conf
-      - ./init-production:/docker-entrypoint-initdb.d
     networks:
       - punoted_prod_net
     healthcheck:
