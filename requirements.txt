@@ -7,7 +7,6 @@ cryptography
 Cython
 debugpy
 discord.py
-dl
 docutils
 fastapi
 filelock
