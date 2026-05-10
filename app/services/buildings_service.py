@@ -1,5 +1,7 @@
 from collections import defaultdict
-from app.schemas.internal_planner import InternalBuildingDTO, BuildingRequirementDTO
+
+from app.schemas.internal_planner import BuildingRequirementDTO, InternalBuildingDTO
+
 
 class BuildingsService:
     def __init__(self, repository):
@@ -12,12 +14,12 @@ class BuildingsService:
 
         workers_map = defaultdict(dict)
         supply_map = defaultdict(dict)
-        
+
         for cap in capacities_raw:
             b_id = cap['buildingid']
             level = cap['workforcelevel']
             amount = cap['capacity']
-            
+
             if cap['ishabitation']:
                 supply_map[b_id][level] = amount
             else:
@@ -34,10 +36,10 @@ class BuildingsService:
             b_id = b['buildingid']
             ticker = b['ticker']
             name = b['name'] or ""
-            
+
             # --- EXACT DB TYPE MAPPING ---
             raw_db_type = (b['type'] or "").strip().upper()
-            
+
             if raw_db_type in ["STORAGE", "HABITATION"]:
                 ui_type = "infrastructure"
             else:
@@ -46,7 +48,7 @@ class BuildingsService:
             # --- INDEPENDENT STORAGE VARIABLES ---
             storage_weight = None
             storage_volume = None
-            
+
             if raw_db_type == "STORAGE" or ticker in ["STO", "STA", "LST"]:
                 if ticker == "STA":
                     storage_weight = 500

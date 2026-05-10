@@ -1,13 +1,11 @@
 from typing import Any, Dict, List, Optional
 
+import orjson
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.core.security import require_internal_origin
-from helpers.logistics_engine import run_logistics_pipeline
-import orjson
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
-
 from auth import get_current_user_id
 from helpers.fetchdb import fetch_users_ship_data
 from helpers.logistics_analysis import (
@@ -15,6 +13,7 @@ from helpers.logistics_analysis import (
     calculate_site_production_flow,
     generate_ai_logistics_strategy,
 )
+from helpers.logistics_engine import run_logistics_pipeline
 from helpers.production_lines import get_production_data_nested
 
 logistics_router = APIRouter(prefix="/logistics", tags=["logistics"], dependencies=[Depends(require_internal_origin)])
@@ -57,7 +56,7 @@ async def get_ship_storage(db, ship_ids: List[str]) -> Dict[str, Any]:
                 "items": orjson.loads(r["items"] or "[]"),
             }
         return storages
-    
+
 @logistics_router.post("/ai-strategy")
 async def get_ai_logistics_strategy(request: Request, user_id: str = Depends(get_current_user_id)):
     """
@@ -107,6 +106,7 @@ async def generate_logistics_plan(request: Request, user_id: str = Depends(get_c
 
 
 import helpers.production_engine as production_engine
+
 
 class ProductionLine(BaseModel):
     ticker: str
@@ -211,13 +211,13 @@ async def get_galaxy_map_temp(request: Request):
         # Fetch rows
         sys_rows = await conn.fetch("SELECT systemid, name, positionx as x, positiony as y FROM systems WHERE positionx IS NOT NULL")
         conn_rows = await conn.fetch("SELECT systemidorigin, systemiddestination FROM system_connections")
-        
+
         systems = [dict(row) for row in sys_rows]
         connections = [dict(row) for row in conn_rows]
-        
+
         # Flattened response to match Streamlit's expectation
         return {
-            "systems": systems, 
+            "systems": systems,
             "connections": connections
         }
 

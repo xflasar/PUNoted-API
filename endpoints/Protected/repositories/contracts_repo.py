@@ -1,6 +1,6 @@
-import json
-import io
 import csv
+import io
+import json
 
 # -----------------------------------------------------------------------------
 # 0. RESOLVE USERS (Fast PK Lookup)
@@ -207,7 +207,7 @@ GROUP BY cc.contractid, ls.total_installments, ls.fulfilled_installments, ls.loa
 # ==============================================================================
 async def get_filtered_contracts(
     conn,
-    usernames_list, 
+    usernames_list,
     c_type=None,
     status=None,
     partner_code=None,
@@ -234,7 +234,7 @@ async def get_filtered_contracts(
         type_filter_array = ['LOAN_PAYOUT', 'LOAN_INSTALLMENT']
     elif c_type:
         type_filter_array = [c_type] # Fallback exact match
-    
+
     contract_ids_rows = await conn.fetch(
         SQL_GET_CONTRACT_IDS,
         user_ids, type_filter_array, status, partner_code, party, local_id, limit, offset
@@ -250,7 +250,7 @@ async def get_filtered_contracts(
 
     # 3. Polymorphic Details (Safe Merge)
     detail_map = {}
-    
+
     # Run Loan logic if specifically asked for, or if viewing ALL contracts
     if c_type == 'LOAN' or c_type is None:
         loan_rows = await conn.fetch(SQL_GET_CONDITIONS_LOAN, ids_list, user_ids)
@@ -285,7 +285,7 @@ async def get_filtered_contracts(
 
     # 4. Assembly
     user_result_map = {}
-    
+
     for r in base_rows:
         cid = r['id']
         username = user_map_name.get(r['userid'], "Unknown")
@@ -298,15 +298,15 @@ async def get_filtered_contracts(
             "UserNameSubmitted": username,
             "Timestamp": r['date'].isoformat() if r['date'] else None,
             "DateEpochMs": r['date'].timestamp() * 1000 if r['date'] else 0,
-            
+
             "Status": r['status'],
             "Party": r['party'],
             "PartnerCode": r['partnercode'],
             "PartnerName": r['partnername'],
-            
+
             "ExtensionDeadlineEpochMs": r['extensiondeadline'].timestamp() * 1000 if r['extensiondeadline'] else None,
             "DueDateEpochMs": r['duedate'].timestamp() * 1000 if r['duedate'] else None,
-            
+
             "CanExtend": r['canextend'],
             "CanRequestTermination": r['canrequesttermination'],
             "TerminationSent": r['terminationsent'],
@@ -315,7 +315,7 @@ async def get_filtered_contracts(
             "Preamble": r['preamble'],
 
             "Conditions": details['conditions'],
-            
+
             # Merged Stats (Always present)
             "LoanStrategy": stats.get('LoanStrategy'),
             "InstallmentInterval": stats.get('InstallmentInterval', 0),
@@ -325,12 +325,12 @@ async def get_filtered_contracts(
             'TotalInterestRate': stats.get('TotalInterestRate', 0.0)
         }
 
-        if username not in user_result_map: 
+        if username not in user_result_map:
             user_result_map[username] = []
         user_result_map[username].append(contract_obj)
 
     final_result = [
-        {"Username": u, "Contracts": c_list} 
+        {"Username": u, "Contracts": c_list}
         for u, c_list in user_result_map.items()
     ]
 
@@ -342,7 +342,7 @@ async def get_filtered_contracts(
 # ==============================================================================
 async def stream_contracts_csv(
     conn,
-    usernames_list, 
+    usernames_list,
     c_type=None,
     status=None,
     partner_code=None,
@@ -353,7 +353,7 @@ async def stream_contracts_csv(
     Generator that fetches ALL matching IDs, then chunks details fetching
     to avoid OOM, yielding CSV lines.
     """
-    
+
     # 0. Pre-resolve
     user_rows = await conn.fetch(SQL_RESOLVE_USER_IDS, usernames_list)
     if not user_rows: return
@@ -373,21 +373,21 @@ async def stream_contracts_csv(
 
     contract_ids_rows = await conn.fetch(
         SQL_GET_CONTRACT_IDS,
-        user_ids, type_filter_array, status, partner_code, party, local_id, 
-        100000, 0 
+        user_ids, type_filter_array, status, partner_code, party, local_id,
+        100000, 0
     )
-    
+
     # These IDs are already sorted by Date DESC
     all_ids = [r['id'] for r in contract_ids_rows]
-    
+
     # 2. Setup CSV Buffer
     output = io.StringIO()
     writer = csv.writer(output)
-    
+
     # Write Header
     headers = [
-        "ContractId", "LocalId", "Date", "User", "Partner", "Type", 
-        "Status", "Party", "TotalAmount", "Currency", "Principal", "Interest", 
+        "ContractId", "LocalId", "Date", "User", "Partner", "Type",
+        "Status", "Party", "TotalAmount", "Currency", "Principal", "Interest",
         "Installments", "Progress", "Strategy", "InterestRatePercent"
     ]
     writer.writerow(headers)
@@ -397,17 +397,17 @@ async def stream_contracts_csv(
 
     # 3. Chunked Processing
     BATCH_SIZE = 100
-    
+
     for i in range(0, len(all_ids), BATCH_SIZE):
         chunk_ids = all_ids[i : i + BATCH_SIZE]
-        
+
         # A. Base Data
         base_rows = await conn.fetch(SQL_GET_BASE_DATA, chunk_ids, user_ids)
         base_map = {r['id']: r for r in base_rows}
 
         # B. Polymorphic Details (Safe Merge)
         detail_map = {}
-        
+
         if c_type == 'LOAN' or c_type is None:
             loan_rows = await conn.fetch(SQL_GET_CONDITIONS_LOAN, chunk_ids, user_ids)
             for r in loan_rows:
@@ -416,7 +416,7 @@ async def stream_contracts_csv(
                 total_principal = sum((c['Principal'] or 0) for c in conds)
                 total_interest = sum((c['Interest'] or 0) for c in conds)
                 currency = conds[0]['Currency'] if conds else 'ICA'
-                
+
                 detail_map[r['contractid']] = {
                     'TotalAmount': total_amt,
                     'Currency': currency,
@@ -435,7 +435,7 @@ async def stream_contracts_csv(
                 conds = json.loads(r['conditions_json'])
                 total_amt = sum((c['Amount'] or 0) for c in conds)
                 currency = conds[0]['Currency'] if conds else 'ICA'
-                
+
                 detail_map[r['contractid']] = {
                     'TotalAmount': total_amt,
                     'Currency': currency,
@@ -448,14 +448,14 @@ async def stream_contracts_csv(
             base = base_map.get(cid)
             if not base: continue
             details = detail_map.get(cid, {})
-            
+
             row = [
                 str(base['id']),
                 base['localid'],
                 base['date'].strftime('%Y-%m-%d %H:%M'),
                 user_map_name.get(base['userid'], ''),
                 base['partnername'],
-                c_type or "GENERIC", 
+                c_type or "GENERIC",
                 base['status'],
                 base['party'],
                 details.get('TotalAmount', 0),
@@ -467,7 +467,7 @@ async def stream_contracts_csv(
                 details.get('Strategy', '-'),
                 details.get('InterestRate', 0.0)
             ]
-            
+
             writer.writerow(row)
             yield output.getvalue()
             output.seek(0)

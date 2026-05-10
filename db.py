@@ -40,17 +40,50 @@ class Database:
             logger.debug("Database pool closed.")
             self.pool = None
 
-    async def executemany(self, query: str, args: list[list[Any]]) -> None:
+    async def execute(self, query: str, *args, timeout: Optional[float] = None) -> Any:
+        """
+        Executes a query with the provided arguments and returns the result.
+        """
+        if self.pool and self.poolInit:
+            use_timeout = timeout if timeout is not None else self.timeout
+            async with self.pool.acquire() as con:
+                return await con.execute(query, *args, timeout=use_timeout)
+        else:
+            raise ConnectionError("Database pool not initialized.")
+        
+    async def fetch_one(self, query: str, *args, timeout: Optional[float] = None) -> Optional[asyncpg.Record]:
+        """
+        Executes a query and returns a single record, or None if no record is found.
+        """
+        if self.pool and self.poolInit:
+            use_timeout = timeout if timeout is not None else self.timeout
+            async with self.pool.acquire() as con:
+                return await con.fetchrow(query, *args, timeout=use_timeout)
+        else:
+            raise ConnectionError("Database pool not initialized.")
+        
+    async def fetch_rows(self, query: str, *args, timeout: Optional[float] = None) -> list[asyncpg.Record]:
+        """
+        Executes a query and returns a list of records.
+        """
+        if self.pool and self.poolInit:
+            use_timeout = timeout if timeout is not None else self.timeout
+            async with self.pool.acquire() as con:
+                return await con.fetch(query, *args, timeout=use_timeout)
+        else:
+            raise ConnectionError("Database pool not initialized.")
+
+    async def executemany(self, query: str, args: list[list[Any]], timeout: Optional[float] = None) -> None:
         """
         Executes a query with multiple sets of arguments.
         """
         if self.pool and self.poolInit:
+            use_timeout = timeout if timeout is not None else self.timeout
             async with self.pool.acquire() as con:
-                await asyncio.wait_for(con.executemany(query, args), timeout=self.timeout)
+                await con.executemany(query, args, timeout=use_timeout)
         else:
             raise ConnectionError("Database pool not initialized.")
 
-    # Not really needed
     async def transaction(self):
         """
         Returns the transaction context manager of the raw asyncpg connection.

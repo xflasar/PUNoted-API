@@ -1,4 +1,5 @@
 import logging
+
 from app.core.redis_client import redis_client
 from endpoints.Public.repositories.buildings_repo import get_buildings_json
 
@@ -35,7 +36,7 @@ async def fetch_building_data(db, ticker: str = None) -> str:
         # 5. Store in Redis
         if json_string and json_string != "[]":
             await redis_client.set(cache_key, json_string, ex=ttl)
-        
+
         return json_string
 
     except Exception as e:

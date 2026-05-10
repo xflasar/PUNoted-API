@@ -1,13 +1,14 @@
 import asyncio
 from collections import defaultdict
-from typing import Any, Dict, Union, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 
 import asyncpg
 import orjson
 
+
 async def get_production_data_nested(
-    db_obj: Union[asyncpg.Pool, asyncpg.Connection], 
-    accountid: str, 
+    db_obj: Union[asyncpg.Pool, asyncpg.Connection],
+    accountid: str,
     include_logistics_data: bool = False
 ) -> Dict[str, Any]:
     """
@@ -25,9 +26,9 @@ async def get_production_data_nested(
         INNER JOIN users AS u ON u.userdataid = ud.userid
         WHERE u.accountid = $1;
     """
-    
+
     sites_records = await db_obj.fetch(query_sites, accountid)
-    
+
     if not sites_records:
         return {}
 
@@ -44,18 +45,18 @@ async def get_production_data_nested(
     }
 
     # 2. PREPARE THE DATA FETCHING TASKS
-    
+
     tasks_def: List[Tuple[str, str, list]] = []
 
     # A. Production Lines
     tasks_def.append((
-        "lines", 
-        "SELECT * FROM site_production_lines WHERE siteid = ANY($1::text[])", 
+        "lines",
+        "SELECT * FROM site_production_lines WHERE siteid = ANY($1::text[])",
         [site_ids]
     ))
 
     # We need to execute LINES immediately to get line_ids for the next steps
-    
+
     # --- IMMEDIATE EXECUTION BLOCK 1 (Lines) ---
     lines_records = await db_obj.fetch("SELECT * FROM site_production_lines WHERE siteid = ANY($1::text[])", site_ids)
     line_ids = [l["productionlineid"] for l in lines_records]
@@ -73,7 +74,7 @@ async def get_production_data_nested(
     recipe_ids = list(set([o["recipeid"] for o in orders_records if o.get("recipeid")]))
 
     # 3. BATCH THE REMAINING HEAVY QUERIES
-    
+
     if recipe_ids:
         input_select = "SELECT pri.productiontemplateid, mti.ticker, pri.factor, pri.id"
         output_select = "SELECT pro.productiontemplateid, mto.ticker, pro.factor, pro.id"
@@ -82,23 +83,23 @@ async def get_production_data_nested(
             output_select += ", mto.weight, mto.volume"
 
         tasks_def.append((
-            "recipes", 
-            "SELECT * FROM production_recipes WHERE productiontemplateid = ANY($1::text[]) AND productionlineid = ANY($2::text[])", 
+            "recipes",
+            "SELECT * FROM production_recipes WHERE productiontemplateid = ANY($1::text[]) AND productionlineid = ANY($2::text[])",
             [recipe_ids, line_ids]
         ))
         tasks_def.append((
-            "inputs", 
-            f"{input_select} FROM production_recipe_input_factors AS pri JOIN materials AS mti ON mti.materialid = pri.materialid WHERE pri.productiontemplateid = ANY($1::text[]) AND pri.productionlineid = ANY($2::text[])", 
+            "inputs",
+            f"{input_select} FROM production_recipe_input_factors AS pri JOIN materials AS mti ON mti.materialid = pri.materialid WHERE pri.productiontemplateid = ANY($1::text[]) AND pri.productionlineid = ANY($2::text[])",
             [recipe_ids, line_ids]
         ))
         tasks_def.append((
-            "outputs", 
-            f"{output_select} FROM production_recipe_output_factors AS pro JOIN materials AS mto ON mto.materialid = pro.materialid WHERE pro.productiontemplateid = ANY($1::text[]) AND pro.productionlineid = ANY($2::text[])", 
+            "outputs",
+            f"{output_select} FROM production_recipe_output_factors AS pro JOIN materials AS mto ON mto.materialid = pro.materialid WHERE pro.productiontemplateid = ANY($1::text[]) AND pro.productionlineid = ANY($2::text[])",
             [recipe_ids, line_ids]
         ))
 
     tasks_def.append((
-        "storage", 
+        "storage",
         """
         WITH target_entities AS (
             -- 1. SITE STORAGE (Active)
@@ -152,7 +153,7 @@ async def get_production_data_nested(
         LEFT JOIN materials m ON m.materialid = ssi.materialid
         
         GROUP BY te.parent_site_id, te.entity_id, te.type, st.storageid;
-        """, 
+        """,
         [site_ids, accountid]
     ))
 
@@ -165,7 +166,7 @@ async def get_production_data_nested(
     else:
         coros = [db_obj.fetch(sql, *params) for name, sql, params in tasks_def]
         results = await asyncio.gather(*coros, return_exceptions=True)
-        
+
         # Map results back to names
         for i, (name, _, _) in enumerate(tasks_def):
             results_map[name] = results[i]
@@ -185,13 +186,13 @@ async def get_production_data_nested(
     # 5. STITCH THE DATA TOGETHER
     recipes_map = {r["productiontemplateid"]: dict(r) for r in recipes_records}
     inputs_by_recipe, outputs_by_recipe = defaultdict(list), defaultdict(list)
-    
+
     for i in inputs_records:
         item = {"id": i["id"], "ticker": i["ticker"], "factor": i["factor"]}
         if include_logistics_data:
             item.update({"weight": i.get("weight", 0), "volume": i.get("volume", 0)})
         inputs_by_recipe[i["productiontemplateid"]].append(item)
-        
+
     for o in outputs_records:
         item = {"id": o["id"], "ticker": o["ticker"], "factor": o["factor"]}
         if include_logistics_data:
@@ -231,7 +232,7 @@ async def get_production_data_nested(
     # Attach Storage to Sites
     for record in storage_records:
         parent_id = record["parent_site_id"]
-        
+
         if parent_id in final_data:
             storage_data = {
                 "id": record.get("storageid"),
@@ -241,7 +242,7 @@ async def get_production_data_nested(
                 "currentTonnage": record.get("weightload"),
                 "currentVolume": record.get("volumeload"),
             }
-            
+
             # Parse Items
             items_raw = record.get("storage_items")
             items = orjson.loads(items_raw) if isinstance(items_raw, str) else (items_raw or [])

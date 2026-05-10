@@ -1,9 +1,10 @@
 from typing import AsyncGenerator, Optional
 
+
 # --- JSON FETCH (Grouped by User) ---
 async def fetch_storages_as_json(db, usernames_list: list, location_filter: Optional[str] = None) -> str:
     async with db.pool.acquire() as conn:
-        
+
         # 1. Base Params
         params = [usernames_list]
 
@@ -156,7 +157,7 @@ async def fetch_storages_as_json(db, usernames_list: list, location_filter: Opti
 # --- CSV STREAM (Flattened & Multi-User) ---
 async def stream_storages_csv(db, usernames_list: list, location_filter: Optional[str] = None) -> AsyncGenerator[list, None]:
     async with db.pool.acquire() as conn:
-        
+
         params = [usernames_list]
 
         loc_filter_clause = ""

@@ -1,13 +1,14 @@
 import csv
 import io
+from typing import Any, Optional
+
 import orjson
-from typing import Optional, Any
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import StreamingResponse, JSONResponse as DefaultJSONResponse
+from fastapi.responses import JSONResponse as DefaultJSONResponse
+from fastapi.responses import StreamingResponse
 
-from auth import RequireAuth
 from app.core.limiter import get_auth_key, limiter
+from auth import RequireAuth
 from endpoints.Protected.services.storageuser import fetch_storages_as_json, stream_storages_csv
 
 storage_router = APIRouter()
@@ -82,7 +83,7 @@ async def get_storages_user(
             return []
         except Exception:
             return []
-            
+
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -108,7 +109,7 @@ async def get_storages_csv(
     try:
         db = request.app.state.db
         valid_targets = getattr(request.state, "valid_target_users", [])
-        
+
         if not valid_targets:
             return Response(content="No permission or users found", media_type="text/plain")
 

@@ -58,7 +58,7 @@ LEFT JOIN WorkforceAgg wa ON b.buildingid = wa.buildingid
 
 async def get_buildings_json(db, tickers: list = None) -> str:
     query = SQL_FETCH_BUILDINGS_BASE
-    
+
     try:
         async with db.pool.acquire() as conn:
             if tickers:
@@ -69,7 +69,7 @@ async def get_buildings_json(db, tickers: list = None) -> str:
             else:
                 json_str = await conn.fetchval(query)
                 return json_str or "[]"
-            
+
     except Exception as e:
         logger.error(f"Error fetching buildings data: {e}", exc_info=True)
         raise e

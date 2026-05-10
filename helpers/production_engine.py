@@ -1,10 +1,12 @@
 # AI GENERATED CODE Help Well not really but yeah
 
-from typing import List, Dict, Any, Optional, Tuple
-import asyncpg
 import logging
 import math
-from collections import defaultdict, Counter, deque
+from collections import defaultdict
+from typing import Any, Dict, List
+
+import asyncpg
+
 from helpers.production_engine_helpers.distribute_infrastructure import distribute_infrastructure
 from helpers.production_engine_helpers.get_total_demand import get_total_demand
 
@@ -14,7 +16,7 @@ PERMIT_CAPS = [500, 750, 1000]
 MS_PER_DAY = 86400000
 
 CX_SYSTEMS = {
-    "AI1": "8ecf9670ba070d78cfb5537e8d9f1b6c", "CI1": "92029ff27c1abe932bd2c61ee4c492c7", "CI2": "a4ba8b12739da65efc2b518703652ee1", 
+    "AI1": "8ecf9670ba070d78cfb5537e8d9f1b6c", "CI1": "92029ff27c1abe932bd2c61ee4c492c7", "CI2": "a4ba8b12739da65efc2b518703652ee1",
     "NC1": "49b6615d39ccba05752b3be77b2ebf36", "NC2": "afda9bea7f948f4a066a8882cdfa9055", "IC1": "f2f57766ebaca9d69efae41ccf4d8853"
 }
 
@@ -22,14 +24,14 @@ CX_SYSTEMS = {
 ENV_MATS = ['MCG', 'AEF', 'SEA', 'HSE', 'MGC', 'BL', 'INS', 'TSH']
 
 async def find_optimal_production_chain(
-    conn: asyncpg.Connection, 
-    ship_parts: List[str], 
-    overrides: Dict[str, str] = None, 
+    conn: asyncpg.Connection,
+    ship_parts: List[str],
+    overrides: Dict[str, str] = None,
     hub_ticker: str = "AI1",
     allowed_tiers: List[int] = [1, 3]
 ) -> Dict[str, Any]:
     hub_sys_id = CX_SYSTEMS.get(hub_ticker, "f2f57766ebaca9d69efae41ccf4d8853")
-    
+
     # 0. Get BOM Demand
     calc_result = await get_total_demand(conn, ship_parts, overrides)
     if calc_result["status"] == "ambiguous":
@@ -38,7 +40,7 @@ async def find_optimal_production_chain(
     total_demand = calc_result["total_demand"]
     raw_demand = calc_result["raw_demand"]
     resolved_recipes = calc_result["resolved_recipes"]
-    
+
     final_products = set(ship_parts)
 
     # 1. Fetch Building Metadata & Build Materials
@@ -48,7 +50,7 @@ async def find_optimal_production_chain(
         FROM buildings b
         LEFT JOIN building_workforce_capacities wc ON wc.buildingid = b.buildingid
     """)
-    
+
     # Fetch Standard Construction Recipes
     bbm_rows = await conn.fetch("""
         SELECT b.ticker as b_ticker, m.ticker as m_ticker, bbm.amount 
@@ -56,7 +58,7 @@ async def find_optimal_production_chain(
         JOIN buildings b ON b.buildingid = bbm.buildingid
         JOIN materials m ON m.materialid = bbm.materialid
     """)
-    
+
     building_recipes = defaultdict(dict)
     construction_materials = set(ENV_MATS) # Start with Environmental Mats
     for r in bbm_rows:
@@ -65,20 +67,20 @@ async def find_optimal_production_chain(
 
     ticker_to_meta = {}
     building_footprints = {}
-    
+
     for r in b_rows:
         t = r['ticker']
         if t not in ticker_to_meta:
             ticker_to_meta[t] = {
-                "reactor": r['buildingid'], 
-                "area": r['area'], "type": r['type'], 
-                "cat": (r['cat'] or "MANUFACTURING").upper(), 
+                "reactor": r['buildingid'],
+                "area": r['area'], "type": r['type'],
+                "cat": (r['cat'] or "MANUFACTURING").upper(),
                 "workforce": [],
                 "base_cost": 0.0 # Standard Prefab Cost (without environment)
             }
         if r['workforcelevel']:
             ticker_to_meta[t]['workforce'].append({"level": r['workforcelevel'], "amount": float(r['capacity'])})
-        building_footprints[t] = r['area'] + 15 + 12 
+        building_footprints[t] = r['area'] + 15 + 12
 
     res_rows = await conn.fetch("""
         SELECT pr.planetid, pr.factor as raw_conc, pr.type as res_type, m.ticker
@@ -89,7 +91,7 @@ async def find_optimal_production_chain(
 
     # 2. Market Check (BOM + All Construction Materials)
     all_tickers = list(set(list(total_demand.keys()) + list(raw_demand.keys()) + list(construction_materials)))
-    
+
     search_patterns = [f"{t}.%" for t in all_tickers]
     market_rows = await conn.fetch("""
         SELECT cb.ticker AS full_ticker, cb.askprice AS buy_price, cb.askamount AS supply 
@@ -97,7 +99,7 @@ async def find_optimal_production_chain(
         INNER JOIN commodity_exchanges ce ON ce.id = cb.exchangeid
         WHERE ce.code = $1 AND cb.ticker LIKE ANY($2)
     """, hub_ticker, search_patterns)
-    
+
     market_map = {r['full_ticker'].split('.')[0]: {"price": float(r['buy_price'] or 0), "supply": int(r['supply'] or 0)} for r in market_rows}
 
     # 3. Calculate BASE Building Costs (Prefabs only)
@@ -114,16 +116,16 @@ async def find_optimal_production_chain(
     refined_raw_demand = dict(raw_demand)
     market_purchase_list = {}
     total_purchase_cost = 0
-    
+
     PRICE_THRESHOLD = 300.0
     MICRO_SITE_THRESHOLD = 300.0
-    MICRO_SITE_PRICE_CAP = 500.0 
+    MICRO_SITE_PRICE_CAP = 500.0
 
     # A. Check RAW Materials
     for ticker, qty in list(refined_raw_demand.items()):
-        if ticker in final_products: continue 
+        if ticker in final_products: continue
         m_data = market_map.get(ticker)
-        
+
         actual_area_needed = 9999
         mat_res = [r for r in res_rows if r['ticker'] == ticker]
         if mat_res:
@@ -152,7 +154,7 @@ async def find_optimal_production_chain(
 
     # B. Check MANUFACTURED Goods
     for ticker, qty in list(refined_total_demand.items()):
-        if ticker in final_products: continue 
+        if ticker in final_products: continue
         continue
 
         m_data = market_map.get(ticker)
@@ -161,7 +163,7 @@ async def find_optimal_production_chain(
             market_purchase_list[ticker] = {"qty": qty, "cost": cost, "reason": "Cheap Manufactured"}
             total_purchase_cost += cost
             del refined_total_demand[ticker]
-            
+
             rec = resolved_recipes.get(ticker)
             if rec:
                 runs = qty / rec['out_q']
@@ -176,7 +178,7 @@ async def find_optimal_production_chain(
     for t, qty in refined_total_demand.items():
         rec = resolved_recipes.get(t)
         if not rec: continue
-        
+
         calc_qty = qty
         if t in final_products:
              daily_output_one_building = (MS_PER_DAY / rec['duration']) * rec['out_q']
@@ -189,18 +191,18 @@ async def find_optimal_production_chain(
         "building_requirements": building_reqs,
         "buildings_meta": ticker_to_meta,
         "total_demand": refined_total_demand,
-        "raw_demand": refined_raw_demand, 
+        "raw_demand": refined_raw_demand,
         "recipes": resolved_recipes,
         "market_prices": market_map # Pass prices to Distributor for dynamic calc
     }
 
     # 6. Allocation
     sites = await distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers)
-    
+
     # 7. UI Data & Final Totals
     sys_rows = await conn.fetch("SELECT systemid, name, positionx as x, positiony as y FROM systems")
     conn_rows = await conn.fetch("SELECT systemidorigin, systemiddestination FROM system_connections")
-    
+
     total_infra_cost = sum(s.get('total_build_cost', 0) for s in sites)
 
     for s in sites:

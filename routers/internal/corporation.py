@@ -1,9 +1,11 @@
+import json
 from typing import List
 
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.security import require_internal_origin
 from auth import get_current_user_id
+from endpoints.Public.services.corp_service import generate_json_data
 from models.corp_production_models import CorpOverviewResponse
 from services.internal.corporation_service import build_corp_production_response
 
@@ -28,3 +30,33 @@ async def corp_production(
             user_id=user_id,
             debug=debug,
         )
+
+
+# FIXME: Rework this endpoint to use the internal service and repo and add corp pricing tables
+@corporation_internal_router.get(
+    "/prices",
+    description="Get corporation market data in JSON format.",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/json": {}},
+            "description": "Returns corporation market data in JSON format."
+        }
+    }
+)
+async def get_corporation_prices_json(
+    request: Request,
+    #corp: Optional[str] = Query(None, description="Search by corp CODE."),
+    user_id: str = Depends(get_current_user_id)
+):
+    db = request.app.state.db
+
+    json_data = await generate_json_data(db)
+
+    return Response(
+        content=json.dumps(json_data),
+        media_type="application/json",
+        headers={
+            "Cache-Control": "public, max-age=1800"
+        }
+    )

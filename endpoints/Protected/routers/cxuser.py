@@ -1,14 +1,15 @@
 import csv
 import io
-import orjson
 from datetime import datetime, timedelta
 from typing import Optional
 
+import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 
-from auth import RequireAuth
 from app.core.limiter import get_auth_key, limiter
+from auth import RequireAuth
+
 from ..services.cxuser import fetch_orders_as_json, stream_orders_csv
 
 cxuser_router = APIRouter()
@@ -18,7 +19,7 @@ async def common_params(
     end_date: Optional[datetime] = Query(None, description="ISO end date"),
     all_time: bool = Query(False, description="If true, ignores default 30-day window"),
     limit: Optional[int] = Query(None, gt=0, description="Max records. Omit to fetch all."),
-    
+
     status: Optional[str] = Query(None, description="Filter by status. [FILLED, PARTIALLY_FILLED, CANCELED]"),
     type: Optional[str] = Query(None, description="Filter by type. [BUYING, SELLING]"),
     ticker: Optional[str] = Query(None, description="Filter by ticker. [H2O, RAT...]"),
@@ -32,11 +33,11 @@ async def common_params(
         start_date = datetime.utcnow() - timedelta(days=30)
 
     return {
-        "start_date": start_date, 
-        "end_date": end_date, 
-        "limit": limit, 
-        "status": status, 
-        "order_type": type, 
+        "start_date": start_date,
+        "end_date": end_date,
+        "limit": limit,
+        "status": status,
+        "order_type": type,
         "ticker": ticker
     }
 
@@ -48,14 +49,14 @@ async def common_params(
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_orders_json(
     request: Request,
-    usernames: Optional[str] = Query(None, description="Comma-separated list of usernames"), 
+    usernames: Optional[str] = Query(None, description="Comma-separated list of usernames"),
     params: dict = Depends(common_params),
     user_id: str = Depends(RequireAuth(["cxdata:read"])),
 ):
     try:
         db = request.app.state.db
         valid_targets = getattr(request.state, "valid_target_users", [])
-        
+
         if not valid_targets:
             return Response(content='[]', media_type="application/json")
 
@@ -117,10 +118,10 @@ async def get_orders_csv(
 ):
     try:
         db = request.app.state.db
-        
+
         # Valid targets are already filtered by Auth based on ?username OR ?usernames
         valid_targets = getattr(request.state, "valid_target_users", [])
-        
+
         if not valid_targets:
             return Response(content="No permission or users found", media_type="text/plain")
 

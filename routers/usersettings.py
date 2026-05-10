@@ -1,13 +1,13 @@
 import json
 import secrets
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Dict, List, Optional
 
-from app.core.security import require_internal_origin
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from app.core.security import require_internal_origin
 from auth import get_current_user_id
 
 user_settings_router = APIRouter(dependencies=[Depends(require_internal_origin)])
@@ -51,7 +51,7 @@ class GlobalSettingsUpdate(BaseModel):
     internal_excluded_sites: Optional[List[str]] = None
     internal_leased_sites: Optional[List[LeasedSiteItem]] = None
     # Privacy settings inside global table (optional override)
-    privacy_settings: Optional[Dict[str, bool]] = None 
+    privacy_settings: Optional[Dict[str, bool]] = None
 
 # --- REFERENCE DATA ---
 class ExchangeRef(BaseModel):
@@ -73,10 +73,10 @@ class UserSiteRef(BaseModel):
 async def get_commodity_exchanges_ref(request: Request):
     """Returns available commodity exchanges for dropdowns."""
     query = "SELECT code, name, currencycode FROM commodity_exchanges ORDER BY code ASC"
-    
+
     async with request.app.state.db.pool.acquire() as conn:
         rows = await conn.fetch(query)
-    
+
     return [
         {"code": r["code"], "name": r["name"], "currencyCode": r["currencycode"]}
         for r in rows
@@ -120,10 +120,10 @@ async def get_user_sites_ref(request: Request, user_id: str = Depends(get_curren
 @user_settings_router.get("/global")
 async def get_global_settings(request: Request, user_id: str = Depends(get_current_user_id)):
     query = "SELECT * FROM user_global_settings WHERE userid = $1"
-    
+
     async with request.app.state.db.pool.acquire() as conn:
         row = await conn.fetchrow(query, user_id)
-    
+
     if not row:
         # Default response if no settings exist
         return {
@@ -133,8 +133,8 @@ async def get_global_settings(request: Request, user_id: str = Depends(get_curre
             "internal_excluded_sites": [],
             "internal_leased_sites": [],
             "privacy_settings": {
-                "allow_corp_view": False, 
-                "allow_global_stats": True, 
+                "allow_corp_view": False,
+                "allow_global_stats": True,
                 "show_financials_on_profile": False
             }
         }
@@ -143,20 +143,20 @@ async def get_global_settings(request: Request, user_id: str = Depends(get_curre
     for field in ["internal_excluded_sites", "internal_leased_sites", "privacy_settings"]:
         if isinstance(data.get(field), str):
             data[field] = json.loads(data[field])
-            
+
     return data
 
 @user_settings_router.put("/global")
 async def update_global_settings(
-    payload: GlobalSettingsUpdate, 
-    request: Request, 
+    payload: GlobalSettingsUpdate,
+    request: Request,
     user_id: str = Depends(get_current_user_id)
 ):
     # Dynamic Query Builder
     fields = []
     values = []
     idx = 1
-    
+
     def add_field(col_name, val, is_json=False):
         nonlocal idx
         fields.append(f"{col_name} = ${idx}")
@@ -187,21 +187,21 @@ async def update_global_settings(
 
     # Add User ID as the last parameter
     values.append(user_id)
-    
+
     # UPSERT Query
     col_names = [f.split(' = ')[0] for f in fields]
     placeholders = [f"${i+1}" for i in range(len(col_names))]
-    
+
     query = f"""
         INSERT INTO user_global_settings (userid, {', '.join(col_names)}, updated_at)
         VALUES (${idx}, {', '.join(placeholders)}, NOW())
         ON CONFLICT (userid) DO UPDATE SET
         {', '.join(fields)}, updated_at = NOW()
     """
-    
+
     async with request.app.state.db.pool.acquire() as conn:
         await conn.execute(query, *values)
-        
+
     return {"status": "success", "updated": col_names}
 
 
@@ -238,7 +238,7 @@ async def create_api_token(payload: TokenCreate, request: Request, user_id: str 
 @user_settings_router.get("/tokens", response_model=List[TokenResponse])
 async def list_api_tokens(request: Request, user_id: str = Depends(get_current_user_id)):
     query = "SELECT id, label, description, permissions, token_hash, created_at FROM user_api_tokens WHERE user_id = $1 ORDER BY created_at DESC"
-    
+
     async with request.app.state.db.pool.acquire() as conn:
         rows = await conn.fetch(query, user_id)
 
@@ -298,7 +298,7 @@ async def delete_api_token(token_id: str, request: Request, user_id: str = Depen
 @user_settings_router.get("/privacy")
 async def get_privacy_settings(request: Request, user_id: str = Depends(get_current_user_id)):
     query = "SELECT page_context, preferences FROM user_web_settings WHERE user_id = $1"
-    
+
     async with request.app.state.db.pool.acquire() as conn:
         rows = await conn.fetch(query, user_id)
 
@@ -322,7 +322,7 @@ async def get_privacy_settings(request: Request, user_id: str = Depends(get_curr
     ]
 
     defaults = {setting["page_context"]: setting["preferences"] for setting in default_web_settings}
-    
+
     # 3. Merge Logic
     for context, default_prefs in defaults.items():
         if context not in settings_map:
@@ -331,7 +331,7 @@ async def get_privacy_settings(request: Request, user_id: str = Depends(get_curr
             for key, val in default_prefs.items():
                 if key not in settings_map[context]:
                     settings_map[context][key] = val
-                    
+
     return settings_map
 
 @user_settings_router.post("/privacy")

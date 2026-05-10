@@ -1,21 +1,19 @@
 # data_handlers.py
 
+import asyncio
 import csv
-import gzip
 import json
 import logging
 import os
+import time
 import uuid
 from collections import defaultdict
 from datetime import datetime
-import time
 from decimal import Decimal
 from io import StringIO
 from typing import Any, Dict, List, Optional
-import asyncio
 
 import asyncpg
-import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -28,11 +26,11 @@ from fastapi import (
 )
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.requests import ClientDisconnect
 
 from auth import get_current_user_id
 from db import Database
 from helpers.production_lines import get_production_data_nested
-from starlette.requests import ClientDisconnect
 
 data_router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -59,7 +57,7 @@ MAX_PAYLOAD_SIZE = 200 * 1024 * 1024
 
 @data_router.post("/data_batch")
 async def data_batch(
-    request: Request, 
+    request: Request,
     user_id: str = Depends(get_current_user_id),
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
@@ -94,7 +92,7 @@ async def data_batch(
         # Get REAL IP for security logging
         x_forwarded_for = request.headers.get("X-Forwarded-For")
         ip_address = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host if request.client else "N/A")
-        
+
         logger.warning(f"SECURITY: {ip_address} | User: {user_id} | JSON Parse Error: {str(e)}")
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
@@ -108,8 +106,8 @@ async def data_batch(
     try:
         async with request.app.state.db.pool.acquire() as conn:
             await conn.execute(
-                "UPDATE users SET xata_updatedat = $2 WHERE accountid = $1;", 
-                user_id, 
+                "UPDATE users SET xata_updatedat = $2 WHERE accountid = $1;",
+                user_id,
                 datetime.now()
             )
     except Exception as e:
@@ -747,7 +745,7 @@ async def create_vendor_store(
             "corpname": corp_name,
             "cx": cx,
         }
-        
+
         return JSONResponse(
             content={
                 "success": True,
@@ -1618,7 +1616,7 @@ def optimize_json_fallback(obj):
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 # --- Cache Configuration ---
-CACHE_TTL_SECONDS = 60 
+CACHE_TTL_SECONDS = 60
 _map_cache = {
     "data": None,
     "timestamp": 0
@@ -1630,7 +1628,7 @@ async def get_dashboard_map(request: Request):
     Fetches and structures all static star map data.
     """
     global _map_cache
-    
+
     # 1. Check Cache
     current_time = time.time()
     if _map_cache["data"] and (current_time - _map_cache["timestamp"] < CACHE_TTL_SECONDS):
@@ -1638,7 +1636,7 @@ async def get_dashboard_map(request: Request):
 
     try:
         pool = request.app.state.db.pool
-        
+
         query_systems = """
             SELECT COALESCE(json_agg(t), '[]')::text FROM (
                 SELECT 
@@ -1747,7 +1745,7 @@ async def get_dashboard_map(request: Request):
         query_vertices = "SELECT COALESCE(json_agg(t), '[]')::text FROM (SELECT externalsubsectorid, index, x, y, z FROM subsector_vertices) t;"
         query_subsectors = "SELECT COALESCE(json_agg(t), '[]')::text FROM (SELECT externalsectorid, externalsubsectorid FROM subsectors) t;"
         query_connections = "SELECT COALESCE(json_agg(t), '[]')::text FROM (SELECT systemidorigin, systemiddestination FROM system_connections) t;"
-        
+
         query_stations = """
             SELECT COALESCE(json_agg(t), '[]')::text FROM (
                 SELECT 
@@ -1757,7 +1755,7 @@ async def get_dashboard_map(request: Request):
                 FROM stations
             ) t;
         """
-        
+
         query_gateways = """
             SELECT COALESCE(json_agg(t), '[]')::text FROM (
                 SELECT 
@@ -1773,7 +1771,7 @@ async def get_dashboard_map(request: Request):
         """
 
         (
-            sys_str, plan_str, sec_str, subv_str, 
+            sys_str, plan_str, sec_str, subv_str,
             subs_str, sysc_str, stat_str, gw_str
         ) = await asyncio.gather(
             pool.fetchval(query_systems),
@@ -1860,7 +1858,7 @@ async def get_dashboard_presence(request: Request, user_id: str = Depends(get_cu
             )
 
             # 2. Fetch TRACKED USERS/FLEETS Presence (Dynamic tracking logic here)
-            
+
             tracked_presence_records = await conn.fetch("""
                 SELECT 
                     'fleet-123' AS location_id,

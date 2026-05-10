@@ -1,11 +1,13 @@
 # endpoints/Protected/routers/vendors.py
 
 from typing import Optional
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-# Import OptionalAuth
-from auth import OptionalAuth 
 from app.core.limiter import get_auth_key, get_public_key, limiter
+
+# Import OptionalAuth
+from auth import OptionalAuth
 from endpoints.Public.repositories.vendors_repo import fetch_public_vendors
 
 vendors_router = APIRouter()

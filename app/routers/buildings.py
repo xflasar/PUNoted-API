@@ -1,12 +1,13 @@
 # app/routers/internal/buildings_router.py
-from fastapi import APIRouter, Depends
 from typing import List
 
+from fastapi import APIRouter, Depends
+
+from app.api.db.dependencies import get_db
 from app.core.security import require_internal_origin
+from app.repositories.buildings_repository import BuildingsRepository
 from app.schemas.internal_planner import InternalBuildingDTO
 from app.services.buildings_service import BuildingsService
-from app.repositories.buildings_repository import BuildingsRepository
-from app.api.db.dependencies import get_db
 
 buildings_router = APIRouter(dependencies=[Depends(require_internal_origin)])
 

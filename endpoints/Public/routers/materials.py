@@ -1,11 +1,13 @@
 from typing import Optional
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-# Import OptionalAuth
-from auth import OptionalAuth 
 from app.core.limiter import get_auth_key, get_public_key, limiter
+
+# Import OptionalAuth
+from auth import OptionalAuth
 from endpoints.Public.services.material_recipes_service import generate_recipes_json
-from endpoints.Public.services.materials_service import generate_materials_data_csv 
+from endpoints.Public.services.materials_service import generate_materials_data_csv
 
 materials_router = APIRouter()
 
@@ -31,7 +33,7 @@ async def get_materials_csv(
     csv_string = await generate_materials_data_csv(db)
 
     return Response(
-        content=csv_string, 
+        content=csv_string,
         media_type="text/csv",
         headers={
             "Content-Disposition": "inline; filename=materials_data.csv",
@@ -59,11 +61,11 @@ async def get_material_recipes(
     user_id: Optional[str] = Depends(OptionalAuth())
 ):
     db = request.app.state.db
-    
+
     json_string = await generate_recipes_json(db, ticker=ticker, tickers=tickers)
-    
+
     return Response(
-        content=json_string, 
+        content=json_string,
         media_type="application/json",
         headers={"Cache-Control": "public, max-age=86400"}
     )

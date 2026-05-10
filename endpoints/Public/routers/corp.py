@@ -1,11 +1,13 @@
 import json
 import logging
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, Request, Response
+
+from fastapi import APIRouter, Depends, Request, Response
+
+from app.core.limiter import get_auth_key, get_public_key, limiter
 
 # Import OptionalAuth
-from auth import OptionalAuth, RequireAuth 
-from app.core.limiter import get_auth_key, get_public_key, limiter
+from auth import OptionalAuth, RequireAuth
 from endpoints.Public.repositories.corp_repo import fetch_corp_members
 from endpoints.Public.services.corp_service import generate_json_data
 
@@ -36,7 +38,7 @@ async def get_corporation_prices_json(
     json_data = await generate_json_data(db)
 
     return Response(
-        content=json.dumps(json_data), 
+        content=json.dumps(json_data),
         media_type="application/json",
         headers={
             "Cache-Control": "public, max-age=1800"
@@ -44,26 +46,26 @@ async def get_corporation_prices_json(
     )
 
 @corporation_router.get(
-    "/members", 
+    "/members",
     summary="Get Corporation Members",
     description="Returns all company members belonging to the requesting user's corporation."
 )
 async def get_corporation_members_endpoint(
     request: Request,
-    user_id: str = Depends(RequireAuth(["corp:read"])) 
+    user_id: str = Depends(RequireAuth(["corp:read"]))
 ):
     db = request.app.state.db
 
     try:
         records = await fetch_corp_members(db, user_id)
-        
+
         # Handle users who are not in a corporation
         if not records:
             return {
-                "success": True, 
+                "success": True,
                 "data": {
-                    "corporation_name": None, 
-                    "corporation_code": None, 
+                    "corporation_name": None,
+                    "corporation_code": None,
                     "members": []
                 }
             }
@@ -71,7 +73,7 @@ async def get_corporation_members_endpoint(
         # 4. Use the exact column names returned by the SQL query: `c.name` and `c.code`
         corporation_name = records[0]["name"]
         corporation_code = records[0]["code"]
-        
+
         # Build the members array
         members = [
             {
@@ -93,7 +95,7 @@ async def get_corporation_members_endpoint(
     except Exception as e:
         logger.error(f"Failed to process corporation members endpoint for user {actual_user_id}: {e}", exc_info=True)
         return Response(
-            status_code=500, 
+            status_code=500,
             content=json.dumps({"success": False, "message": "Internal server error processing corporation data."}),
             media_type="application/json"
         )

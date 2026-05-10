@@ -21,7 +21,7 @@ async def fetch_corp_prices(db) -> list:
     except Exception as e:
         logger.error(f"Database error fetching market data: {e}", exc_info=True)
         raise
-    
+
 SQL_GET_CORP_MEMBERS = """
 WITH TargetCorp AS (
     SELECT corporationid 

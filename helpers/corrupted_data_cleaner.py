@@ -1,5 +1,5 @@
-import ast
 from datetime import datetime
+
 
 def clean_corrupted_record(record):
     cleaned = {}
@@ -7,13 +7,13 @@ def clean_corrupted_record(record):
         # 1. Remove wrapping single quotes from strings
         if isinstance(v, str) and v.startswith("'") and v.endswith("'"):
             v = v.strip("'")
-            
+
         # 2. Fix Boolean strings ("False" -> False)
         if v == "False":
             v = False
         elif v == "True":
             v = True
-            
+
         # 3. Fix "datetime.datetime(...)" strings
         if isinstance(v, str) and v.startswith("datetime.datetime"):
             try:

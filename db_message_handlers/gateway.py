@@ -95,14 +95,14 @@ async def _upsert_gateways(con, records):
 
     vals = [
         (
-            r["id"], r["natural_id"], r["name"], r["type"], r["system_id"], 
-            r["planet_id"], r["satellite_id"], r["owner_admin_center_id"], 
-            r["currency_code"], r["established"], r["operational_state"], 
-            r["link_status"], r["outgoing_link_id"], r["incoming_links"], 
-            r["is_linked"], r["max_ship_volume"], r["linking_radius"], 
-            r["jumps_per_day"], r["capacity_upgrades"], r["volume_upgrades"], 
-            r["distance_upgrades"], r["fuel_available"], r["fuel_max"], 
-            r["fuel_per_jump"], r["fuel_usage_fee"], r["fuel_usage_currency"], 
+            r["id"], r["natural_id"], r["name"], r["type"], r["system_id"],
+            r["planet_id"], r["satellite_id"], r["owner_admin_center_id"],
+            r["currency_code"], r["established"], r["operational_state"],
+            r["link_status"], r["outgoing_link_id"], r["incoming_links"],
+            r["is_linked"], r["max_ship_volume"], r["linking_radius"],
+            r["jumps_per_day"], r["capacity_upgrades"], r["volume_upgrades"],
+            r["distance_upgrades"], r["fuel_available"], r["fuel_max"],
+            r["fuel_per_jump"], r["fuel_usage_fee"], r["fuel_usage_currency"],
             r["avg_fuel_availability"]
         )
         for r in records
@@ -142,8 +142,8 @@ async def _upsert_traffic(con, records):
     """
     vals = [
         (
-            r["gateway_id"], r["total_jumps"], r["current_phase_jumps"], 
-            r["current_phase_inbound"], r["current_phase_start"], 
+            r["gateway_id"], r["total_jumps"], r["current_phase_jumps"],
+            r["current_phase_inbound"], r["current_phase_start"],
             r["current_phase_end"], r["avg_jumps"], r["avg_inbound"],
             json.dumps(r["raw_current_phase"]),
             json.dumps(r["raw_last_phase"]),
@@ -190,7 +190,7 @@ async def _upsert_upkeep_phases(con, records):
     """
     vals = [
         (
-            r["id"], r["gateway_id"], r["natural_id"], r["start_time"], 
+            r["id"], r["gateway_id"], r["natural_id"], r["start_time"],
             r["end_time"], r["service_level"], json.dumps(r["materials_json"])
         )
         for r in records

@@ -1,4 +1,5 @@
 import logging
+
 from fastapi import APIRouter, Depends, Request
 
 from app.core.security import require_internal_origin
@@ -17,9 +18,9 @@ async def get_production_leaderboard(request: Request):
     including their estimated value and 30-day historical trends.
     """
     db = request.app.state.db
-    
+
     data = await leaderboard_service.get_formatted_production_leaderboard(db)
-    
+
     if data:
         return {"success": True, "data": data}
     else:

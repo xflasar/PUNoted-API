@@ -1,4 +1,5 @@
 import logging
+
 from repositories import leaderboard_repo
 
 logger = logging.getLogger(__name__)
@@ -23,17 +24,17 @@ async def get_formatted_production_leaderboard(db):
 
             if ticker not in history_pivot:
                 history_pivot[ticker] = {}
-            
+
             if date_str not in history_pivot[ticker]:
                 history_pivot[ticker][date_str] = {"date": date_str}
-            
+
             history_pivot[ticker][date_str][comp_code] = score
 
         # 3. Format the current top 25
         leaderboard_data = {}
         for row in current_rows:
             ticker = row["material_ticker"]
-            
+
             if ticker not in leaderboard_data:
                 # Retrieve and sort the history for this specific ticker
                 material_history = []
@@ -47,7 +48,7 @@ async def get_formatted_production_leaderboard(db):
                     "top_25": [],
                     "history30d": material_history
                 }
-            
+
             leaderboard_data[ticker]["top_25"].append({
                 "company_code": row["company_code"] or "UNKNOWN",
                 "company_name": row["company_name"] or "Unknown Company",

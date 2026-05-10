@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, status
 
 from app.core.security import require_internal_origin
 from auth import validate_token
-
 from helpers.cx_analysis import get_cx_dashboard_data
 from helpers.fetchdb import fetch_initial_ship_data
 from helpers.shipments import (

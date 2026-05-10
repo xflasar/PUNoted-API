@@ -1,7 +1,5 @@
 import logging
-from typing import Any, Dict, List
-
-import asyncpg
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +20,13 @@ async def handle_material_categories_message(db_wrapper, raw_payload: Dict[str, 
         async with db_wrapper.pool.acquire() as con:
             # Start transaction
             async with con.transaction():
-                
+
                 # --- Step 1: Material Categories ---
                 if category_records:
                     logger.debug(f"Processing {len(category_records)} records for 'material_categories'...")
 
                     raw_keys = list(category_records[0].keys())
-                    
+
                     # MAPPING: JSON 'categoryid' -> DB 'id'
                     db_cols = []
                     for k in raw_keys:
@@ -39,10 +37,10 @@ async def handle_material_categories_message(db_wrapper, raw_payload: Dict[str, 
 
                     cols_str = ", ".join(db_cols)
                     vals_str = ", ".join([f"${i + 1}" for i in range(len(db_cols))])
-                    
+
                     # Update clause (exclude PK 'id')
                     update_set = ", ".join([
-                        f"{col} = EXCLUDED.{col}" 
+                        f"{col} = EXCLUDED.{col}"
                         for col in db_cols if col != 'id'
                     ])
 
@@ -67,13 +65,13 @@ async def handle_material_categories_message(db_wrapper, raw_payload: Dict[str, 
 
                     # NO MAPPING NEEDED: DB column is 'materialid', matches JSON.
                     keys = list(material_records[0].keys())
-                    
+
                     cols_str = ", ".join(keys)
                     vals_str = ", ".join([f"${i + 1}" for i in range(len(keys))])
-                    
+
                     # Update clause (exclude PK 'materialid')
                     update_set = ", ".join([
-                        f"{k} = EXCLUDED.{k}" 
+                        f"{k} = EXCLUDED.{k}"
                         for k in keys if k != 'materialid'
                     ])
 

@@ -1,4 +1,5 @@
 import logging
+
 from app.core.redis_client import redis_client
 from repositories.finances_repo import get_financial_overview_json, get_transaction_details_json
 
@@ -17,7 +18,7 @@ async def fetch_financial_overview(db, user_id: str) -> str:
 
         if json_string and json_string != "{}":
             await redis_client.set(cache_key, json_string, ex=ttl)
-        
+
         return json_string
 
     except Exception as e:
@@ -37,7 +38,7 @@ async def fetch_transaction_details(db, user_id: str, tx_id: str) -> str:
 
         if json_string and json_string != "{}":
             await redis_client.set(cache_key, json_string, ex=ttl)
-        
+
         return json_string
 
     except Exception as e:

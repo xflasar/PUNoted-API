@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends
 from typing import List
 
+from fastapi import APIRouter, Depends
+
+from app.api.db.dependencies import get_db
 from app.core.security import require_internal_origin
+from app.repositories.materials_repository import MaterialsRepository
 from app.schemas.internal_planner import InternalMaterialDTO
 from app.services.materials_service import MaterialsService
-from app.repositories.materials_repository import MaterialsRepository
-from app.api.db.dependencies import get_db 
 
 materials_router = APIRouter(dependencies=[Depends(require_internal_origin)])
 

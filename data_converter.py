@@ -133,7 +133,7 @@ def convert_public_user_data(raw_payload: Dict[str, Any]) -> List[Dict[str, Any]
     for record in raw_records:
         # Extract the payload whether it is nested under 'body' or passed directly
         data = record
-        
+
         company = data.get("company") or {}
         created = data.get("created") or {}
         gifts = data.get("gifts") or {}
@@ -154,7 +154,7 @@ def convert_public_user_data(raw_payload: Dict[str, Any]) -> List[Dict[str, Any]
                 "active_days_per_week": data.get("activeDaysPerWeek"),
                 "created_timestamp": created.get("timestamp"),
                 # Serialize JSONB payload for database insertion
-                "gifts": json.dumps(gifts) if gifts else None 
+                "gifts": json.dumps(gifts) if gifts else None
             }
         )
     return converted_records
@@ -1998,7 +1998,6 @@ def convert_system_connections_data(
     return converted_records
 
 
-import json
 import logging
 from datetime import datetime
 from typing import Any, Dict, List
@@ -2022,7 +2021,7 @@ def convert_planets_data(raw_data: Dict[str, Any]) -> Dict[str, List[Dict[str, A
 
     # 1. Normalize Payload
     payload = raw_data.get("payload")
-    
+
     if not payload:
         return {}
 
@@ -2037,10 +2036,10 @@ def convert_planets_data(raw_data: Dict[str, Any]) -> Dict[str, List[Dict[str, A
     for item in items_to_process:
         # --- Safe Data Extraction ---
         planet_id = item.get("planetId")
-        
+
         physical_data = item.get("data") or {}
         country = item.get("country") or {}
-        
+
         # Skip invalid records without an ID
         if not planet_id:
             continue
@@ -2075,10 +2074,10 @@ def convert_planets_data(raw_data: Dict[str, Any]) -> Dict[str, List[Dict[str, A
 
         # --- 3. System ID Extraction ---
         address_lines = item.get("address", {}).get("lines", [])
-        
+
         # FIX: Use (l.get("entity") or {}) to handle explicit nulls safely
         system_id = next((
-            (l.get("entity") or {}).get("id") 
+            (l.get("entity") or {}).get("id")
             for l in address_lines if l.get("type") == "SYSTEM"
         ), None)
 
@@ -2241,7 +2240,7 @@ def convert_leaderboard_scores(raw_payload: Union[Dict[str, Any], List[Dict[str,
     for item in items_to_process:
         # Safely extract the core payload wrapper
         payload = item.get("payload", item.get("body", item))
-        
+
         scores = payload.get("scores", [])
         if not scores:
             continue
@@ -2249,7 +2248,7 @@ def convert_leaderboard_scores(raw_payload: Union[Dict[str, Any], List[Dict[str,
         # Extract context fields that apply to all scores in this batch
         category = payload.get("type", "UNKNOWN")
         time_range = payload.get("range", "ALL_TIME")
-        
+
         # Safe fallback for materials (e.g., categories like WEALTH have no material)
         if category == "PRODUCTION":
             material_data = payload.get("material") or {}
@@ -2286,10 +2285,10 @@ def generate_recipe_hash(reactor_id: str, duration_ms: int, inputs: List[Dict], 
     # Format: "ID-Amount,ID-Amount"
     input_str = ",".join([f"{i['material']['id']}-{i['amount']}" for i in sorted_inputs])
     output_str = ",".join([f"{o['material']['id']}-{o['amount']}" for o in sorted_outputs])
-    
+
     # Structure: Reactor|Duration|IN:...|OUT:...
     unique_string = f"{reactor_id}|{duration_ms}|IN:{input_str}|OUT:{output_str}"
-    
+
     return hashlib.md5(unique_string.encode('utf-8')).hexdigest()
 
 def normalize_recipe_object(raw_recipe: Dict[str, Any], reactor_id: str) -> Dict[str, Any]:
@@ -2328,14 +2327,14 @@ def convert_world_material_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     payload = data.get('payload', {})
     raw_recipes = payload.get('outputRecipes', [])
-    
+
     converted = []
     for r in raw_recipes:
         # In Material Data, reactorId is usually embedded in the recipe object
         reactor_id = r.get('reactorId')
         if reactor_id:
             converted.append(normalize_recipe_object(r, reactor_id))
-            
+
     return converted
 
 def determine_building_type(ticker: str, name: str, expertise: str) -> str:
@@ -2345,23 +2344,23 @@ def determine_building_type(ticker: str, name: str, expertise: str) -> str:
     """
     ticker_u = ticker.upper()
     name_l = name.lower()
-    
+
     # 1. HABITATION Rule
     if ticker_u.startswith("HB") or "habitation" in name_l:
         return "HABITATION"
-        
+
     # 2. STORAGE Rule
     if "storage" in name_l:
         return "STORAGE"
-        
+
     # 3. CORE Rule
     if ticker_u == "CM":
         return "CORE"
-        
+
     # 4. MANUFACTURING Rule (Anything with an expertise category)
     if expertise:
         return "MANUFACTURING"
-        
+
     # Default Fallback (e.g. Corporate HQ, Local Market)
     return "INFRASTRUCTURE"
 
@@ -2375,7 +2374,7 @@ def convert_world_reactor_data(data: Dict[str, Any]) -> Dict[str, Any]:
     4. material_recipe_ingredients
     """
     data = data['payload']
-    
+
     # --- 1. PARSE BUILDING ---
     building_row = {
         "buildingid": data['id'],
@@ -2389,7 +2388,7 @@ def convert_world_reactor_data(data: Dict[str, Any]) -> Dict[str, Any]:
     # --- 2. PARSE BUILDING COSTS (building_build_materials) ---
     build_mat_rows = []
     raw_costs = data.get('buildingCosts', [])
-    
+
     for cost in raw_costs:
         build_mat_rows.append({
             "buildingid": data['id'],
@@ -2400,18 +2399,18 @@ def convert_world_reactor_data(data: Dict[str, Any]) -> Dict[str, Any]:
     # --- 3. PARSE RECIPES ---
     recipe_rows = []
     recipe_ingredient_rows = []
-    
+
     raw_recipes = data.get('recipes', [])
-    
+
     for r in raw_recipes:
         # Extract basic data
         duration_ms = r.get('duration', {}).get('millis', 0)
         inputs = r.get('inputs', [])
         outputs = r.get('outputs', [])
-        
+
         # Generate ID
         rec_id = generate_recipe_hash(data['id'], duration_ms, inputs, outputs)
-        
+
         # Add to material_recipes (The Header)
         recipe_rows.append({
             "id": rec_id,
@@ -2419,7 +2418,7 @@ def convert_world_reactor_data(data: Dict[str, Any]) -> Dict[str, Any]:
             "duration_ms": duration_ms,
             "building_ticker": data['ticker'] # Helpful for debugging
         })
-        
+
         # Add INPUTS to material_recipe_ingredients
         for i in inputs:
             recipe_ingredient_rows.append({
@@ -2429,7 +2428,7 @@ def convert_world_reactor_data(data: Dict[str, Any]) -> Dict[str, Any]:
                 "amount": i['amount'],
                 "material_ticker": i['material']['ticker'] # Optional, depending on DB schema
             })
-            
+
         # Add OUTPUTS to material_recipe_ingredients
         for o in outputs:
             recipe_ingredient_rows.append({
@@ -2776,11 +2775,11 @@ def convert_commodity_exchanges_data(
         # 2. Iterate through address lines to find System and Station IDs
         system_id = None
         station_id = None
-        
+
         for line in address_lines:
             line_type = line.get("type")
             entity = line.get("entity", {})
-            
+
             if line_type == "SYSTEM":
                 system_id = entity.get("id")
             elif line_type == "STATION":
@@ -2801,7 +2800,7 @@ def convert_commodity_exchanges_data(
                 "stationid": station_id,
             }
         )
-        
+
     return converted_records
 
 

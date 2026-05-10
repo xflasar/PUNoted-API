@@ -1,30 +1,29 @@
 # AI GENERATED CODE Help Well not really but yeah
 
-import asyncio
-import logging
 import json
-import networkx as nx
-from typing import Dict, List, Any, Tuple
+import logging
 from collections import defaultdict
-import asyncpg
 from datetime import datetime, timezone
-import math
+from typing import Dict, List, Tuple
+
+import asyncpg
+import networkx as nx
 
 from app.core.ai_client import query_local_ai_json
-from helpers.production_lines import get_production_data_nested
 from helpers.logistics_analysis import calculate_site_production_flow
+from helpers.production_lines import get_production_data_nested
 
 logger = logging.getLogger(__name__)
 
 # --- CONFIGURATION ---
 MS_PER_HOUR = 3600 * 1000
-DEFAULT_STL_FUEL_COST = 8500  
+DEFAULT_STL_FUEL_COST = 8500
 DEFAULT_FTL_FUEL_COST = 3600
 
 # Thresholds
-MIN_BATCH_VOLUME = 500  
-MIN_BATCH_WEIGHT = 500  
-STORAGE_SAFETY_BUFFER = 0.15 
+MIN_BATCH_VOLUME = 500
+MIN_BATCH_WEIGHT = 500
+STORAGE_SAFETY_BUFFER = 0.15
 
 # Fuel Tanks
 TANK_CAPACITY = {
@@ -56,8 +55,8 @@ async def run_logistics_pipeline(db, user_id: str):
 
     if not tasks:
         return {
-            "success": True, 
-            "status": "Logistics Optimized.", 
+            "success": True,
+            "status": "Logistics Optimized.",
             "data": {"director_commentary": "Global supply chain balanced. No actions required.", "orders": []}
         }
 
@@ -68,7 +67,7 @@ async def run_logistics_pipeline(db, user_id: str):
 
     fleet_advice = generate_fleet_advice(unserved_tasks, fleet)
     ai_response = await generate_ai_master_plan(route_plan, fleet_advice)
-    
+
     return {"success": True, "data": ai_response}
 
 
@@ -82,29 +81,29 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
     Sorts final routes using Nearest Neighbor logic to prevent zig-zagging.
     Enforces strict STL vs FTL capability rules.
     """
-    
+
     # --- A. SETUP SIMULATION STATE ---
     sim_ships = []
     now = datetime.now(timezone.utc)
-    
+
     for s in fleet:
         # Timezone Fix
         arrival = s.get('flight_arrival')
         if arrival and arrival.tzinfo is None: arrival = arrival.replace(tzinfo=timezone.utc)
-        
+
         is_busy = s['status'] == 'FLIGHT' or (s['flightid'] and arrival and arrival > now)
-        
+
         # Calculate Effective Location & Availability
         location = s['system_id']
         avail_mins = 0
-        
+
         if is_busy:
             location = s.get('flight_dest_sys', s['system_id'])
             if arrival:
                 avail_mins = max(1, (arrival - now).total_seconds() / 60)
             else:
-                avail_mins = 60 
-        
+                avail_mins = 60
+
         # KEY FIX: Use defaultdict(int) to prevent KeyError during subtraction
         manifest = defaultdict(int)
         for i in s.get('inventory', []):
@@ -118,17 +117,17 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
             "free_weight": (s['weightcapacity'] or 0) - (s.get('weightload') or 0),
             "free_vol": (s['volumecapacity'] or 0) - (s.get('volumeload') or 0),
             "stops": [],
-            "cargo_manifest": manifest, 
+            "cargo_manifest": manifest,
             "score_log": []
         })
 
     # Index Sources
     source_map = defaultdict(list)
-    
+
     # 1. Static Sources
     for src in sources:
         source_map[src['material']].append(src)
-        
+
     # 2. Mobile Sources (Ships with cargo)
     for sim in sim_ships:
         for mat, amt in sim['cargo_manifest'].items():
@@ -137,27 +136,27 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
                     "source_type": "SHIP_INVENTORY",
                     "source_id": sim['id'],
                     "name": "Onboard",
-                    "system_id": sim['loc'], 
+                    "system_id": sim['loc'],
                     "material": mat,
                     "amount": amt
                 })
 
     solved_tasks = set()
-    
+
     # --- B. THE ASSIGNMENT LOOP ---
     while True:
         best_assignment = None
         best_score = -float('inf')
-        
+
         pending_pulls = [t for t in tasks if t['type'] == 'PULL' and id(t) not in solved_tasks]
         pending_relocs = [t for t in tasks if t['type'] == 'RELOCATE' and id(t) not in solved_tasks]
-        
+
         if not pending_pulls and not pending_relocs: break
 
         # 1. EVALUATE RELOCATIONS
         for task in pending_relocs:
             sim = next((s for s in sim_ships if s['id'] == task['ship_id']), None)
-            if sim and not sim['stops']: 
+            if sim and not sim['stops']:
                 # [STRICT CONSTRAINT] STL Ships cannot relocate between systems
                 if not sim['data']['is_ftl'] and sim['loc'] != task['target_system']:
                     continue
@@ -175,23 +174,23 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
         for task in pending_pulls:
             mat = task['material']
             needed = task['amount_needed']
-            
+
             potential_sources = source_map.get(mat, [])
-            if not potential_sources: continue 
+            if not potential_sources: continue
 
             for sim in sim_ships:
                 s_stats = mat_stats.get(mat, {'weight': 1, 'volume': 1})
                 max_w = sim['free_weight'] / s_stats['weight']
                 max_v = sim['free_vol'] / s_stats['volume']
                 max_carry = int(min(max_w, max_v))
-                
+
                 # Exception: If source is THIS ship, we don't need free space, we just need the item
                 is_onboard_source = any(src['source_type'] == 'SHIP_INVENTORY' and src['source_id'] == sim['id'] for src in potential_sources)
-                if not is_onboard_source and max_carry <= 0: continue 
+                if not is_onboard_source and max_carry <= 0: continue
 
                 for src in potential_sources:
                     if src['system_id'] == task['target_system'] and src['source_type'] != 'SHIP_INVENTORY':
-                        continue 
+                        continue
 
                     # [STRICT CONSTRAINT] STL / FTL Logic
                     if not sim['data']['is_ftl']:
@@ -203,17 +202,17 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
                     dist_to_src = get_jumps(galaxy_graph, sim['loc'], src['system_id'])
                     dist_to_dst = get_jumps(galaxy_graph, src['system_id'], task['target_system'])
                     total_dist = dist_to_src + dist_to_dst
-                    
+
                     score = 100 - (total_dist * 5) - (sim['busy_for'] * 0.5)
-                    
+
                     if src['source_type'] == 'SHIP_INVENTORY' and src['source_id'] == sim['id']:
                         score += 500
                         dist_to_src = 0
                         # If onboard, we can deliver even if "free space" is 0 (we are emptying it)
-                        max_carry = src['amount'] 
-                    
+                        max_carry = src['amount']
+
                     if sim['loc'] == src['system_id']: score += 20
-                    
+
                     if score > best_score:
                         best_score = score
                         best_assignment = (sim, task, src, max_carry)
@@ -222,7 +221,7 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
         if best_assignment:
             sim, task, src, max_carry = best_assignment
             amount = min(needed, src['amount'], max_carry)
-            
+
             if amount > 0:
                 s_stats = mat_stats.get(task['material'], {'weight': 1, 'volume': 1})
 
@@ -256,8 +255,8 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
                     "reason": "Supply Fulfillment"
                 })
 
-                sim['loc'] = task['target_system'] 
-                
+                sim['loc'] = task['target_system']
+
                 task['amount_needed'] -= amount
                 if task['amount_needed'] <= 0:
                     solved_tasks.add(id(task))
@@ -268,12 +267,12 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
 
     # --- C. ROUTE CONSTRUCTION & SMOOTHING ---
     final_routes = []
-    
+
     for sim in sim_ships:
         if not sim['stops'] and not sim['busy_for']: continue
-        
+
         route = {
-            "ship_id": sim['id'], "ship_name": sim['data']['name'], 
+            "ship_id": sim['id'], "ship_name": sim['data']['name'],
             "strategy": "Global Opt.",
             "status": "ACTIVE" if sim['data']['status'] == 'FLIGHT' else "READY",
             "start_delay_mins": sim['busy_for'],
@@ -288,13 +287,13 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
         if sim['busy_for'] > 0:
             route['stops'].append({
                 "action": "FINISH_FLIGHT",
-                "location": f"Transit -> {sim['loc']}", 
+                "location": f"Transit -> {sim['loc']}",
                 "est_time": f"{sim['busy_for']}m"
             })
             current_sys = sim['loc']
 
         ordered_stops = optimize_stop_sequence(sim['stops'], current_sys, galaxy_graph)
-        
+
         for stop in ordered_stops:
             if stop['system'] != current_sys:
                 t, c, f_f, f_s = estimate_flight_metrics(current_sys, stop['system'], galaxy_graph, flight_history, global_avgs)
@@ -306,9 +305,9 @@ def optimize_routes_global(tasks, fleet, galaxy_graph, mat_stats, flight_history
                     "fuel_est": f"FTL:{int(f_f)} STL:{int(f_s)}"
                 })
                 current_sys = stop['system']
-            
+
             route['stops'].append(stop)
-            
+
             if 'amount' in stop and 'material' in stop:
                 s_stats = mat_stats.get(stop['material'], {'weight':1, 'volume':1})
                 if stop['action'] == 'PICKUP':
@@ -345,28 +344,28 @@ def optimize_stop_sequence(stops, start_sys, G):
     but optimizes System A -> System B travel.
     """
     if not stops: return []
-    
+
     # 1. Group by System
     sys_groups = defaultdict(list)
     for s in stops:
         sys_groups[s['system']].append(s)
-        
+
     # 2. Sort Systems by Nearest Neighbor
     sorted_systems = []
     current = start_sys
     remaining_systems = list(sys_groups.keys())
-    
+
     while remaining_systems:
         # Find closest system
         closest = None
         min_dist = 9999
-        
+
         for sys in remaining_systems:
             d = get_jumps(G, current, sys)
             if d < min_dist:
                 min_dist = d
                 closest = sys
-        
+
         if closest:
             sorted_systems.append(closest)
             remaining_systems.remove(closest)
@@ -375,7 +374,7 @@ def optimize_stop_sequence(stops, start_sys, G):
             # Graph disconnect? Just create remaining
             sorted_systems.extend(remaining_systems)
             break
-            
+
     # 3. Flatten
     final_order = []
     for sys in sorted_systems:
@@ -383,7 +382,7 @@ def optimize_stop_sequence(stops, start_sys, G):
         actions = sys_groups[sys]
         actions.sort(key=lambda x: 0 if x['action'] == 'UNLOAD' else 1)
         final_order.extend(actions)
-        
+
     return final_order
 
 async def fetch_user_warehouses(conn: asyncpg.Connection, user_id: str) -> List[Dict]:
@@ -492,8 +491,8 @@ async def fetch_system_map(conn: asyncpg.Connection) -> nx.Graph:
     return G
 
 def analyze_logistics_state(sites, warehouses, cx_data, mat_stats, fleet):
-    tasks = []   
-    sources = [] 
+    tasks = []
+    sources = []
     for wh in warehouses:
         for item in wh['storage']: sources.append({"source_type": "WAREHOUSE", "source_id": wh['id'], "name": wh['name'], "system_id": wh['system_id'], "material": item['ticker'], "amount": item['amount']})
     sources.extend(cx_data)
@@ -506,7 +505,7 @@ def analyze_logistics_state(sites, warehouses, cx_data, mat_stats, fleet):
         is_extraction = len(site['inputs']) == 0 and len(site['outputs']) > 0
         pull_target_days = 30 if is_extraction else 14
         for ticker in set(site['consumption_rates'].keys()) | set(site['production_rates'].keys()) | set(inv_map.keys()):
-            prod_rate, cons_rate, current_amt = site['production_rates'].get(ticker, 0), site['consumption_rates'].get(ticker, 0), inv_map.get(ticker) or 0 
+            prod_rate, cons_rate, current_amt = site['production_rates'].get(ticker, 0), site['consumption_rates'].get(ticker, 0), inv_map.get(ticker) or 0
             net_flow = prod_rate - cons_rate
             if net_flow >= 0:
                 excess_amt = current_amt - int(cons_rate * 1.0)
@@ -569,7 +568,7 @@ def consolidate_stops_aggregated(stops):
 
 def estimate_flight_metrics(origin, dest, graph, history, global_avgs):
     if not origin or not dest: return (0, 9999999, 0, 0)
-    if origin == dest: return (1800000, 500, 0, 100) 
+    if origin == dest: return (1800000, 500, 0, 100)
     if (origin, dest) in history:
         stats = history[(origin, dest)]
         return (stats['avg_ms'], (stats['avg_stl_fuel'] * 5) + stats['avg_ftl_fuel'], stats['avg_ftl_fuel'], stats['avg_stl_fuel'])
@@ -589,7 +588,7 @@ async def generate_ai_master_plan(route_plans, advice):
     for r in route_plans:
         stops_desc = []
         for s in r['stops']:
-            if 'items' in s: 
+            if 'items' in s:
                 lines = [f"{i['amount']} {i['material']} ({i.get('reason','?')})" for i in s['items']]
                 stops_desc.append(f"{s['action']} @ {s['location']}: " + ", ".join(lines))
             elif s['action'] == 'FLY': stops_desc.append(f"FLY -> {s['location']} ({s.get('est_time')}) Fuel: {s.get('fuel_est')}")
@@ -598,5 +597,5 @@ async def generate_ai_master_plan(route_plans, advice):
     prompt = f"""You are the Logistics Director. Provide a concise plan. DO NOT GENERATE FAKE ORDERS. Use only the data below. PLAN: {json.dumps(context_routes, indent=2)} ALERTS: {json.dumps(advice, indent=2)} OUTPUT JSON: {{ "director_commentary": "...", "fleet_recommendations": ["..."] }}"""
     ai_res = await query_local_ai_json(prompt)
     if not ai_res: ai_res = {}
-    ai_res["orders"] = route_plans 
+    ai_res["orders"] = route_plans
     return ai_res

@@ -1,9 +1,11 @@
 import csv
-from decimal import Decimal
+import json
 import logging
+from decimal import Decimal
 from io import StringIO
-from endpoints.Public.repositories.cx_repo import fetch_pivoted_market_data
+
 from app.core.redis_client import redis_client
+from endpoints.Public.repositories.cx_repo import fetch_pivoted_market_data
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +22,12 @@ CSV_HEADERS = [
 async def generate_market_data_csv(db) -> str:
     try:
         cache_key = "cx_prices_csv_data"
+        
         # 1. Check Redis Cache
         cached_csv = await redis_client.get(cache_key)
         if cached_csv:
             return cached_csv
-        
+
         records = await fetch_pivoted_market_data(db)
 
         output = StringIO()
@@ -38,39 +41,62 @@ async def generate_market_data_csv(db) -> str:
             row_data = []
             for header in CSV_HEADERS:
                 value = record.get(header)
-                
+                # Strict fallback for NULL/Empty DB values
                 if value is None or value == "":
                     row_data.append("0")
                 else:
                     row_data.append(str(value))
-            
+
             writer.writerow(row_data)
 
         csv_string = output.getvalue()
         output.close()
 
+        # Cache in Redis for 30 minutes
         await redis_client.set(cache_key, csv_string, ex=1800)
-        
+
         return csv_string
 
     except Exception as e:
         logger.error(f"Failed to generate CSV for market data: {e}", exc_info=True)
         raise
 
+
 async def generate_json_data(db) -> list:
     try:
+        cache_key = "cx_prices_json_data"
+        
+        # 1. Check Redis Cache (Crucial for frontend performance)
+        cached_json = await redis_client.get(cache_key)
+        if cached_json:
+            return json.loads(cached_json)
+
         records = await fetch_pivoted_market_data(db)
         json_data = []
-        
+
         for record in records:
-            # Using the walrus operator (:=) to fetch, assign, and type-check in one optimized step.
-            json_data.append({
-                header: float(val) if isinstance(val := record.get(header, 0), Decimal) else val 
-                for header in CSV_HEADERS 
-                if header != "last_update"
-            })
-            
+            row_dict = {}
+            for header in CSV_HEADERS:
+                if header == "last_update":
+                    continue
+                
+                val = record.get(header)
+                
+                # Strict fallback to prevent React NaN errors from DB NULLs
+                if val is None or val == "":
+                    row_dict[header] = 0
+                elif isinstance(val, Decimal):
+                    row_dict[header] = float(val)
+                else:
+                    row_dict[header] = val
+                    
+            json_data.append(row_dict)
+
+        # Cache in Redis for 30 minutes (Store as JSON string)
+        await redis_client.set(cache_key, json.dumps(json_data), ex=1800)
+
         return json_data
+
     except Exception as e:
         logger.error(f"Failed to generate JSON data for market data: {e}", exc_info=True)
         raise

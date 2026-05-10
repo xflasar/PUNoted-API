@@ -1,13 +1,13 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 import orjson
-from asyncpg import PostgresError
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse as DefaultJSONResponse, StreamingResponse
+from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import JSONResponse as DefaultJSONResponse
+from fastapi.responses import StreamingResponse
 
-from auth import RequireAuth
 from app.core.limiter import get_auth_key, limiter
+from auth import RequireAuth
 from endpoints.Protected.repositories.contracts_repo import get_filtered_contracts, stream_contracts_csv
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ async def get_contracts(
 ):
     pool = request.app.state.db.pool
     valid_targets = getattr(request.state, "valid_target_users", [])
-    
+
     if not valid_targets:
         return Response(content='[]', media_type="application/json")
 
@@ -76,7 +76,7 @@ async def get_contract_user(
     user_id: str = Depends(RequireAuth(["contracts:read"]))
 ):
     pool = request.app.state.db.pool
-    
+
     target_user = getattr(request.state, "valid_target_users", [])
 
     async with pool.acquire() as conn:
@@ -91,7 +91,7 @@ async def get_contract_user(
             limit=limit,
             page=page
         )
-        
+
         try:
             data_list = orjson.loads(json_str)
             if data_list and "Contracts" in data_list[0]:

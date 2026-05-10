@@ -1,13 +1,13 @@
-from typing import Optional, Any
+import logging
+from typing import Any, Optional
+
 import orjson
-from fastapi import APIRouter, Depends, Query, Request, Response, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse as DefaultJSONResponse
 
-from auth import RequireAuth
 from app.core.limiter import get_auth_key, limiter
+from auth import RequireAuth
 from endpoints.Protected.repositories.production_repo import search_production_lines
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ async def search_production_user(
             return []
         except Exception:
             return []
-        
+
 @production_router.get(
     "/user/burn",
     summary="Get Single User Burn Production",
@@ -97,7 +97,7 @@ async def search_burn_production_user(
 
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
-    
+
     async with pool.acquire() as conn:
         # 1. Fetch standard multi-user structure
         json_str = await search_production_lines(conn, valid_targets, location, burn=True)
@@ -107,8 +107,8 @@ async def search_burn_production_user(
             data_list = orjson.loads(json_str)
             if data_list and "BurnRates" in data_list[0]:
                 return data_list[0]["BurnRates"]
-                
-            return {} 
+
+            return {}
         except Exception as e:
             request.app.state.logger.error(f"Error unwrapping burn data: {e}")
             return {}
@@ -128,13 +128,13 @@ async def search_simple_production_user(
 
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
-    
+
     async with pool.acquire() as conn:
         json_str = await search_production_lines(conn, valid_targets, burn=True, simple=True)
 
         try:
             parsed_data = orjson.loads(json_str)
-            
+
             return parsed_data if parsed_data else {}
         except Exception as e:
             logger.error(f"Error unwrapping simple production data: {e}", exc_info=True)

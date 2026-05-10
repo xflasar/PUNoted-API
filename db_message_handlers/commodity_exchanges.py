@@ -22,10 +22,10 @@ async def handle_commodity_exchanges_message(db: Database, raw_payload: Dict[str
         async with db.pool.acquire() as con:
             async with con.transaction():
                 await _upsert_records(
-                    con, 
-                    "commodity_exchanges", 
-                    exchanges_to_upsert, 
-                    ["id"] 
+                    con,
+                    "commodity_exchanges",
+                    exchanges_to_upsert,
+                    ["id"]
                 )
 
     except Exception as e:

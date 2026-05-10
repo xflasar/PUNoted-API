@@ -1,9 +1,9 @@
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, Request, Response
-import json
 
-from auth import OptionalAuth 
+from fastapi import APIRouter, Depends, Query, Request, Response
+
 from app.core.limiter import get_auth_key, get_public_key, limiter
+from auth import OptionalAuth
 from endpoints.Public.services.planets_service import get_planet_data
 
 planets_router = APIRouter()
@@ -26,7 +26,7 @@ async def get_planets(
     json_string = await get_planet_data(db, ticker=ticker, full=full)
 
     return Response(
-        content=json_string, 
+        content=json_string,
         media_type="application/json",
         headers={
             "Cache-Control": "public, s-maxage=86400, max-age=3600"

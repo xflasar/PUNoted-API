@@ -1,10 +1,10 @@
-import urllib.request
-import urllib.error
 import os
+import urllib.error
+import urllib.request
 
 # 1. Get DSN
 dsn = os.getenv('SENTRY_DSN', '')
-print(f'--- DIAGNOSTIC START ---')
+print('--- DIAGNOSTIC START ---')
 print(f'DSN Found: {dsn}')
 
 if not dsn or 'glitchtip_web' not in dsn:

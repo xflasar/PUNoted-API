@@ -1,9 +1,10 @@
-import orjson
-from typing import Optional, Any
-from fastapi import APIRouter, Depends, Query, Request, Response, HTTPException
-from fastapi.responses import JSONResponse as DefaultJSONResponse
-from app.core.limiter import get_auth_key, limiter
+from typing import Any, Optional
 
+import orjson
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse as DefaultJSONResponse
+
+from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.flights_repo import search_flights
 
@@ -31,7 +32,7 @@ async def get_flights(
 ):
     pool = request.app.state.db.pool
     valid_targets = getattr(request.state, "valid_target_users", [])
-    
+
     if not valid_targets:
         return Response(content='[]', media_type="application/json")
 
@@ -56,7 +57,7 @@ async def get_flight_user(
     limit: int = Query(20, ge=1, le=100),
 ):
     pool = request.app.state.db.pool
-    
+
     # Auth logic has already processed 'username' into this list
     valid_targets = getattr(request.state, "valid_target_users", [])
 
@@ -67,7 +68,7 @@ async def get_flight_user(
     async with pool.acquire() as conn:
         # 1. Fetch standard structure: '[{"Username": "...", "Flights": [...]}]'
         json_str = await search_flights(conn, valid_targets, ship, current, limit)
-        
+
         # 2. Unwrap to return ONLY the Flights list
         try:
             data_list = orjson.loads(json_str)

@@ -1,5 +1,4 @@
 from datetime import datetime
-import json
 from typing import Any, Dict, List, Union
 
 
@@ -32,7 +31,7 @@ def convert_gateway_data(raw_payload: Union[Dict[str, Any], List[Dict[str, Any]]
         # Safety check to ensure we are actually working with a dictionary now
         if not isinstance(item_data, dict):
             continue
-            
+
         g_id = item_data.get("id")
         if not g_id:
             continue
@@ -45,7 +44,7 @@ def convert_gateway_data(raw_payload: Union[Dict[str, Any], List[Dict[str, Any]]
         for line in address_lines:
             ent = line.get("entity", {})
             etype = line.get("type")
-            
+
             if etype == "SYSTEM":
                 system_id = ent.get("id")
             elif etype == "PLANET":
@@ -72,7 +71,7 @@ def convert_gateway_data(raw_payload: Union[Dict[str, Any], List[Dict[str, Any]]
             "satellite_id": satellite_id,
             "owner_admin_center_id": item_data.get("owner", {}).get("_proxy_key"),
             "currency_code": item_data.get("owner", {}).get("currency", {}).get("code"),
-            "established": _ts_to_dt(item_data.get("established")), 
+            "established": _ts_to_dt(item_data.get("established")),
             "operational_state": item_data.get("operationalState"),
             "link_status": item_data.get("linkStatus"),
             "outgoing_link_id": item_data.get("outgoingLink"),
@@ -125,7 +124,7 @@ def convert_gateway_data(raw_payload: Union[Dict[str, Any], List[Dict[str, Any]]
 
         # 5. Upkeep Core
         data["upkeep"].append({
-            "gateway_id": g_id, 
+            "gateway_id": g_id,
             "average_uptime": upk.get("averageUptime", 0)
         })
 

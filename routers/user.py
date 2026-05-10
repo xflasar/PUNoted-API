@@ -1,16 +1,15 @@
-from datetime import datetime
 import json
 import logging
 import secrets
-import orjson
-from typing import List, Optional
 import uuid
+from datetime import datetime
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.core.security import require_internal_origin
 import services.user as UserService
+from app.core.security import require_internal_origin
 from auth import get_current_user_id
 from models.user import UserSettingsOut, UserSettingsUpdate
 

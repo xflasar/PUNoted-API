@@ -1,25 +1,26 @@
-from fastapi import APIRouter, Depends, Request, HTTPException
-from pydantic import BaseModel
 from typing import List, Optional
+
+from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel
 
 # Auth
 from app.core.security import require_internal_origin
-from auth import RequireAuth, get_current_user_id
+from auth import get_current_user_id
 
 # Import Services
 from services.internal.data_group import (
+    service_accept_invite,
     service_create_group,
+    service_create_group_token,
     service_delete_group,
     service_invite_user,
-    service_accept_invite,
-    service_create_group_token,
     service_kick_member,
     service_leave_group,
+    service_list_group_members,
+    service_list_user_groups,
     service_search_users,
     service_set_permission,
-    service_list_user_groups,
-    service_list_group_members,
-    service_update_my_shares
+    service_update_my_shares,
 )
 
 group_router = APIRouter(dependencies=[Depends(require_internal_origin)])
@@ -92,9 +93,9 @@ async def create_group(
     pool = request.app.state.db.pool
     async with pool.acquire() as conn:
         return await service_create_group(
-            conn, 
-            user_id, 
-            payload.name, 
+            conn,
+            user_id,
+            payload.name,
             payload.description
         )
 
@@ -173,7 +174,7 @@ async def set_member_permission(
     pool = request.app.state.db.pool
     async with pool.acquire() as conn:
         return await service_set_permission(conn, user_id, group_id, payload.username, payload.can_read_data)
-    
+
 # Schema
 class UpdateSharesRequest(BaseModel):
     granted_permissions: List[str]

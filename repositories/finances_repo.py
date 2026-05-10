@@ -295,7 +295,7 @@ async def get_financial_overview_json(db, user_id: str) -> str:
     except Exception as e:
         logger.error(f"Error fetching financial overview: {e}", exc_info=True)
         raise e
-    
+
 SQL_TRANSACTION_DETAIL = """
 WITH TargetUser AS (
     SELECT DISTINCT userdataid 

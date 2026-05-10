@@ -1,12 +1,12 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.core.security import require_internal_origin
 import orjson
 from asyncpg import PostgresError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse as DefaultJSONResponse
 
+from app.core.security import require_internal_origin
 from auth import get_current_user_id
 
 logger = logging.getLogger(__name__)

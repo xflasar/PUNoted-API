@@ -136,7 +136,7 @@ async def _handle_all_nested_data(con, site_data: Dict[str, Any]):
 
     platform_ids = []
 
-    ## All of this needs rework 
+    ## All of this needs rework
 
     # 1. Prepare and insert 'building_options' records
     #building_records_to_insert = []

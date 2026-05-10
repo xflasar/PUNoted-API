@@ -5,7 +5,6 @@ from typing import Any, Dict, List
 import asyncpg
 
 from db import Database
-
 from managers.global_ws_manager import global_ws_manager
 
 logger = logging.getLogger(__name__)

@@ -2,11 +2,13 @@
 
 import json
 from typing import Optional
-from fastapi import APIRouter, Depends, Query, Request, Response
+
+from fastapi import APIRouter, Depends, Request, Response
+
+from app.core.limiter import get_auth_key, get_public_key, limiter
 
 # Import OptionalAuth
-from auth import OptionalAuth 
-from app.core.limiter import get_auth_key, get_public_key, limiter
+from auth import OptionalAuth
 from endpoints.Public.services.cx_service import generate_json_data, generate_market_data_csv
 
 cx_router = APIRouter()
@@ -34,7 +36,7 @@ async def get_cx_prices_csv(
     csv_string = await generate_market_data_csv(db)
 
     return Response(
-        content=csv_string, 
+        content=csv_string,
         media_type="text/csv",
         headers={
             "Content-Disposition": "inline; filename=cx_market_data.csv",
@@ -65,7 +67,7 @@ async def get_cx_prices_json(
     json_data = await generate_json_data(db)
 
     return Response(
-        content=json.dumps(json_data), 
+        content=json.dumps(json_data),
         media_type="application/json",
         headers={
             "Cache-Control": "public, max-age=1800"

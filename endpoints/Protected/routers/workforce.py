@@ -1,11 +1,13 @@
 # routers/workforce.py
-import orjson
-from typing import Optional, Any
-from fastapi import APIRouter, Depends, Request, Response, Query, HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse as DefaultJSONResponse
+from typing import Any, Optional
 
+import orjson
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse as DefaultJSONResponse
+from fastapi.responses import StreamingResponse
+
+from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from app.core.limiter import limiter, get_auth_key
 from endpoints.Protected.repositories.workforce import fetch_workforce_json
 from endpoints.Protected.services.workforce import generate_workforce_csv
 

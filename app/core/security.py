@@ -1,4 +1,5 @@
 from typing import Optional
+
 from fastapi import Header, HTTPException
 
 # List of allowed origins for internal endpoints needs to be revised

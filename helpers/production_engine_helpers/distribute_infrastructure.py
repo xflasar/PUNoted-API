@@ -1,19 +1,19 @@
 # FULL AI GENERATED CODE Well not really but yeah
 
 import logging
+import math
 import time
 from collections import defaultdict, deque
-import math
-from typing import Dict, Tuple, List
-import networkx as nx
+from typing import Dict, Tuple
+
 import asyncpg
-import itertools
+import networkx as nx
 
 logger = logging.getLogger("production_engine")
 
 BASE_RUNTIMES_H = {"RIG": 4.8, "COL": 6.0, "EXT": 12.0}
-STORAGE_AREA = 15 
-GLOBAL_HARD_CAP = 500 
+STORAGE_AREA = 15
+GLOBAL_HARD_CAP = 500
 MAX_JUMPS_FROM_HUB = 12
 
 async def get_galaxy_cache(conn: asyncpg.Connection) -> Tuple[nx.Graph, Dict[str, Dict[str, int]]]:
@@ -26,23 +26,23 @@ async def get_galaxy_cache(conn: asyncpg.Connection) -> Tuple[nx.Graph, Dict[str
 async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers):
     total_start = time.perf_counter()
     user_limit = GLOBAL_HARD_CAP
-    
+
     # 1. SETUP DATA
     initial_build_queue = global_reqs['building_requirements'].copy()
     initial_raw_demand = global_reqs['raw_demand'].copy()
     initial_total_demand = global_reqs['total_demand'].copy()
-    
+
     b_meta = global_reqs['buildings_meta']
     recipes = global_reqs['recipes']
-    market_prices = global_reqs['market_prices'] 
-    
+    market_prices = global_reqs['market_prices']
+
     G, dist_matrix = await get_galaxy_cache(conn)
     hub_dists = dist_matrix.get(hub_sys_id.strip(), {})
 
     def get_dist(sys_a, sys_b):
         if sys_a == sys_b: return 0
         if sys_a in dist_matrix and sys_b in dist_matrix[sys_a]: return dist_matrix[sys_a][sys_b]
-        return 999 
+        return 999
 
     # 2. PLANET DATA
     p_rows = await conn.fetch("""
@@ -55,9 +55,9 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
         LEFT JOIN planet_populations pp ON p.populationid = pp.populationid
         INNER JOIN planet_physical_data ppd ON p.planetid = ppd.planetid
     """)
-    
+
     planet_meta = {}
-    
+
     def get_env_cost_fast(p, area):
         if 'unit_env_cost' not in p:
             cost = 0.0
@@ -67,12 +67,12 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
 
             press = float(p.get('pressure') or 0)
             if press < 0.25: cost += 1.0 * market_prices.get('SEA', {'price': 0})['price']
-            
+
             temp = float(p.get('temperature') or 20.0)
             if temp < -25.0: cost += 10.0 * market_prices.get('INS', {'price': 0})['price']
-            
-            p['unit_env_cost'] = cost 
-            
+
+            p['unit_env_cost'] = cost
+
             fixed = 0.0
             if press > 2.0: fixed += market_prices.get('HSE', {'price': 0})['price']
             grav = float(p.get('gravity') or 1.0)
@@ -88,12 +88,12 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
         dist_to_hub = hub_dists.get(p['systemid'], 999)
         if dist_to_hub > MAX_JUMPS_FROM_HUB: continue
         p['dist'] = dist_to_hub
-        get_env_cost_fast(p, 100) 
-        
+        get_env_cost_fast(p, 100)
+
         static_score = 1000.0
         if p.get('populationid'): static_score += 1500
         static_score -= (get_env_cost_fast(p, 100.0) / 5.0)
-        static_score -= (p['dist'] * 50) 
+        static_score -= (p['dist'] * 50)
         p['static_score'] = static_score
         planet_meta[p['planetid']] = p
 
@@ -118,10 +118,10 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
         capacity = sum(abs(w['amount']) for w in m.get('workforce', []) if abs(w['amount']) > 0)
         if capacity > 0:
             hab_options.append({
-                "ticker": t, "area": m.get('area', 100), "cap": capacity, 
+                "ticker": t, "area": m.get('area', 100), "cap": capacity,
                 "supply": {w['level']: abs(w['amount']) for w in m.get('workforce', [])}
             })
-    hab_options.sort(key=lambda x: x['cap'] / x['area'], reverse=True) 
+    hab_options.sort(key=lambda x: x['cap'] / x['area'], reverse=True)
 
     def calculate_min_housing_area(workforce_needed):
         """Estimate minimum area needed for housing."""
@@ -136,7 +136,7 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                 remaining -= (count * hab['cap'])
         if remaining > 0:
             # Add one more of the most efficient
-            area_needed += sorted_habs[0]['area'] 
+            area_needed += sorted_habs[0]['area']
         return area_needed
 
     def get_optimized_habitation_layout(workforce_demand):
@@ -161,7 +161,7 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
             total_area += best_choice['area']
             for lvl, amt in best_choice['supply'].items():
                 if lvl in needed: needed[lvl] = max(0, needed[lvl] - amt)
-        
+
         counts = defaultdict(int)
         for t in buildings: counts[t] += 1
         result_list = [{"ticker": t, "count": c} for t, c in counts.items()]
@@ -186,18 +186,18 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
         base_c = s_data.get('base_cost', 0)
         env_c = get_env_cost_fast(planet_data, s_area)
         return {
-            "name": planet_data['name'], 
-            "system": planet_data['systemid'], 
-            "planetid": planet_data['planetid'], 
+            "name": planet_data['name'],
+            "system": planet_data['systemid'],
+            "planetid": planet_data['planetid'],
             "area_factories": s_area,
-            "area_used": s_area,      
+            "area_used": s_area,
             "workforce_demand": defaultdict(int),
             "total_build_cost": base_c + env_c,
             "buildings": [{
-                "ticker": storage_ticker, "count": 1, "produces": "STORAGE", 
+                "ticker": storage_ticker, "count": 1, "produces": "STORAGE",
                 "rate": 0, "unit_cost": base_c+env_c, "total_cost": base_c+env_c
-            }], 
-            "dist": planet_data['dist'], 
+            }],
+            "dist": planet_data['dist'],
             "category": cat
         }
 
@@ -209,29 +209,29 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
 
         b_data = b_meta.get(ticker, {'area': 100})
         b_area = b_data['area'] * count
-        
+
         # Calculate NEW Total Workforce needed
         wf_added = sum(abs(w['amount']) for w in b_data.get('workforce', [])) * count
         current_wf_total = sum(site['workforce_demand'].values())
         new_wf_total = current_wf_total + wf_added
-        
+
         # Calculate Required Housing Area
         hab_area_needed = calculate_min_housing_area(new_wf_total)
-        
+
         total_projected_area = site['area_factories'] + b_area + hab_area_needed
-        
+
         if total_projected_area <= user_limit:
             site['area_factories'] += b_area
             site['area_used'] = total_projected_area
             for wf in b_data.get('workforce', []):
                 site['workforce_demand'][wf['level']] += (abs(wf['amount']) * count)
-            
+
             base_c = b_meta.get(ticker, {}).get('base_cost', 0)
             env_c = get_env_cost_fast(planet_meta[site['planetid']], b_data['area'])
             unit_c = base_c + env_c
-            
+
             site['buildings'].append({
-                "ticker": ticker, "count": count, "produces": produces, 
+                "ticker": ticker, "count": count, "produces": produces,
                 "rate": rate, "unit_cost": unit_c, "total_cost": unit_c * count
             })
             site['total_build_cost'] += (unit_c * count)
@@ -242,7 +242,7 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
     def calculate_dynamic_score(p, target_cat, existing_sites):
         score = p['static_score']
         cogc_str = str(p.get('cogc') or "").upper().replace("ADVERTISING_", "")
-        
+
         if cogc_str == target_cat: score += 3000
 
         if existing_sites:
@@ -251,7 +251,7 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
             for s in check_list:
                 d = get_dist(p['systemid'], s['system'])
                 if d < min_dist: min_dist = d
-            score -= (min_dist * 500) 
+            score -= (min_dist * 500)
         return score
 
     # --- 7. EXTRACTION SETUP ---
@@ -262,13 +262,13 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
         WHERE m.ticker = ANY($1) AND pr.factor > 0
     """, list(initial_raw_demand.keys()))
     res_lookup = defaultdict(list)
-    for r in res_rows: 
+    for r in res_rows:
         if r['planetid'] in planet_meta: res_lookup[r['ticker']].append(dict(r))
 
     for mat, total_needed in initial_raw_demand.items():
         potential = res_lookup.get(mat, [])
         if not potential: continue
-        
+
         while total_needed > 0.1:
             candidates = []
             for rp in potential:
@@ -278,21 +278,21 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                  candidates.append({**rp, **p, "score": score})
             candidates.sort(key=lambda x: x['score'], reverse=True)
             if not candidates: break
-            
+
             best = candidates[0]
             reactor = "COL" if best['res_type'] == "GASEOUS" else ("RIG" if best['res_type'] == "LIQUID" else "EXT")
             daily_base = (best['raw_conc'] * 100) * (0.6 if reactor == "COL" else 0.7)
-            
+
             # Using get_duration helper even though extraction duration is standard, for safety
-            dur = 60000 
+            dur = 60000
             # Note: Extraction buildings don't have standard recipes usually, their output is conc based.
-            
+
             site = create_site(planet_meta[best['planetid']], "EXTRACTION")
             sites.append(site)
             used_planet_ids.add(best['planetid'])
-            
+
             needed_count = math.ceil(total_needed / daily_base) if daily_base > 0 else 1
-            
+
             # Rate for extraction: Count * Daily Yield
             added = try_add_building_optimized(site, reactor, needed_count, mat, daily_base * needed_count)
             if added == 0:
@@ -300,19 +300,19 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                     if try_add_building_optimized(site, reactor, 1, mat, daily_base):
                         added += 1
                     else: break
-            
+
             if added > 0:
                 total_needed -= (added * daily_base)
                 material_sources[mat].append(site['planetid'])
             else:
-                break 
+                break
 
     # --- 8. DEFICIT LOOP ---
     current_queue = initial_build_queue.copy()
-    
-    for iteration in range(3): 
+
+    for iteration in range(3):
         if not current_queue: break
-        
+
         # 1. Group by Category
         industry_queues = defaultdict(list)
         for key, count in current_queue.items():
@@ -322,12 +322,12 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
             industry_queues[cat].append({"reactor": reactor, "output": output, "count": count})
 
         sort_priority = {
-          'RESOURCE_EXTRACTION': 0, 
+          'RESOURCE_EXTRACTION': 0,
           'METALLURGY': 1
         }
 
         industry_queues = sorted(
-          industry_queues.items(), 
+          industry_queues.items(),
           key=lambda x: sort_priority.get(x[0], 50) # 50 is default for unlisted cats like ELECTRONICS
         )
 
@@ -336,11 +336,11 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
             target_site_cat = f"MANUFACTURING: {cat}"
             items.sort(key=lambda x: x['count'], reverse=True)
             queue = deque(items)
-            
+
             while queue:
                 item = queue.popleft()
                 needed = item['count']
-                
+
                 rec = recipes.get(item['output'])
                 item_rate_single = 0
                 if rec:
@@ -369,26 +369,26 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                         if p['planetid'] in used_planet_ids: continue
                         s_score = calculate_dynamic_score(p, target_site_cat, sites)
                         candidates.append({**p, "score": s_score})
-                    
+
                     candidates.sort(key=lambda x: x['score'], reverse=True)
                     if not candidates: break
-                    
+
                     target = candidates[0]
                     site = create_site(target, target_site_cat)
                     sites.append(site)
                     used_planet_ids.add(target['planetid'])
-                    
+
                     added = try_add_building_optimized(site, item['reactor'], needed, item['output'], item_rate_single * needed)
                     if added == 0:
                         added = try_add_building_optimized(site, item['reactor'], 1, item['output'], item_rate_single)
-                    
+
                     if added > 0: needed -= added
-                    else: break 
+                    else: break
 
         # 3. Recalculate Deficit
         production = defaultdict(float)
         consumption = defaultdict(float)
-        
+
         for s in sites:
             for b in s['buildings']:
                 prod = b.get('produces')
@@ -402,7 +402,7 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                         cycles = rate / out_amt
                         for inp in rec.get('inputs', []):
                             consumption[inp['ticker']] += (cycles * inp['amount'])
-        
+
         current_queue = {}
         all_mats = set(production.keys()) | set(consumption.keys())
         for m in all_mats:
@@ -411,10 +411,10 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                 # Find producer
                 producer_ticker = None
                 for (reac, out), cnt in initial_build_queue.items():
-                    if out == m: 
+                    if out == m:
                         producer_ticker = reac
                         break
-                
+
                 # If intermediate not in initial queue, search recipes
                 if not producer_ticker:
                     for r_key, r_val in recipes.items():
@@ -426,7 +426,7 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                             # For simplicity, default to most common reactor for this category or look at B_meta
                             # Fallback: Assume we have built at least one before?
                             # Or just scan b_meta for who produces 'm'
-                            # This part is tricky without a reverse map. 
+                            # This part is tricky without a reverse map.
                             # Let's try to find if we built it already.
                             for s in sites:
                                 for b in s['buildings']:
@@ -434,7 +434,7 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
                                         producer_ticker = b['ticker']
                                         break
                                 if producer_ticker: break
-                
+
                 if producer_ticker:
                     rec = recipes.get(m)
                     if rec:
@@ -447,10 +447,10 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
     # --- 9. FINALIZATION (Habitation Commit) ---
     for s in sites:
         hab_area, hab_layout = get_optimized_habitation_layout(s['workforce_demand'])
-        
+
         # Remove old placeholder habs if any
         s['buildings'] = [b for b in s['buildings'] if b.get('produces') != "HABITATION"]
-        
+
         for hab_entry in hab_layout:
             h_ticker = hab_entry['ticker']
             h_count = hab_entry['count']
@@ -458,13 +458,13 @@ async def distribute_infrastructure(conn, global_reqs, hub_sys_id, allowed_tiers
             h_base = b_meta.get(h_ticker, {}).get('base_cost', 0)
             h_env = get_env_cost_fast(planet_meta[s['planetid']], h_area)
             h_tot = (h_base + h_env) * h_count
-            
+
             s['buildings'].append({
                 "ticker": h_ticker, "count": h_count, "produces": "HABITATION",
                 "rate": 0, "unit_cost": h_base+h_env, "total_cost": h_tot
             })
             s['total_build_cost'] += h_tot
-        
+
         # Stats
         s['permit_cap'] = user_limit
         fin_sup = defaultdict(float)

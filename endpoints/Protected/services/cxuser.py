@@ -1,12 +1,13 @@
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Optional
+
 
 # --- CSV Streamer (Multi-User Support) ---
 async def stream_orders_csv(
-    db, 
-    usernames_list: List[str], 
-    start_date=None, 
-    end_date=None, 
+    db,
+    usernames_list: List[str],
+    start_date=None,
+    end_date=None,
     limit=None,
     status=None,
     order_type=None,
@@ -14,10 +15,10 @@ async def stream_orders_csv(
 ):
     async with db.pool.acquire() as conn:
         query, params = _build_multi_user_query(
-            usernames_list, start_date, end_date, limit, 
+            usernames_list, start_date, end_date, limit,
             status, order_type, ticker, for_csv=True
         )
-        
+
         async with conn.transaction():
             async for record in conn.cursor(query, *params, prefetch=2000):
                 yield list(record.values())
@@ -35,7 +36,7 @@ async def fetch_orders_as_json(
 ) -> str:
     async with db.pool.acquire() as conn:
         base_query, params = _build_multi_user_query(
-            usernames_list, start_date, end_date, limit, 
+            usernames_list, start_date, end_date, limit,
             status, order_type, ticker, for_csv=False
         )
 
@@ -62,26 +63,26 @@ async def fetch_orders_as_json(
         return json_str
 
 def _build_multi_user_query(
-    usernames_list, 
-    start_date, 
-    end_date, 
-    limit, 
-    status, 
-    order_type, 
-    ticker, 
+    usernames_list,
+    start_date,
+    end_date,
+    limit,
+    status,
+    order_type,
+    ticker,
     for_csv=False
 ):
-    
+
     # 1. CTE params
     params = [usernames_list]
-    
+
     # 2. Build Filter Conditions
     conditions = []
 
     if start_date:
         params.append(start_date)
         conditions.append(f"o.created >= ${len(params)}")
-    
+
     if end_date:
         params.append(end_date)
         conditions.append(f"o.created <= ${len(params)}")
@@ -97,7 +98,7 @@ def _build_multi_user_query(
     if ticker:
         params.append(ticker)
         conditions.append(f"m.ticker = ${len(params)}")
-        
+
     # Join all conditions with AND
     where_clause = ""
     if conditions:

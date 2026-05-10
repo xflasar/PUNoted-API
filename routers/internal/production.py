@@ -311,7 +311,7 @@ async def get_user_production(
 
                         if recipe_duration == 0:
                             continue
-                        
+
                         # Get Multiplier based on Order vs Recipe Duration
                         duration_multiplier = order_duration / recipe_duration
 
@@ -321,7 +321,7 @@ async def get_user_production(
                             ticker = inp.get("ticker")
                             if not ticker:
                                 continue
-                            
+
                             # Consumption is negative flow, so we subtract from the line flow
                             factor = -inp.get("factor", 0) * duration_multiplier
                             line_unscaled_flow[ticker] += factor

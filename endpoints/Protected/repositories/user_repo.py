@@ -1,5 +1,4 @@
-import json
-from typing import Optional, List
+from typing import List, Optional
 
 SQL_FETCH_COMPANY_DATA = """
 WITH TargetData AS (
@@ -47,9 +46,9 @@ FROM TargetData td;
 """
 
 async def fetch_company_data(
-    conn, 
-    usernames: Optional[List[str]] = None, 
-    codes: Optional[List[str]] = None, 
+    conn,
+    usernames: Optional[List[str]] = None,
+    codes: Optional[List[str]] = None,
     names: Optional[List[str]] = None
 ) -> str:
     """

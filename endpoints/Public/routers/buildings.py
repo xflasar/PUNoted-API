@@ -1,8 +1,9 @@
 from typing import Optional
+
 from fastapi import APIRouter, Depends, Query, Request, Response
 
-from auth import OptionalAuth 
 from app.core.limiter import get_auth_key, get_public_key, limiter
+from auth import OptionalAuth
 from endpoints.Public.services.buildings_service import fetch_building_data
 
 buildings_router = APIRouter()
@@ -20,11 +21,11 @@ async def get_buildings(
     user_id: Optional[str] = Depends(OptionalAuth())
 ):
     db = request.app.state.db
-    
+
     json_string = await fetch_building_data(db, ticker=ticker)
 
     return Response(
-        content=json_string, 
+        content=json_string,
         media_type="application/json",
         headers={
             "Cache-Control": "public, s-maxage=86400, max-age=3600"

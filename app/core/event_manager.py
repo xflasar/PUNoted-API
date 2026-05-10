@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import datetime, timezone
+
 import asyncpg
 
 logger = logging.getLogger(__name__)
@@ -8,15 +9,15 @@ logger = logging.getLogger(__name__)
 class EventManager:
     def __init__(self, db_pool: asyncpg.Pool):
         self.db_pool = db_pool
-    
+
     async def register_event(self, user_id: int, event_type: str, reference_id: str, trigger_time: datetime, payload: dict) -> None:
         if trigger_time.tzinfo is None:
             trigger_time = trigger_time.replace(tzinfo=timezone.utc)
-        
+
         if trigger_time <= datetime.now(timezone.utc):
             logger.warning(f"Attempted to register event with past trigger_time: {trigger_time}")
             return
-        
+
         payload_json = json.dumps(payload)
 
         async with self.db_pool.acquire() as conn:

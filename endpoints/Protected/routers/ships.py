@@ -1,10 +1,11 @@
-from typing import Literal, Optional, Any
+from typing import Any, Literal, Optional
+
 import orjson
-from fastapi import APIRouter, Depends, Query, Request, Response, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse as DefaultJSONResponse
 
-from auth import RequireAuth
 from app.core.limiter import get_auth_key, limiter
+from auth import RequireAuth
 from endpoints.Protected.repositories.ships_repo import search_ships
 
 ships_router = APIRouter()

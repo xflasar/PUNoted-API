@@ -1,14 +1,11 @@
-from datetime import datetime, timezone
-from typing import Any, Dict, List
-
-
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
+
 
 async def get_cx_dashboard_data(db, user_id: str, start_date: Optional[datetime], end_date: Optional[datetime], exchange_filter: str = "IC1") -> Dict[str, Any]:
     async with db.pool.acquire() as conn:
 
-        if not exchange_filter: 
+        if not exchange_filter:
             exchange_filter = await conn.fetchval("SELECT cxcode FROM user_global_settings WHERE userid = $1", user_id)
         # 1. Resolve Internal ID (Moved up so we can use it for Date Lookup)
         internal_id = await conn.fetchval("SELECT userdataid FROM users WHERE accountid = $1", user_id)
@@ -19,20 +16,20 @@ async def get_cx_dashboard_data(db, user_id: str, start_date: Optional[datetime]
         if start_date is None:
             # Query the absolute beginning of the user's history
             first_activity = await conn.fetchval("SELECT MIN(cto.created) FROM comex_trade_orders cto LEFT JOIN commodity_exchanges ce ON ce.id = cto.exchangeid WHERE userid = $1 AND ce.code = $2", internal_id, exchange_filter)
-            
+
             if first_activity:
                 # Add a small buffer (e.g., 1 hour) before the first trade to make charts look nice
                 start_date = first_activity - timedelta(hours=1)
             else:
                 # Fallback: If user has NO data, default to 24 hours ago to prevent crashes
                 start_date = datetime.utcnow() - timedelta(hours=24)
-        
+
         if end_date is None:
             end_date = datetime.utcnow()
 
         # 3. Determine Granularity (Now that dates are guaranteed to be set)
         time_diff = end_date - start_date
-        
+
         if time_diff.total_seconds() < 172800:  # < 48 hours -> Hourly
             trunc_type = "hour"
             interval_str = "1 hour"
@@ -236,7 +233,7 @@ async def get_storage_valuation(db, account_id: str, exchange_ticker: str = "IC1
     Retrieves storage items and their current market valuation on a specific CX.
     Returns a list of available storages and the valuation for the selected storage.
     """
-    
+
     # Map Exchange Ticker to System Name for smart defaulting
     EXCHANGE_SYSTEM_MAP = {
         "IC1": "Hortus",
@@ -267,9 +264,9 @@ async def get_storage_valuation(db, account_id: str, exchange_ticker: str = "IC1
                 WHERE u.accountid = $1
             """
             storage_rows = await conn.fetch(storages_query, account_id)
-            
+
             available_storages = [
-                {"storageid": str(row["storageid"]), "storagelocation": row["station_name"], "system": row["system_name"]} 
+                {"storageid": str(row["storageid"]), "storagelocation": row["station_name"], "system": row["system_name"]}
                 for row in storage_rows
             ]
 
@@ -293,7 +290,7 @@ async def get_storage_valuation(db, account_id: str, exchange_ticker: str = "IC1
                         target_storage_id = s["storageid"]
                         target_storage_name = s["storagelocation"]
                         break
-                
+
                 # Fallback: If no storage in that system, just take the first one found
                 if not target_storage_id and available_storages:
                     target_storage_id = available_storages[0]["storageid"]

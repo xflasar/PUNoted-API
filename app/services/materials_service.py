@@ -1,5 +1,7 @@
 from collections import defaultdict
-from app.schemas.internal_planner import InternalMaterialDTO, InputRecipeDTO, RecipeIODTO
+
+from app.schemas.internal_planner import InputRecipeDTO, InternalMaterialDTO, RecipeIODTO
+
 
 class MaterialsService:
     def __init__(self, repository):
@@ -12,12 +14,12 @@ class MaterialsService:
 
         processes_map = {}
         for p in processes_raw:
-            pid = str(p['processid']) 
+            pid = str(p['processid'])
             processes_map[pid] = {
                 "processid": pid,
-                "name": f"Process {pid[:6]}", 
+                "name": f"Process {pid[:6]}",
                 "durationmillis": p['durationmillis'] or 1000,
-                "madeIn": p['madein_ticker'], 
+                "madeIn": p['madein_ticker'],
                 "inputs": [],
                 "outputs": []
             }
@@ -38,15 +40,15 @@ class MaterialsService:
         for pid, proc in processes_map.items():
             primary_out = proc['outputs'][0].ticker if proc['outputs'] else "Unknown"
             proc['name'] = f"Make {primary_out}"
-            
+
             recipe_dto = InputRecipeDTO(**proc)
-            
+
             for out in proc['outputs']:
                 ticker = out.ticker
                 material_input_recipes[ticker].append(recipe_dto)
                 if ticker not in material_primary_building:
                     material_primary_building[ticker] = proc['madeIn']
-            
+
             for inp in proc['inputs']:
                 ticker = inp.ticker
                 material_required_for[ticker].append(pid)
@@ -55,7 +57,7 @@ class MaterialsService:
         for m in materials_raw:
             ticker = m['ticker']
             is_resource = bool(m['resource'])
-            
+
             if not ticker:
                 continue
 
@@ -63,7 +65,7 @@ class MaterialsService:
 
             # --- SYNTHETIC RECIPE FOR STARTER NODES ---
             if is_resource and len(recipes) == 0:
-                
+
                 # Determine the building type based on material category
                 cat = (m.get('category') or "").upper()
                 bldg = "EXT" # Default solid extractor
@@ -78,13 +80,13 @@ class MaterialsService:
                 synthetic_recipe = InputRecipeDTO(
                     processid=f"ext-{ticker}",
                     name=f"Extract {m['name'] or ticker}",
-                    durationmillis=86400000, 
+                    durationmillis=86400000,
                     madeIn=bldg,
                     inputs=[],
                     outputs=[RecipeIODTO(ticker=ticker, amount=100.0)]
                 )
                 recipes.append(synthetic_recipe)
-                
+
                 # Guess the building based on category if you have it (Solid->EXT, Liquid->RIG, Gas->COL).
                 # If not, leave it None and let the user pick in the Base Manager.
                 if ticker not in material_primary_building:

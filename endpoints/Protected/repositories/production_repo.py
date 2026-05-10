@@ -1,10 +1,7 @@
 import json
-import asyncio
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any, Dict
-
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -157,14 +154,14 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
 
     # 4. Stitch & Group by User
     grouped_data = {}
-    
+
     for pl in raw_lines:
         username = pl["username"]
         line_id = pl["productionlineid"]
-        
+
         if username not in grouped_data:
             grouped_data[username] = {
-                "BurnData": defaultdict(lambda: defaultdict(lambda: {"production": 0.0, "consumption": 0.0})), 
+                "BurnData": defaultdict(lambda: defaultdict(lambda: {"production": 0.0, "consumption": 0.0})),
                 "Lines": []
             }
 
@@ -174,18 +171,18 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
         # --- BURN CALCULATION LOGIC ---
         if burn:
             total_ms = sum((float(o.get("DurationMs") or 0)) for o in active_orders)
-            
+
             if total_ms > 0:
                 daily_cycles = (pl.get("capacity", 0) * MS_PER_DAY) / total_ms
                 planet_id = pl.get("planetnaturalid", "Unknown")
-                
+
                 for order in active_orders:
                     r_id = order.get("RecipeId")
                     recipe_data = recipe_map.get((line_id, r_id))
-                    
+
                     if not recipe_data or recipe_data["DurationMs"] == 0:
                         continue
-                        
+
                     order_duration = float(order.get("DurationMs") or 0)
                     duration_multiplier = order_duration / recipe_data["DurationMs"]
 
@@ -200,7 +197,7 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
         # --- STANDARD DATA LOGIC ---
         else:
             now_utc = datetime.now(timezone.utc)
-            
+
             for order in active_orders:
                 r_id = order.get("RecipeId")
                 recipe_data = recipe_map.get((line_id, r_id), {"Inputs": [], "Outputs": []})
@@ -225,13 +222,13 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
                         # 1. Parse the strings (handles both 'Z' trailing and missing timezone)
                         s_dt = datetime.fromisoformat(started_str.replace("Z", "+00:00"))
                         c_dt = datetime.fromisoformat(completion_str.replace("Z", "+00:00"))
-                        
+
                         # 2. Force naive datetimes to be UTC-aware
                         if s_dt.tzinfo is None:
                             s_dt = s_dt.replace(tzinfo=timezone.utc)
                         if c_dt.tzinfo is None:
                             c_dt = c_dt.replace(tzinfo=timezone.utc)
-                        
+
                         # 3. Calculate seconds
                         total_seconds = (c_dt - s_dt).total_seconds()
                         elapsed_seconds = (now_utc - s_dt).total_seconds()
@@ -243,18 +240,18 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
                             raw_pct = (elapsed_seconds / total_seconds) * 100
                             completed_pct = max(0.0, min(100.0, raw_pct))
                             completed_pct = round(completed_pct, 2)
-                            
-                    except (ValueError, TypeError) as e:
+
+                    except (ValueError, TypeError):
                         # Silent fail if data is genuinely corrupted
                         pass
 
                 processed_orders.append({
-                    **order, 
-                    "Inputs": inputs, 
+                    **order,
+                    "Inputs": inputs,
                     "Outputs": outputs,
                     "CompletedPercentage": completed_pct
                 })
-                
+
                 if "RecipeId" in order:
                     del order["RecipeId"]
 
@@ -272,27 +269,27 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
                 "Timestamp": pl["xata_updatedat"].isoformat() if pl["xata_updatedat"] else None,
                 "Orders": processed_orders,
             })
-            
+
     if burn and simple:
         simple_burn_data = defaultdict(lambda: defaultdict(float))
-        
+
         for username_key, data in grouped_data.items():
             for planet_id, tickers in data["BurnData"].items():
                 for ticker, flows in tickers.items():
                     cons = flows["consumption"]
                     if cons > 0:
                         simple_burn_data[planet_id][ticker] += round(cons, 2)
-                        
+
         final_simple_dict = {
-            planet: dict(materials) 
+            planet: dict(materials)
             for planet, materials in simple_burn_data.items()
         }
-                
+
         return json.dumps(final_simple_dict)
 
     # 5. Transform to Final Output Structure
     final_output = []
-    
+
     for u, data in grouped_data.items():
         if burn:
             formatted_burn = {}
@@ -307,7 +304,7 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
                         "Consumption": round(cons, 2),
                         "Net": round(prod - cons, 2)
                     })
-                    
+
             final_output.append({"Username": u, "BurnRates": formatted_burn})
         else:
             final_output.append({"Username": u, "Production": data["Lines"]})

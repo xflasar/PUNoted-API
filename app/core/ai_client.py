@@ -1,8 +1,9 @@
-import os
-import httpx
 import logging
+import os
+from typing import Any, Dict, Optional
+
+import httpx
 import orjson
-from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ async def query_local_ai_json(prompt: str, system_message: str = "") -> Optional
     Sends an async request to Ollama and attempts to parse the response as JSON.
     """
     url = f"{OLLAMA_HOST}/api/generate"
-    
+
     full_prompt = prompt
     if system_message:
         full_prompt = f"System: {system_message}\nUser: {prompt}"
@@ -36,10 +37,10 @@ async def query_local_ai_json(prompt: str, system_message: str = "") -> Optional
         try:
             response = await client.post(url, json=payload)
             response.raise_for_status()
-            
+
             result = response.json()
             ai_text = result.get("response", "")
-            
+
             return orjson.loads(ai_text)
         except (httpx.RequestError, orjson.JSONDecodeError) as e:
             logger.error(f"AI Request Failed: {e}")

@@ -5,7 +5,6 @@ from fastapi import APIRouter, Body, Depends, Query, Request
 
 from app.core.security import require_internal_origin
 from auth import get_current_user_id
-
 from helpers.cx_analysis import get_bulk_prices, get_storage_valuation
 
 cx_router = APIRouter(dependencies=[Depends(require_internal_origin)])

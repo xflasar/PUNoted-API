@@ -244,7 +244,7 @@ class DecompressMiddleware:
                     decompressed_body = b""
                 else:
                     decompressed_body = gzip.decompress(full_body)
-                
+
                 # Metrics for your logs
                 scope["original_gzip_size"] = len(full_body)
                 scope["decompressed_size"] = len(decompressed_body)

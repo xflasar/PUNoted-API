@@ -1,6 +1,8 @@
 from typing import List
+
+from models.contracts_schema import ContractListItem
 from repositories.contracts_repo import ContractsRepository
-from models.contracts_schema import ContractListItem, ContractDetail, ContractCondition
+
 
 class ContractsService:
     def __init__(self, repo: ContractsRepository):
@@ -9,11 +11,11 @@ class ContractsService:
     async def get_contracts_list(self, user_id: str, filter_params) -> List[ContractListItem]:
         offset = (filter_params.page - 1) * filter_params.limit
         raw_data = await self.repo.get_contracts(
-            user_id, 
-            filter_params.category, 
-            filter_params.status, 
+            user_id,
+            filter_params.category,
+            filter_params.status,
             filter_params.search,
-            filter_params.limit, 
+            filter_params.limit,
             offset
         )
 

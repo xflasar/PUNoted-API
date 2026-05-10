@@ -1,6 +1,8 @@
 # app/schemas/internal_planner.py
+from typing import Dict, List, Optional
+
 from pydantic import BaseModel
-from typing import List, Dict, Optional
+
 
 class BuildingRequirementDTO(BaseModel):
     ticker: str

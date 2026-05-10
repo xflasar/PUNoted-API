@@ -1,8 +1,7 @@
 import logging
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 import asyncpg
-from db import Database
 
 logger = logging.getLogger(__name__)
 
@@ -21,38 +20,38 @@ async def save_material_recipes(conn: asyncpg.Connection, recipes_data: List[Dic
     # 1. Prepare Batch for Parent Table (material_recipes)
     # List of tuples: (id, reactor_id, duration_ms)
     recipe_tuples = [
-        (r['recipe_id'], r['reactor_id'], r['duration_ms']) 
+        (r['recipe_id'], r['reactor_id'], r['duration_ms'])
         for r in recipes_data
     ]
 
     # 2. Prepare Batch for Child Table (material_recipe_ingredients)
     # List of tuples: (recipe_id, material_id, ticker, amount, type)
     ingredient_tuples = []
-    
+
     for r in recipes_data:
         # Map Inputs
         for i in r['inputs']:
             ingredient_tuples.append((
-                r['recipe_id'], 
-                i['material_id'], 
-                i['material_ticker'], 
-                float(i['amount']), 
+                r['recipe_id'],
+                i['material_id'],
+                i['material_ticker'],
+                float(i['amount']),
                 'INPUT'
             ))
-        
+
         # Map Outputs
         for o in r['outputs']:
             ingredient_tuples.append((
-                r['recipe_id'], 
-                o['material_id'], 
-                o['material_ticker'], 
-                float(o['amount']), 
+                r['recipe_id'],
+                o['material_id'],
+                o['material_ticker'],
+                float(o['amount']),
                 'OUTPUT'
             ))
 
     try:
         # 3. Execute Inserts
-        
+
         # Insert Recipes (Parents)
         query_recipes = """
             INSERT INTO material_recipes (id, reactor_id, duration_ms)
@@ -69,7 +68,7 @@ async def save_material_recipes(conn: asyncpg.Connection, recipes_data: List[Dic
             ON CONFLICT (recipe_id, material_id, type) DO NOTHING
         """
         await conn.executemany(query_ingredients, ingredient_tuples)
-        
+
         logger.debug(f"Processed {len(recipe_tuples)} recipes and {len(ingredient_tuples)} ingredients.")
 
     except Exception as e:
@@ -77,7 +76,7 @@ async def save_material_recipes(conn: asyncpg.Connection, recipes_data: List[Dic
         raise e
 
 import logging
-from typing import Any
+
 import asyncpg
 
 logger = logging.getLogger(__name__)
@@ -93,12 +92,12 @@ async def save_world_materials(conn: asyncpg.Connection, materials_data: list):
     # Prepare tuples: (id, name, ticker, category, weight, volume, resource)
     mat_tuples = [
         (
-            m['material_id'], 
-            m['name'], 
-            m['ticker'], 
-            m['category_id'], 
-            float(m.get('weight', 0)), 
-            float(m.get('volume', 0)), 
+            m['material_id'],
+            m['name'],
+            m['ticker'],
+            m['category_id'],
+            float(m.get('weight', 0)),
+            float(m.get('volume', 0)),
             m.get('is_resource', False)
         )
         for m in materials_data
@@ -115,7 +114,7 @@ async def save_world_materials(conn: asyncpg.Connection, materials_data: list):
                     volume = EXCLUDED.volume,
                     resource = EXCLUDED.resource
             """, mat_tuples)
-            
+
         logger.debug(f"✅ Saved/Updated {len(mat_tuples)} materials.")
 
     except Exception as e:
@@ -130,7 +129,7 @@ async def save_world_reactor_data(conn: asyncpg.Connection, reactor_payload: dic
     Expects the 'reactor_payload' to be the DICTIONARY output from your 'parse_world_reactor_data' function.
     Keys: 'buildings', 'building_build_materials', 'material_recipes', 'material_recipe_ingredients'
     """
-    
+
     # Unpack the converted data
     buildings = reactor_payload.get('buildings', [])
     build_mats = reactor_payload.get('building_build_materials', [])
@@ -155,7 +154,7 @@ async def save_world_reactor_data(conn: asyncpg.Connection, reactor_payload: dic
             if build_mats:
                 building_ids = list(set(b['buildingid'] for b in build_mats))
                 await conn.execute("DELETE FROM building_build_materials WHERE buildingid = ANY($1)", building_ids)
-                
+
                 bm_tuples = [(x['buildingid'], x['materialid'], float(x['amount'])) for x in build_mats]
                 await conn.executemany("""
                     INSERT INTO building_build_materials (buildingid, materialid, amount)
@@ -179,7 +178,7 @@ async def save_world_reactor_data(conn: asyncpg.Connection, reactor_payload: dic
                     VALUES ($1, $2, $3, $4)
                     ON CONFLICT (recipe_id, material_id, type) DO NOTHING
                 """, i_tuples)
-            
+
             if workforce:
                 w_tuples = [(w['buildingid'], w["workforcelevel"], w["capacity"], w["ishabitation"]) for w in workforce]
 
@@ -195,7 +194,7 @@ async def save_world_reactor_data(conn: asyncpg.Connection, reactor_payload: dic
     except Exception as e:
         logger.error(f"❌ Failed to save reactor data: {e}")
         raise e
-    
+
 async def handle_game_data_message(db, converted_payload: Any):
     """
     Main Dispatcher.
@@ -205,13 +204,13 @@ async def handle_game_data_message(db, converted_payload: Any):
         message_type: String identifier (e.g., "WORLD_MATERIAL_DATA").
         converted_payload: The data returned by your transformation functions.
     """
-    
+
     if not converted_payload:
         return {"status": "skipped", "reason": "Empty payload"}
 
     # Extract the actual data payload
     converted_data = converted_payload.get("data")
-    
+
     # Default determination based on Data Structure
     if isinstance(converted_data, dict):
         message_type = "WORLD_REACTOR_DATA"
@@ -224,7 +223,7 @@ async def handle_game_data_message(db, converted_payload: Any):
 
     try:
         async with db.pool.acquire() as conn:
-            
+
             # --- ROUTE 1: MATERIALS ---
             if message_type == "WORLD_MATERIAL_DATA":
                 # Expects converted_payload to be a List of Dicts

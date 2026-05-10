@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
-from asyncpg import Connection
-from typing import List, Dict, Any
+from typing import Any, Dict, List
+
 
 class ContractsRepository:
     def __init__(self, db):
@@ -10,7 +10,7 @@ class ContractsRepository:
         # 1. Prepare Parameters
         params = ['silentreaper']
         next_idx = 2
-        
+
         status_clause = "TRUE"
         if status and status != "ALL":
             status_clause = f"c.status = ${next_idx}"
@@ -56,9 +56,9 @@ class ContractsRepository:
             total_count = await conn.fetchval(count_sql, *params)
 
             # 3. Get Data
-            params.append(limit) 
+            params.append(limit)
             params.append(offset)
-            
+
             sql = f"""
                 SELECT 
                   c.id, c.localid, c.name, c.date, c.status, 
@@ -134,12 +134,12 @@ class ContractsRepository:
             """
 
             rows = await conn.fetch(sql, *params)
-        
+
         return {
             "items": [dict(row) for row in rows],
             "total": total_count
         }
-    
+
     async def get_loans(self, user_id: str, status: str, search: str) -> Dict[str, Any]:
 
         # 1. Clean Parameter Setup
@@ -272,7 +272,7 @@ ORDER BY c.date DESC;
                 SELECT c.* FROM contracts c 
                 INNER JOIN users u ON u.userdataid = c.userid 
                 WHERE c.id = $1 AND u.username = $2
-                """, 
+                """,
                 contract_id, 'silentreaper' # Using dynamic user_id (username)
             )
 
@@ -293,7 +293,7 @@ ORDER BY c.date DESC;
                 LEFT JOIN contract_loan_installments cli ON cli.conditionid = cc.id AND cc.contractparty = cli.contractparty
                 WHERE c.id = $1 AND u.username = $2 AND c.party = cc.contractparty
                 ORDER BY cc.index ASC
-                """, 
+                """,
                 contract_id, 'tonatsi'
             )
 
@@ -342,7 +342,7 @@ ORDER BY c.date DESC;
             # AND we actually calculated a loan total
             if not result.get('total_amount') and (total_principal + total_interest) > 0:
                 result['total_amount'] = total_principal + total_interest
-            
+
             if total_principal > 0:
                 result['implied_interest_rate'] = round((total_interest / total_principal) * 100, 3)
             else:
@@ -354,7 +354,7 @@ ORDER BY c.date DESC;
             async with self.db.pool.acquire() as conn:
                 # 1. Status Counts
                 status_rows = await conn.fetch(
-                    "SELECT c.status, COUNT(*) as count FROM contracts c INNER JOIN users u ON u.userdataid = c.userid WHERE u.accountid = $1 GROUP BY c.status", 
+                    "SELECT c.status, COUNT(*) as count FROM contracts c INNER JOIN users u ON u.userdataid = c.userid WHERE u.accountid = $1 GROUP BY c.status",
                     user_id
                 )
                 status_counts = {r['status']: r['count'] for r in status_rows}
@@ -436,15 +436,15 @@ ORDER BY c.date DESC;
 
             return {
                 "current_week": {
-                    "revenue": float(current['revenue']), 
-                    "expenses": float(current['expenses']), 
-                    "net": float(current['revenue']) - float(current['expenses']), 
+                    "revenue": float(current['revenue']),
+                    "expenses": float(current['expenses']),
+                    "net": float(current['revenue']) - float(current['expenses']),
                     "count": current['count']
                 },
                 "last_week": {
-                    "revenue": float(last['revenue']), 
-                    "expenses": float(last['expenses']), 
-                    "net": float(last['revenue']) - float(last['expenses']), 
+                    "revenue": float(last['revenue']),
+                    "expenses": float(last['expenses']),
+                    "net": float(last['revenue']) - float(last['expenses']),
                     "count": last['count']
                 },
                 "total_active": counts['active'],
@@ -468,19 +468,19 @@ ORDER BY c.date DESC;
 
             # 1. Immediate (Due < 24h)
             immediate = await conn.fetch(
-                base_sql + " AND c.status = 'PARTIALLY_FILLED' AND c.duedate < NOW() + INTERVAL '1 day' " + group_by + " ORDER BY c.duedate ASC LIMIT 5", 
+                base_sql + " AND c.status = 'PARTIALLY_FILLED' AND c.duedate < NOW() + INTERVAL '1 day' " + group_by + " ORDER BY c.duedate ASC LIMIT 5",
                 user_id
             )
-            
+
             # 2. Recent Active
             active = await conn.fetch(
-                base_sql + " AND c.status IN ('OPEN', 'CLOSED', 'PARTIALLY_FILLED') " + group_by + " ORDER BY c.date DESC LIMIT 5", 
+                base_sql + " AND c.status IN ('OPEN', 'CLOSED', 'PARTIALLY_FILLED') " + group_by + " ORDER BY c.date DESC LIMIT 5",
                 user_id
             )
-            
+
             # 3. Breached
             breached = await conn.fetch(
-                base_sql + " AND c.status = 'BREACHED' " + group_by + " ORDER BY c.date DESC LIMIT 5", 
+                base_sql + " AND c.status = 'BREACHED' " + group_by + " ORDER BY c.date DESC LIMIT 5",
                 user_id
             )
 

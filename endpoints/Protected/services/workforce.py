@@ -2,19 +2,21 @@
 import csv
 import io
 from typing import List, Optional
+
 from endpoints.Protected.repositories.workforce import fetch_workforce_flat
+
 
 async def generate_workforce_csv(conn, usernames_list: List[str], location: Optional[str] = None) -> io.StringIO:
     rows = await fetch_workforce_flat(conn, usernames_list, location)
-    
+
     output = io.StringIO()
     writer = csv.writer(output)
 
     writer.writerow([
         "Username",
-        "PlanetName", "PlanetNaturalId", 
-        "SiteId", "WorkforceType", "Population", 
-        "NeedCategory", "MaterialTicker", "Essential", 
+        "PlanetName", "PlanetNaturalId",
+        "SiteId", "WorkforceType", "Population",
+        "NeedCategory", "MaterialTicker", "Essential",
         "NeedSatisfaction", "UnitsPerInterval"
     ])
 
@@ -32,6 +34,6 @@ async def generate_workforce_csv(conn, usernames_list: List[str], location: Opti
             row["need_satisfaction"],
             row["unitsperinterval"]
         ])
-    
+
     output.seek(0)
     return output

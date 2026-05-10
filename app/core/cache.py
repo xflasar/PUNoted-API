@@ -1,6 +1,7 @@
 import time
 from typing import Any, Optional
 
+
 class MemoryCache:
     """
     A highly optimized, thread-safe (due to GIL) in-memory key-value store 
@@ -21,10 +22,10 @@ class MemoryCache:
 
     def set(self, key: str, value: Any, ttl_seconds: int):
         self._store[key] = (value, time.time() + ttl_seconds)
-        
+
     def delete(self, key: str):
         self._store.pop(key, None)
-        
+
     def clear(self):
         self._store.clear()
 

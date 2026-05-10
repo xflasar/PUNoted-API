@@ -1,5 +1,7 @@
 import json
+
 from asyncpg import Connection
+
 
 async def repo_create_group(conn: Connection, owner_id: str, name: str, access_key: str, description: str = None) -> str:
     sql = """
@@ -26,7 +28,7 @@ async def repo_get_group_by_id(conn: Connection, group_id: str):
 
 async def repo_get_member(conn: Connection, group_id: str, user_id: str):
     return await conn.fetchrow(
-        "SELECT * FROM data_group_members WHERE group_id = $1 AND user_id = $2", 
+        "SELECT * FROM data_group_members WHERE group_id = $1 AND user_id = $2",
         group_id, user_id
     )
 

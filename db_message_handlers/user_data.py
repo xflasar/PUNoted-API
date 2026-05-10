@@ -111,9 +111,9 @@ async def handle_public_user_data_message(conn, payload: List[Dict[str, Any]]) -
     try:
         values = [
             (
-                r.get("id"), r.get("username"), r.get("company_id"), r.get("company_name"), 
-                r.get("company_code"), r.get("subscription_level"), r.get("highest_tier"), 
-                r.get("pioneer"), r.get("moderator"), r.get("team"), r.get("translator"), 
+                r.get("id"), r.get("username"), r.get("company_id"), r.get("company_name"),
+                r.get("company_code"), r.get("subscription_level"), r.get("highest_tier"),
+                r.get("pioneer"), r.get("moderator"), r.get("team"), r.get("translator"),
                 r.get("active_days_per_week"), r.get("created_timestamp"), r.get("gifts")
             )
             for r in con_payload if r.get("id") # Only process records that have an ID

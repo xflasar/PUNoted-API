@@ -489,7 +489,6 @@ class RequireAuth:
                 except ValueError:
                     raise HTTPException(status_code=403, detail="Invalid token format")
 
-                # 1. Get Requester
                 sql_requester = """
                     SELECT m.user_id, m.status, m.can_read_data, g.id as group_id, u.username, u.accountid
                     FROM data_sharing_groups g
@@ -509,7 +508,6 @@ class RequireAuth:
 
                 req_perm = self.required_permissions[0] if self.required_permissions else None
 
-                # 2. Determine Scope
                 if requested_users:
                     sql_targets = """
                         SELECT u.username
@@ -526,7 +524,6 @@ class RequireAuth:
                     valid_usernames = [r["username"] for r in valid_rows]
 
                 else:
-                    # Branch behavior based on the endpoint type
                     if self.is_single_user_endpoint:
                         valid_usernames = [requester_username]
                     else:
@@ -563,12 +560,29 @@ class RequireAuth:
                     raise HTTPException(status_code=401, detail="Invalid data token")
 
                 user_id = str(token_data["user_id"])
-                user_permissions = frozenset(token_data["permissions"] or [])
                 allow_group_access = token_data.get("allow_group_access", False)
 
+                raw_perms = token_data["permissions"]
+                if isinstance(raw_perms, str):
+                    try:
+                        parsed_list = json.loads(raw_perms)
+                    except json.JSONDecodeError:
+                        parsed_list = []
+                elif isinstance(raw_perms, list):
+                    parsed_list = raw_perms
+                else:
+                    parsed_list = []
+
+                user_permissions = frozenset([str(p).strip().lower() for p in parsed_list])
+
                 if self.required_permissions and "all" not in user_permissions:
-                    if not user_permissions.issuperset(self.required_permissions):
-                        raise HTTPException(status_code=403, detail=f"Missing permissions: {frozenset(self.required_permissions) - user_permissions}")
+                    req_perms_lower = {p.lower() for p in self.required_permissions}
+                    if not user_permissions.issuperset(req_perms_lower):
+                        missing = req_perms_lower - user_permissions
+                        raise HTTPException(
+                            status_code=403, 
+                            detail=f"Missing required permissions: {', '.join(missing)}"
+                        )
 
                 me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
                 req_perm = self.required_permissions[0] if self.required_permissions else None
@@ -599,7 +613,6 @@ class RequireAuth:
                         valid_usernames = [r["username"] for r in valid_rows]
 
                     else:
-                        # Branch behavior based on the endpoint type for master personal tokens
                         if self.is_single_user_endpoint:
                             valid_usernames = [me_username] if me_username else []
                         else:
@@ -625,7 +638,6 @@ class RequireAuth:
                             valid_usernames = [r["username"] for r in valid_rows]
 
                 else:
-                    # STANDARD PERSONAL TOKEN (No multi-group access)
                     if requested_users:
                         sql_self = """
                             SELECT u.username
@@ -643,7 +655,6 @@ class RequireAuth:
                 request.state.rate_limit_key = user_id
 
                 return user_id
-
 
 # --- Optional Auth ---
 class OptionalAuth(RequireAuth):

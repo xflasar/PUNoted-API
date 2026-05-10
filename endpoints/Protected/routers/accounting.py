@@ -1,9 +1,10 @@
-from app.core.limiter import get_auth_key, limiter
+from typing import Any, Optional
+
 import orjson
-from typing import Optional, Any
-from fastapi import APIRouter, Depends, Query, Request, Response, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse as DefaultJSONResponse
 
+from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.accounting_repo import fetch_user_accounts
 

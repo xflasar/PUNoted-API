@@ -10,11 +10,11 @@ async def handle_leaderboard_scores(conn, raw_payload: Dict[str, Any]) -> Dict[s
     Expects the payload to already be processed by the converter and wrapped in the 'data' key.
     """
     start_time = time.perf_counter()
-    
+
     # Extract the pre-converted data
     data = raw_payload.get("data", {})
     scores = data.get("leaderboard_scores", [])
-    
+
     if not scores:
         return {"success": True, "message": "No leaderboard scores found in data."}
 

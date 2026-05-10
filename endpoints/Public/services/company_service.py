@@ -1,4 +1,5 @@
 import logging
+
 from app.core.redis_client import redis_client
 from endpoints.Public.repositories.company_repo import get_public_company_json
 
@@ -8,9 +9,9 @@ async def fetch_public_company_profile(db, company_code: str) -> str:
     # Standardize cache key format
     normalized_code = company_code.strip().upper()
     cache_key = f"public:company_profile:{normalized_code}"
-    
+
     # Public profiles change rarely. A 1-hour TTL (3600s) provides massive database offloading.
-    ttl = 3600  
+    ttl = 3600
 
     try:
         cached_data = await redis_client.get(cache_key)
@@ -21,7 +22,7 @@ async def fetch_public_company_profile(db, company_code: str) -> str:
 
         if json_string:
             await redis_client.set(cache_key, json_string, ex=ttl)
-        
+
         return json_string
 
     except Exception as e:

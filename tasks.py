@@ -11,6 +11,7 @@ from cachetools import TTLCache
 import data_converter
 import db_message_handlers.accounting_currency_balance_data
 import db_message_handlers.accounting_data
+import db_message_handlers.commodity_exchanges
 import db_message_handlers.company_data
 import db_message_handlers.contracts_data
 import db_message_handlers.corporation_data
@@ -21,6 +22,7 @@ import db_message_handlers.cx_data_order_removed
 import db_message_handlers.cx_data_order_updated
 import db_message_handlers.cx_data_orders
 import db_message_handlers.gateway
+import db_message_handlers.leaderboards_data
 import db_message_handlers.material_categories
 import db_message_handlers.material_recipes
 import db_message_handlers.planet_data
@@ -43,9 +45,7 @@ import db_message_handlers.systems_data
 import db_message_handlers.user_data
 import db_message_handlers.warehouse_data
 import db_message_handlers.workforce_data
-import db_message_handlers.commodity_exchanges
 import db_message_handlers.world_data
-import db_message_handlers.leaderboards_data
 
 logger = logging.getLogger(__name__)
 

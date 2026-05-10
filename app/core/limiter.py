@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -27,7 +26,7 @@ def _get_token(request: Request):
     query_token = request.query_params.get("token")
     if query_token:
         return query_token
-    
+
     return None
 
 
@@ -58,8 +57,8 @@ def get_public_key(request: Request):
 STORAGE_URI = os.getenv("memory://") #"memory://", "REDIS_URL" -> if redis is running set "REDIS_URL" otherwise use "memory://"
 
 limiter = Limiter(
-    key_func=get_remote_address, 
-    storage_uri=STORAGE_URI, 
+    key_func=get_remote_address,
+    storage_uri=STORAGE_URI,
     strategy="fixed-window"
 )
 
@@ -89,10 +88,10 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
     AND inject the Retry-After header.
     """
     error_detail = getattr(exc, "detail", str(exc))
-    
+
     # Calculate wait time based on the limit window
     retry_seconds = _get_retry_after(str(error_detail))
-    
+
     response = JSONResponse(
         status_code=429,
         content={
@@ -101,7 +100,7 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
             "retry_after": retry_seconds
         }
     )
-    
+
     response.headers["Retry-After"] = retry_seconds
-    
+
     return response

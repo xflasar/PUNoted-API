@@ -1,6 +1,8 @@
-from typing import List, Optional
 from datetime import datetime
+from typing import List, Optional
+
 from pydantic import BaseModel
+
 
 class ContractCondition(BaseModel):
     id: str
@@ -17,7 +19,7 @@ class ContractCondition(BaseModel):
     totalamount: Optional[float] = None
     implied_interest_rate: Optional[float] = None
     # Material info flattened for summary
-    material_summary: Optional[str] = None 
+    material_summary: Optional[str] = None
 
 class ContractListItem(BaseModel):
     id: str
@@ -35,7 +37,7 @@ class ContractListItem(BaseModel):
     installment_done: Optional[int] = None
     installment_interval: Optional[int] = None
     loan_strategy: Optional[str] = None
-    
+
     # Computed fields
     total_amount: float = 0.0
     currency: str = "ICA"

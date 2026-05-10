@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Request, Response, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Response
+
 from app.core.limiter import get_auth_key, limiter
 from endpoints.Public.services.company_service import fetch_public_company_profile
 
@@ -25,7 +26,7 @@ async def get_public_company(
         raise HTTPException(status_code=404, detail="Company not found.")
 
     return Response(
-        content=json_string, 
+        content=json_string,
         media_type="application/json",
         headers={
             "Cache-Control": "public, max-age=3600"

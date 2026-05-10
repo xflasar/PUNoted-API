@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +26,21 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
     """
     start_time = time.perf_counter()
     logger.debug("Starting processing planet data.")
-    
+
     # Expects raw_payload["data"] to be the result of your conversion function
     converted_data = raw_payload["data"]
     overall_results = {}
 
     # 1. Normalize 'planets' to always be a list
     planets_input = converted_data.get("planets")
-    
+
     if isinstance(planets_input, list):
         planets_list = planets_input
     elif isinstance(planets_input, dict):
         planets_list = [planets_input]
     else:
         return {
-            "success": False, 
+            "success": False,
             "message": "Invalid or missing planet data in payload."
         }
 
@@ -49,7 +49,7 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
 
     if not planets_list:
          return {
-            "success": False, 
+            "success": False,
             "message": "No valid planet IDs found in data."
         }
 
@@ -69,7 +69,7 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
     try:
         async with conn.pool.acquire() as con:
             async with con.transaction():
-                
+
                 # --- Step 1: Handle main 'planets' table (Bulk Upsert) ---
                 if planets_list:
                     # Use keys from the first planet to build the query
@@ -92,7 +92,7 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                     try:
                         # Convert list of dicts to list of value-lists for executemany
                         values_list = [list(p.values()) for p in planets_list]
-                        
+
                         await con.executemany(upsert_query, values_list)
 
                         overall_results["planets"] = {
@@ -128,9 +128,9 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
 
                     # Bulk Fetch: Get existing records for ALL planets in this batch
                     fetch_query = f"SELECT * FROM {table_name} WHERE planetid = ANY($1::text[])"
-                    
+
                     existing_rows = await con.fetch(fetch_query, all_planet_ids)
-                    
+
                     existing_records_dict = {
                         tuple(rec[k] for k in key_fields): dict(rec)
                         for rec in existing_rows
@@ -155,7 +155,7 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                     # Bulk Insert
                     if records_to_insert:
                         first_rec = records_to_insert[0]
-                        
+
                         # Define which tables use Text/GUID IDs that MUST be inserted manually
                         TABLES_WITH_MANUAL_IDS = {"planet_celestial_bodies", "planet_projects"}
 
@@ -164,15 +164,15 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                         else:
                             # Exclude 'id' only for tables with auto-incrementing integers
                             keys_to_insert = [k for k in first_rec.keys() if k != 'id']
-                        
+
                         keys_str = ", ".join(keys_to_insert)
                         values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys_to_insert))])
-                        
+
                         insert_query = f"INSERT INTO {table_name} ({keys_str}) VALUES ({values_placeholders});"
-                        
+
                         # Prepare values strictly matching keys_to_insert order
                         values_for_insert = [
-                            [rec[k] for k in keys_to_insert] 
+                            [rec[k] for k in keys_to_insert]
                             for rec in records_to_insert
                         ]
 
@@ -197,7 +197,7 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                             )
 
                             update_query = f"UPDATE {table_name} SET {update_fields} WHERE {where_clause};"
-                            
+
                             try:
                                 set_clause_len = len(changed_data)
                                 update_fields = ", ".join(
@@ -206,9 +206,9 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                                 where_clause = " AND ".join(
                                     [f"{key_fields[i]} = ${i + 1 + set_clause_len}" for i in range(len(key_fields))]
                                 )
-                                
+
                                 update_query = f"UPDATE {table_name} SET {update_fields} WHERE {where_clause};"
-                                
+
                                 await con.execute(update_query, *changed_data.values(), *key_values)
                             except Exception as e:
                                 logger.error(f"Database error during {table_name} UPDATE: {e}", exc_info=True)

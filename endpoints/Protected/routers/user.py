@@ -1,12 +1,12 @@
 import logging
-import orjson
-from typing import Optional, Any
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Request, Response, HTTPException, Query
+import orjson
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse as DefaultJSONResponse
 
+from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from app.core.limiter import limiter, get_auth_key
 from endpoints.Protected.repositories.user_repo import fetch_company_data
 
 user_router = APIRouter()
@@ -34,7 +34,7 @@ async def get_company_data(
     user_id: str = Depends(RequireAuth(["profile:read"], is_single_user_endpoint=False)),
 ):
     pool = request.app.state.db.pool
-    
+
     # 1. Get Validated Targets (Provided by Auth)
     valid_targets = getattr(request.state, "valid_target_users", [])
     if not valid_targets:
@@ -47,9 +47,9 @@ async def get_company_data(
     # 3. Fetch
     async with pool.acquire() as conn:
         json_data = await fetch_company_data(
-            conn, 
-            usernames=valid_targets, 
-            codes=target_codes, 
+            conn,
+            usernames=valid_targets,
+            codes=target_codes,
             names=target_names
         )
 
@@ -74,7 +74,7 @@ async def get_company_data_user(
     user_id: str = Depends(RequireAuth(["profile:read"], is_single_user_endpoint=True)),
 ):
     pool = request.app.state.db.pool
-    
+
     # 1. Get Validated Targets
     valid_targets = getattr(request.state, "valid_target_users", [])
     if not valid_targets:
@@ -85,9 +85,9 @@ async def get_company_data_user(
 
     async with pool.acquire() as conn:
         json_str = await fetch_company_data(
-            conn, 
-            usernames=valid_targets, 
-            codes=target_codes, 
+            conn,
+            usernames=valid_targets,
+            codes=target_codes,
             names=target_names
         )
 

@@ -4,7 +4,6 @@ from typing import Any, Dict
 
 from db import Database
 from helpers.db import _upsert_records
-
 from managers.global_ws_manager import global_ws_manager
 
 logger = logging.getLogger(__name__)

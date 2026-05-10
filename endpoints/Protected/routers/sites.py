@@ -1,10 +1,11 @@
-from typing import Optional, Any
+from typing import Any, Optional
+
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse as DefaultJSONResponse
 
-from auth import RequireAuth
 from app.core.limiter import get_auth_key, limiter
+from auth import RequireAuth
 from endpoints.Protected.repositories.sites_repo import fetch_sites
 
 sites_router = APIRouter()

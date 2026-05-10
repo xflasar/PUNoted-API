@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from typing import Any, Dict, List
+
 import orjson
 
 from app.core.ai_client import query_local_ai_json
@@ -15,7 +16,7 @@ def calculate_site_production_flow(
     Calculates the daily production and consumption flow for a single site
     GROSS (separately), preventing local consumption from hiding production.
     """
-    
+
     # 1. Use separate dicts to prevent netting
     gross_production = defaultdict(float)
     gross_consumption = defaultdict(float)
@@ -58,7 +59,7 @@ def calculate_site_production_flow(
         for order in template_orders:
             recipe = order.get("production_recipe", {})
             recipe_duration = float(recipe.get("duration") or 0)
-            
+
             if recipe_duration == 0:
                 continue
 
@@ -71,7 +72,7 @@ def calculate_site_production_flow(
                 if ticker:
                     factor = -float(p_input.get("factor", 0)) * duration_multiplier
                     line_net_flow[ticker] += factor
-                    
+
                     # Capture metadata for later
                     if ticker not in material_info_map:
                         material_info_map[ticker] = {"weight": p_input.get("weight", 0), "volume": p_input.get("volume", 0)}
@@ -82,7 +83,7 @@ def calculate_site_production_flow(
                 if ticker:
                     factor = float(p_output.get("factor", 0)) * duration_multiplier
                     line_net_flow[ticker] += factor
-                    
+
                     if ticker not in material_info_map:
                         material_info_map[ticker] = {"weight": p_output.get("weight", 0), "volume": p_output.get("volume", 0)}
 
@@ -125,25 +126,25 @@ def calculate_site_production_flow(
     }
 
 async def generate_ai_logistics_strategy(
-    summary_data: Dict[str, Any], 
-    recommendations: List[Dict[str, Any]], 
+    summary_data: Dict[str, Any],
+    recommendations: List[Dict[str, Any]],
     ships: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
     """
     Takes the mathematical bottlenecks and manually generated recommendations,
     then asks the AI to prioritize them and assign specific ships.
     """
-    
+
     # 1. Filter Context (Don't send irrelevant data to save tokens)
     # We only care about idle ships with capacity
     available_ships = [
         {
-            "id": s["id"], 
-            "name": s["name"], 
+            "id": s["id"],
+            "name": s["name"],
             "location": s["locationId"],
             "capacity": s["shipStorage"]["maxTonnage"] - s["shipStorage"]["currentTonnage"]
         }
-        for s in ships 
+        for s in ships
         if s["status"] == "idle" and s.get("shipStorage")
     ]
 
