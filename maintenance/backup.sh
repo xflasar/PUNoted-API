@@ -27,6 +27,7 @@ echo "[$(date)] Uploading to Google Drive as $REMOTE_DEST..."
 rclone copyto "$LOCAL_FILE" "$REMOTE_DEST" --config /config/rclone.conf
 
 # 3. Local Cleanup
-find /backups -type f -name "*.sql.gz" -mtime +30 -delete
+# Find files older than 7 days and delete them
+find /backups -type f -name "*.sql.gz" -mtime +7 -delete
 
 echo "[$(date)] Backup process completed."
