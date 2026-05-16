@@ -39,9 +39,7 @@ services:
 
   # --- API BACKEND ---
   backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/xflasar/punoted-api:main
     container_name: punoted_backend_prod
     depends_on:
       redis_cache:

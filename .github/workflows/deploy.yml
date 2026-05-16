@@ -1,4 +1,4 @@
-name: push to GHCR
+name: deploy
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  build-and-push:
+  build-publish-deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -31,3 +31,16 @@ jobs:
           tags: |
             ghcr.io/${{ steps.repo.outputs.name }}:${{ github.ref_name }}
             ghcr.io/${{ steps.repo.outputs.name }}:${{ github.sha }}
+
+      - name: deploy
+        run: |
+          install --directory --mode=700 ~/.ssh
+          install --mode=600 /dev/null ~/.ssh/id_ed25519
+          echo "${{ secrets.FOOR_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          echo "foor.raylu.net ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID05p9Iwshxedsw0ggneT0R3La6DFVFe8Igdb6Kaz/75" >> ~/.ssh/known_hosts
+          ssh xflasar@foor.raylu.net '
+            cd ~/PUNoted-API &&
+            git pull --ff-only &&
+            docker pull ghcr.io/${{ steps.repo.outputs.name }}:${{ github.ref_name }} &&
+            docker compose -f docker-compose.prod.yml up -d --no-deps backend
+          '
