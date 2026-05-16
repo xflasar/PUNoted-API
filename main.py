@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 
 import sentry_sdk
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi_cache import FastAPICache
@@ -375,9 +375,9 @@ app.add_api_route("/v1/docs", api_v1_docs, include_in_schema=False)
 app.openapi = lambda: custom_openapi(app)
 
 
-@app.get("/app")
-def read_main(request: Request):
-    return {"message": "Hello World", "root_path": request.scope.get("root_path")}
+@app.get("/")
+def read_main():
+    return Response("frontend: https://punoted.net\ndocs: https://api.punoted.net/v1/docs\n")
 
 
 @app.get("/status")
