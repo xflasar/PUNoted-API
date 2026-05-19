@@ -20,7 +20,7 @@ services:
     networks:
       - punoted_prod_net
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -41,6 +41,9 @@ services:
   backend:
     image: ghcr.io/xflasar/punoted-api:main
     container_name: punoted_backend_prod
+    #build: -- For local development
+    #  context: . # The directory containing Dockerfile
+    #  dockerfile: Dockerfile
     depends_on:
       redis_cache:
         condition: service_started
@@ -57,7 +60,7 @@ services:
     networks:
       - punoted_prod_net
     healthcheck:
-      test: [ "CMD-SHELL", "nc -z localhost 9901 || exit 1" ]
+      test: ["CMD-SHELL", "nc -z localhost 9901 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -128,7 +131,7 @@ services:
     networks:
       - punoted_prod_net
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U glitchtip -d glitchtip" ]
+      test: ["CMD-SHELL", "pg_isready -U glitchtip -d glitchtip"]
       interval: 5s
       timeout: 5s
       retries: 5

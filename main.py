@@ -21,6 +21,7 @@ from app.core.event_manager import EventManager
 from app.core.limiter import limiter, rate_limit_exceeded_handler
 from app.routers.buildings import buildings_router as internal_buildings_router
 from app.routers.materials import materials_router as internal_materials_router
+from app.services.background import scrape_and_save_data, scrape_prices_and_save_data
 from auth import auth_router
 from data_handlers import BackgroundTasks, data_router
 from db import Database
@@ -73,6 +74,7 @@ from routers.internal.finances import finances_router
 from routers.internal.leaderboard import leaderboard_router
 from routers.internal.production import production_router
 from routers.internal.storage import storage_router
+from routers.internal.users import users_router
 from routers.logistics import logistics_router
 from routers.map import map_router
 from routers.planets import planets_router
@@ -335,6 +337,7 @@ app.include_router(finances_router, prefix="/internal/finances", tags=["Finances
 app.include_router(internal_buildings_router, prefix="/internal/buildings", tags=["Buildings"])
 app.include_router(internal_materials_router, prefix="/internal/materials", tags=["Materials"])
 app.include_router(cx_internal_router, prefix="/internal/cx", tags=["CX"])
+app.include_router(users_router, prefix="/internal/users", tags=["Users"])
 
 # Protected External API v1
 app.include_router(api_user_router, prefix="/v1/user", tags=["User Data"])

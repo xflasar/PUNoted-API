@@ -44,6 +44,7 @@ class WebSettingsUpdate(BaseModel):
 class LeasedSiteItem(BaseModel):
     siteId: str
     description: str
+    tenant: str
 
 class GlobalSettingsUpdate(BaseModel):
     default_cx_code: Optional[str] = None
@@ -124,27 +125,79 @@ async def get_global_settings(request: Request, user_id: str = Depends(get_curre
     async with request.app.state.db.pool.acquire() as conn:
         row = await conn.fetchrow(query, user_id)
 
-    if not row:
-        # Default response if no settings exist
-        return {
-            "userid": user_id,
-            "default_cx_code": "IC1",
-            "default_currency": "ICA",
-            "internal_excluded_sites": [],
-            "internal_leased_sites": [],
-            "privacy_settings": {
-                "allow_corp_view": False,
-                "allow_global_stats": True,
-                "show_financials_on_profile": False
+        if not row:
+            # Default response if no settings exist
+            return {
+                "userid": user_id,
+                "default_cx_code": "IC1",
+                "default_currency": "ICA",
+                "internal_excluded_sites": [],
+                "internal_leased_sites": [],
+                "privacy_settings": {
+                    "allow_corp_view": False,
+                    "allow_global_stats": True,
+                    "show_financials_on_profile": False
+                }
             }
-        }
 
-    data = dict(row)
-    for field in ["internal_excluded_sites", "internal_leased_sites", "privacy_settings"]:
-        if isinstance(data.get(field), str):
-            data[field] = json.loads(data[field])
+        data = dict(row)
+        for field in ["internal_excluded_sites", "internal_leased_sites", "privacy_settings"]:
+            if isinstance(data.get(field), str):
+                data[field] = json.loads(data[field])
 
-    return data
+        leased_sites = data.get("internal_leased_sites", [])
+        
+        if leased_sites:
+            tenant_strings = [lease.get("tenant") for lease in leased_sites if lease.get("tenant")]
+
+            if tenant_strings:
+                match_query = """
+                    WITH MatchedUsers AS (
+                        SELECT
+                            UD.DISPLAYNAME as username, 
+                            CD.COMPANYCODE as company_code,
+                            TRUE AS is_registered
+                        FROM users U
+                        JOIN users_data UD ON U.USERDATAID = UD.USERID
+                        JOIN company_data CD ON U.USERDATAID = CD.USERDATAID
+                        WHERE UD.DISPLAYNAME = ANY($1::text[]) OR CD.COMPANYCODE = ANY($1::text[])
+
+                        UNION ALL
+
+                        SELECT
+                            USERNAME as username, 
+                            COMPANY_CODE as company_code,
+                            FALSE AS is_registered
+                        FROM public_users_data
+                        WHERE USERNAME = ANY($1::text[]) OR COMPANY_CODE = ANY($1::text[])
+                    )
+                    SELECT DISTINCT ON (COALESCE(company_code, username)) 
+                        username, company_code, is_registered
+                    FROM MatchedUsers
+                    ORDER BY COALESCE(company_code, username), is_registered DESC;
+                """
+                matched_rows = await conn.fetch(match_query, tenant_strings)
+
+                match_dict = {}
+                for m in matched_rows:
+                    rich_data = {
+                        "username": m["username"],
+                        "companyCode": m["company_code"],
+                        "isRegistered": m["is_registered"]
+                    }
+
+                    if m["username"]: 
+                        match_dict[m["username"]] = rich_data
+                    if m["company_code"]: 
+                        match_dict[m["company_code"]] = rich_data
+
+
+                for lease in leased_sites:
+                    tenant_str = lease.get("tenant")
+
+                    lease["tenant_data"] = match_dict.get(tenant_str, None)
+
+        return data
 
 @user_settings_router.put("/global")
 async def update_global_settings(

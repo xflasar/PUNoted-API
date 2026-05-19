@@ -7,9 +7,36 @@ from app.core.limiter import get_auth_key, get_public_key, limiter
 # Import OptionalAuth
 from auth import OptionalAuth
 from endpoints.Public.services.material_recipes_service import generate_recipes_json
-from endpoints.Public.services.materials_service import generate_materials_data_csv
+from endpoints.Public.services.materials_service import generate_materials_data_csv, generate_materials_data_json
 
 materials_router = APIRouter()
+
+@materials_router.get(
+    "/list",
+    description="Get Materials list. Public access allowed.",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/json": {}},
+            "description": "Returns a JSON list of materials."
+        }
+    }
+)
+@limiter.limit("120/minute", key_func=get_auth_key)
+@limiter.limit("60/minute", key_func=get_public_key)
+async def get_materials_list(
+    request: Request,
+    user_id: Optional[str] = Depends(OptionalAuth())
+):
+    db = request.app.state.db
+
+    json_string = await generate_materials_data_json(db)
+
+    return Response(
+        content=json_string,
+        media_type="application/json",
+        headers={"Cache-Control": "public, max-age=86400"}
+    )
 
 @materials_router.get(
     "/csv",

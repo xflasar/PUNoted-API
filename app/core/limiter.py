@@ -54,12 +54,13 @@ def get_public_key(request: Request):
 
 
 # --- INITIALIZE ---
-STORAGE_URI = os.getenv("memory://") #"memory://", "REDIS_URL" -> if redis is running set "REDIS_URL" otherwise use "memory://"
+STORAGE_URI = os.getenv("REDIS_URL") #"memory://", "REDIS_URL" -> if redis is running set "REDIS_URL" otherwise use "memory://"
 
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=STORAGE_URI,
-    strategy="fixed-window"
+    strategy="fixed-window",
+    default_limits=["120/minute"]
 )
 
 

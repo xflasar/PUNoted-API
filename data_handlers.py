@@ -2565,7 +2565,7 @@ async def get_user_production(request: Request, user_id: str = Depends(get_curre
 
 SQL_FETCH_USER_WORKFORCE = """
     SELECT
-        wf.siteid,
+        wf.siteid::text AS siteid, -- Explicitly cast to text
         wf.level,
         wf.population,
         wf.reserve,
@@ -2575,12 +2575,6 @@ SQL_FETCH_USER_WORKFORCE = """
         needs_data.needs -- The aggregated JSONB array
     FROM
         workforces wf
-    INNER JOIN
-        sites s ON s.siteid = wf.siteid
-    INNER JOIN
-        users_data ud ON ud.userid = s.userid
-    INNER JOIN
-        users u ON u.userdataid = ud.userid
 
     -- ----------------------------------------------------------------------
     -- 1. LATERAL JOIN for JSON Aggregation (Groups needs for each workforce row)
@@ -2602,9 +2596,9 @@ SQL_FETCH_USER_WORKFORCE = """
             workforce_needs wfn
         INNER JOIN
             materials m ON m.materialid = wfn.materialid
-        -- NEW: LEFT JOIN to get the storage item amount for this material at this site
-		LEFT JOIN
-			storages st ON st.addressableid = wf.siteid
+        -- LEFT JOIN to get the storage item amount for this material at this site
+        LEFT JOIN
+            storages st ON st.addressableid = wf.siteid
         LEFT JOIN
             storage_items si ON 
                 si.materialid = wfn.materialid AND -- Match the material
@@ -2615,36 +2609,93 @@ SQL_FETCH_USER_WORKFORCE = """
             wf.workforceid
     ) AS needs_data ON TRUE
     WHERE
-        u.accountid = $1
+        wf.siteid::text = ANY($1::text[]) -- Match the array of allowed site IDs
     ORDER BY
         wf.siteid, wf.level;
 """
 
+
+# --- SECURITY QUERY: RESOLVE ALLOWED SITES ---
+SQL_GET_ALLOWED_SITES = """
+WITH Me AS (
+    SELECT ud.displayname as username, cd.companycode
+    FROM users u
+    LEFT JOIN users_data ud ON u.userdataid = ud.userid
+    LEFT JOIN company_data cd ON u.userdataid = cd.userdataid
+    WHERE u.accountid = $1::uuid
+),
+MyOwnedSites AS (
+    SELECT s.siteid::text as siteid
+    FROM sites s
+    JOIN users u ON u.userdataid = s.userid
+    WHERE u.accountid = $1::uuid
+),
+MyOutboundLeases AS (
+    SELECT l->>'siteId' as siteid, l->>'tenant' as tenant
+    FROM user_global_settings ugs
+    CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
+    WHERE ugs.userid::text = $1::text
+),
+MyInboundLeases AS (
+    SELECT l->>'siteId' as siteid, 
+           (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
+            FROM users u2 
+            LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
+            LEFT JOIN company_data cd2 ON cd2.userdataid = u2.userdataid 
+            WHERE u2.accountid::text = ugs.userid::text) as landlord
+    FROM user_global_settings ugs
+    CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
+    CROSS JOIN Me
+    WHERE ugs.userid::text != $1::text
+      AND (
+          l->>'tenant' = Me.username 
+          OR l->>'tenant' = Me.companycode 
+          OR l->>'tenant' = Me.username || ' (' || Me.companycode || ')'
+      )
+)
+SELECT 
+    o.siteid
+FROM MyOwnedSites o
+LEFT JOIN MyOutboundLeases outbound ON outbound.siteid = o.siteid
+
+UNION ALL
+
+SELECT 
+    inbound.siteid
+FROM MyInboundLeases inbound;
+"""
 
 @data_router.get("/user_workforce_with_needs")
 async def get_user_workforce_with_needs(request: Request, user_id: str = Depends(get_current_user_id)):
     pool = request.app.state.db.pool
 
     async with pool.acquire() as conn:
-        records = await conn.fetch(SQL_FETCH_USER_WORKFORCE, user_id)
+        # 1. Figure out which sites this user is allowed to see (Owned + Leased)
+        allowed_sites_records = await conn.fetch(SQL_GET_ALLOWED_SITES, user_id)
+        
+        if not allowed_sites_records:
+            return JSONResponse(content={"success": True, "data": {}})
+            
+        target_site_ids = list(set([r["siteid"] for r in allowed_sites_records]))
 
-    # 1. Initialize the dictionary for grouping: { siteid: List[WorkforceRecord], ... }
+        # 2. Pass the ARRAY of site IDs to your workforce query
+        records = await conn.fetch(SQL_FETCH_USER_WORKFORCE, target_site_ids)
+
+    # 3. Initialize the dictionary for grouping
     workforce_by_site: Dict[str, List[Dict[str, Any]]] = {}
 
-    # 2. Process and Group the Records
+    # 4. Process and Group the Records
     for record in records:
-        # Convert immutable asyncpg.Record to a mutable dict
         mutable_record = dict(record)
 
-        site_id = mutable_record.pop("siteid")
+        # Safely extract and cast site_id to string so it acts as a proper JSON key
+        site_id = str(mutable_record.pop("siteid"))
 
         needs_data = mutable_record.get("needs")
 
-        # Ensure JSONB is loaded correctly (if the driver hasn't done it)
         if isinstance(needs_data, str):
             mutable_record["needs"] = json.loads(needs_data)
 
-        # 3. Add the record to the correct site group
         if site_id not in workforce_by_site:
             workforce_by_site[site_id] = []
 

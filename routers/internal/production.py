@@ -15,7 +15,6 @@ MS_PER_DAY = 1000 * 60 * 60 * 24.0
 
 
 # --- HELPER: Safe JSON Parsing ---
-# Handles cases where the DB driver returns a JSON string instead of an object
 def safe_json(value):
     if value is None:
         return []
@@ -27,51 +26,105 @@ def safe_json(value):
     return value
 
 
+# --- QUERY 0: RESOLVE ALLOWED SITES & LEASE CONTEXT ---
+SQL_GET_ALLOWED_SITES = """
+WITH Me AS (
+    SELECT ud.displayname as username, cd.companycode
+    FROM users u
+    LEFT JOIN users_data ud ON u.userdataid = ud.userid
+    LEFT JOIN company_data cd ON u.userdataid = cd.userdataid
+    WHERE u.accountid = $1::uuid
+),
+MyOwnedSites AS (
+    SELECT s.siteid::text as siteid
+    FROM sites s
+    JOIN users u ON u.userdataid = s.userid
+    WHERE u.accountid = $1::uuid
+),
+MyOutboundLeases AS (
+    SELECT l->>'siteId' as siteid, l->>'tenant' as tenant
+    FROM user_global_settings ugs
+    CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
+    WHERE ugs.userid::text = $1::text
+),
+MyInboundLeases AS (
+    SELECT l->>'siteId' as siteid, 
+           (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
+            FROM users u2 
+            LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
+            LEFT JOIN company_data cd2 ON cd2.userdataid = u2.userdataid 
+            WHERE u2.accountid::text = ugs.userid::text) as landlord
+    FROM user_global_settings ugs
+    CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
+    CROSS JOIN Me
+    WHERE ugs.userid::text != $1::text
+      AND (
+          l->>'tenant' = Me.username 
+          OR l->>'tenant' = Me.companycode 
+          OR l->>'tenant' = Me.username || ' (' || Me.companycode || ')'
+      )
+)
+SELECT 
+    o.siteid,
+    TRUE as am_owner,
+    outbound.tenant as leased_to,
+    NULL as leased_from
+FROM MyOwnedSites o
+LEFT JOIN MyOutboundLeases outbound ON outbound.siteid = o.siteid
+
+UNION ALL
+
+SELECT 
+    inbound.siteid,
+    FALSE as am_owner,
+    NULL as leased_to,
+    inbound.landlord as leased_from
+FROM MyInboundLeases inbound;
+"""
+
 # --- QUERY 1: SITES & INFRASTRUCTURE ---
 SQL_GET_SITES_AND_INFRA = """
 WITH UserSites AS (
     SELECT 
-        s.siteid, s.area, s.investedpermits, s.maximumpermits, s.foundedtimestamp, 
+        s.siteid::text as siteid, s.area, s.investedpermits, s.maximumpermits, s.foundedtimestamp, 
         p.naturalid AS planet_name, p.name AS planet_name_alt
     FROM sites s
-    INNER JOIN users u ON u.userdataid = s.userid
     INNER JOIN planets p ON p.planetid = s.addressplanetid
-    WHERE u.accountid = $1
+    WHERE s.siteid::text = ANY($1::text[])
 )
 SELECT 
     us.*,
     (
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
-            'material_id', ssi.materialid, 'ticker', m.ticker, 'amount', ssi.quantity
+            'material_id', ssi.materialid::text, 'ticker', m.ticker, 'amount', ssi.quantity
         )), '[]'::jsonb)
         FROM storage_items ssi
         JOIN storages st ON st.storageid = ssi.storageid
         JOIN materials m ON m.materialid = ssi.materialid
-        WHERE st.addressableid = us.siteid
+        WHERE st.addressableid::text = us.siteid
     ) AS storage_items,
     (
         SELECT jsonb_build_object(
             'overall', COALESCE(AVG(CASE WHEN b.type IN ('PRODUCTION', 'RESOURCES') THEN sp.condition END), 0.0),
             'tickers', (
-                SELECT jsonb_agg(DISTINCT b2.ticker ORDER BY b2.ticker) 
+                SELECT COALESCE(jsonb_agg(DISTINCT b2.ticker ORDER BY b2.ticker), '[]'::jsonb) 
                 FROM site_platforms sp2 JOIN buildings b2 ON b2.buildingid = sp2.buildingid 
-                WHERE sp2.siteid = us.siteid
+                WHERE sp2.siteid::text = us.siteid
             ),
-            'conditions', jsonb_agg(jsonb_build_object('building_ticker', b.ticker, 'platform_condition', sp.condition))
+            'conditions', COALESCE(jsonb_agg(jsonb_build_object('building_ticker', b.ticker, 'platform_condition', sp.condition)), '[]'::jsonb)
         )
         FROM site_platforms sp
         JOIN buildings b ON b.buildingid = sp.buildingid
-        WHERE sp.siteid = us.siteid
+        WHERE sp.siteid::text = us.siteid
     ) AS platform_data
 FROM UserSites us;
 """
 
 # --- QUERY 2: LINES & ORDERS ---
-# Fetches lines and the active/queued orders.
 SQL_GET_LINES_AND_QUEUES = """
 SELECT 
-    pl.siteid,
-    pl.productionlineid,
+    pl.siteid::text as siteid,
+    pl.productionlineid::text as productionlineid,
     pl.type,
     pl.slots,
     pl.capacity,
@@ -79,7 +132,7 @@ SELECT
     pl.condition,
     (
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
-            'order_id', po.orderid,
+            'order_id', po.orderid::text,
             'created', po.created,
             'completion', po.completion,
             'duration', po.duration,
@@ -87,63 +140,57 @@ SELECT
             'recurring', po.recurring,
             'completed', po.completed,
             'started', po.started,
-            'recipe_id', po.recipeid
+            'recipe_id', po.recipeid::text
         ) ORDER BY po.created ASC), '[]'::jsonb)
         FROM site_production_line_orders po
         WHERE po.productionlineid = pl.productionlineid
-        AND po.completion IS NULL -- Active or Queued
+        AND po.completion IS NULL
     ) AS production_orders
 FROM site_production_lines pl
-INNER JOIN sites s ON s.siteid = pl.siteid
-INNER JOIN users u ON u.userdataid = s.userid
-WHERE u.accountid = $1;
+WHERE pl.siteid::text = ANY($1::text[]);
 """
 
 # --- QUERY 3: RECIPE PARTS (SPLIT) ---
-
-# 3.1 Core Info
 SQL_FETCH_RECIPES_CORE = """
 WITH Targets AS (
     SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
 )
 SELECT 
-    r.productiontemplateid as recipe_id, 
-    r.productionlineid as line_id,
+    r.productiontemplateid::text as recipe_id, 
+    r.productionlineid::text as line_id,
     r.duration,
     r.name,
     r.efficiency,
     r.effortfactor as effort_factor
 FROM production_recipes r
-JOIN Targets t ON r.productiontemplateid = t.t_id AND r.productionlineid = t.l_id
+JOIN Targets t ON r.productiontemplateid::text = t.t_id AND r.productionlineid::text = t.l_id
 """
 
-# 3.2 Inputs
 SQL_FETCH_RECIPE_INPUTS = """
 WITH Targets AS (
     SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
 )
 SELECT 
-    i.productiontemplateid as recipe_id, 
-    i.productionlineid as line_id,
+    i.productiontemplateid::text as recipe_id, 
+    i.productionlineid::text as line_id,
     m.ticker, 
     i.factor
 FROM production_recipe_input_factors i
-JOIN Targets t ON i.productiontemplateid = t.t_id AND i.productionlineid = t.l_id
+JOIN Targets t ON i.productiontemplateid::text = t.t_id AND i.productionlineid::text = t.l_id
 JOIN materials m ON m.materialid = i.materialid
 """
 
-# 3.3 Outputs
 SQL_FETCH_RECIPE_OUTPUTS = """
 WITH Targets AS (
     SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
 )
 SELECT 
-    o.productiontemplateid as recipe_id, 
-    o.productionlineid as line_id,
+    o.productiontemplateid::text as recipe_id, 
+    o.productionlineid::text as line_id,
     m.ticker, 
     o.factor
 FROM production_recipe_output_factors o
-JOIN Targets t ON o.productiontemplateid = t.t_id AND o.productionlineid = t.l_id
+JOIN Targets t ON o.productiontemplateid::text = t.t_id AND o.productionlineid::text = t.l_id
 JOIN materials m ON m.materialid = o.materialid
 """
 
@@ -155,22 +202,54 @@ async def get_user_production(
 ):
     try:
         async with request.app.state.db.pool.acquire() as conn:
+            
+            # --- STEP 0: RESOLVE ALLOWED SITES & LEASE CONTEXT ---
+            allowed_sites_records = await conn.fetch(SQL_GET_ALLOWED_SITES, user_id)
+            if not allowed_sites_records:
+                return {"success": True, "data": {}}
+
+            target_site_ids = list(set([r["siteid"] for r in allowed_sites_records]))
+            
+            lease_context = {}
+            for row in allowed_sites_records:
+                sid = row["siteid"]
+                am_owner = row["am_owner"]
+                leased_to = row["leased_to"]
+                leased_from = row["leased_from"]
+                
+                is_leased = False
+                tenant_str = None
+                
+                if am_owner and leased_to:
+                    is_leased = True
+                    tenant_str = leased_to
+                elif not am_owner and leased_from:
+                    is_leased = True
+                    tenant_str = f"Owner: {leased_from}"
+                    
+                lease_context[sid] = {
+                    "isLeased": is_leased,
+                    "tenant": tenant_str
+                }
+
             # --- STEP 1: SITES ---
-            sites_records = await conn.fetch(SQL_GET_SITES_AND_INFRA, user_id)
+            sites_records = await conn.fetch(SQL_GET_SITES_AND_INFRA, target_site_ids)
 
             if not sites_records:
                 return {"success": True, "data": {}}
 
             results = {}
             for row in sites_records:
+                sid = row["siteid"]
                 p_data = safe_json(row["platform_data"])
                 if not isinstance(p_data, dict):
                     p_data = {}
 
                 storage_data = safe_json(row["storage_items"])
+                context = lease_context.get(sid, {"isLeased": False, "tenant": None})
 
-                results[row["siteid"]] = {
-                    "siteid": row["siteid"],
+                results[sid] = {
+                    "siteid": sid,
                     "planet_name": row["planet_name"],
                     "planet_name_alt": row["planet_name_alt"],
                     "area": row["area"],
@@ -184,15 +263,14 @@ async def get_user_production(
                     "storage_items": storage_data,
                     "production_lines": [],
                     "site_daily_flow": {},
+                    "isLeased": context["isLeased"],
+                    "tenant": context["tenant"],
                 }
 
             # --- STEP 2: LINES & ORDER PAIRS ---
-            lines_records = await conn.fetch(SQL_GET_LINES_AND_QUEUES, user_id)
+            lines_records = await conn.fetch(SQL_GET_LINES_AND_QUEUES, target_site_ids)
 
-            # Identify Pairings: (recipe_id, line_id)
-            # We must use both because recipe factors depend on the line
             recipe_line_pairs = set()
-
             site_lines_map = {}
 
             for row in lines_records:
@@ -224,8 +302,6 @@ async def get_user_production(
             recipe_map = {}
 
             if recipe_line_pairs:
-                # Unzip pairs into two parallel lists for SQL Arrays
-                # list(zip(*set)) returns [(r1, r2, ...), (l1, l2, ...)]
                 target_r_ids, target_l_ids = map(list, zip(*recipe_line_pairs))
 
                 # 3.1 Fetch Core
@@ -237,8 +313,8 @@ async def get_user_production(
                         "efficiency": r["efficiency"],
                         "effort_factor": r["effort_factor"],
                         "duration": r["duration"],
-                        "inputs": [],  # Will populate below
-                        "outputs": [],  # Will populate below
+                        "inputs": [],
+                        "outputs": [],
                     }
 
                 # 3.2 Fetch Inputs
@@ -255,7 +331,7 @@ async def get_user_production(
                     if key in recipe_map:
                         recipe_map[key]["outputs"].append({"ticker": o["ticker"], "factor": o["factor"]})
 
-            # --- STEP 4: STITCH & CALCULATE (CORP LOGIC APPLIED HERE) ---
+            # --- STEP 4: STITCH & CALCULATE ---
             for site_id, site_data in results.items():
                 raw_lines = site_lines_map.get(site_id, [])
                 daily_flow = {}
@@ -274,7 +350,6 @@ async def get_user_production(
                     # 4b. Hydrate Orders
                     for order in line["production_orders"]:
                         rid = order.get("recipe_id")
-                        # LOOKUP using (LineID, RecipeID)
                         if rid and (line_id, rid) in recipe_map:
                             order["production_recipe"] = recipe_map[(line_id, rid)]
                         else:
@@ -302,9 +377,7 @@ async def get_user_production(
 
                     daily_cycles = (line.get("capacity", 0) * MS_PER_DAY) / total_ms
 
-                    # Queued orders loop - we calculate the flow as if all orders execute in sequence, then scale by how many cycles the line can do in a day
                     for active_order in orders:
-                        # Determine Duration (Order > Recipe > Default)
                         recipe = active_order.get("production_recipe") or {}
                         order_duration = float(active_order.get("duration") or 0)
                         recipe_duration = float(recipe.get("duration") or 0)
@@ -312,32 +385,25 @@ async def get_user_production(
                         if recipe_duration == 0:
                             continue
 
-                        # Get Multiplier based on Order vs Recipe Duration
                         duration_multiplier = order_duration / recipe_duration
 
-                        # Process Inputs (Consumption)
                         inputs = recipe.get("inputs") or []
                         for inp in inputs:
                             ticker = inp.get("ticker")
                             if not ticker:
                                 continue
-
-                            # Consumption is negative flow, so we subtract from the line flow
                             factor = -inp.get("factor", 0) * duration_multiplier
                             line_unscaled_flow[ticker] += factor
 
-                        # Process Outputs (Production)
                         outputs = recipe.get("outputs") or []
                         for out in outputs:
                             ticker = out.get("ticker")
                             if not ticker:
                                 continue
-
-                            # Production is positive flow, so we add to the line flow
                             factor = out.get("factor", 0) * duration_multiplier
                             line_unscaled_flow[ticker] += factor
 
-                    # 4c. Scale Flow by Line Capacity & Duration, then add to Daily Flow
+                    # 4c. Scale Flow by Line Capacity & Duration
                     for ticker, unscaled_flow in line_unscaled_flow.items():
                         r_flow = unscaled_flow * daily_cycles
                         if ticker not in daily_flow:

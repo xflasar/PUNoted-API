@@ -106,7 +106,7 @@ async def corporation_production_overview_csv(
         )
 
 
-@corporation_router.get(
+""" @corporation_router.get(
     "/prices",
     description="Get corporation market data in JSON format. Public access allowed.",
     response_class=Response,
@@ -132,4 +132,4 @@ async def get_corporation_prices_json(
         headers={
             "Cache-Control": "public, max-age=1800"
         }
-    )
+    ) """
