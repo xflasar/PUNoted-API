@@ -42,13 +42,13 @@ MyOwnedSites AS (
     WHERE u.accountid = $1::uuid
 ),
 MyOutboundLeases AS (
-    SELECT l->>'siteId' as siteid, l->>'tenant' as tenant
+    SELECT l->>'siteId' as siteid, l->>'tenant' as tenant, 'Type' as lease_type
     FROM user_global_settings ugs
     CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
     WHERE ugs.userid::text = $1::text
 ),
 MyInboundLeases AS (
-    SELECT l->>'siteId' as siteid, 
+    SELECT l->>'siteId' as siteid, 'Type' as lease_type, 
            (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
             FROM users u2 
             LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
@@ -228,6 +228,7 @@ async def get_user_production(
                     tenant_str = f"Owner: {leased_from}"
                     
                 lease_context[sid] = {
+                    "type": row.get("lease_type"),
                     "isLeased": is_leased,
                     "tenant": tenant_str
                 }
@@ -295,6 +296,7 @@ async def get_user_production(
                         "efficiency": row["efficiency"],
                         "condition": row["condition"],
                         "production_orders": orders,
+                        "line_daily_flow": {},
                     }
                 )
 
@@ -409,6 +411,7 @@ async def get_user_production(
                         if ticker not in daily_flow:
                             daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0}
                         daily_flow[ticker]["flow"] += r_flow
+                        line["line_daily_flow"][ticker] = r_flow
 
                 site_data["production_lines"] = hydrated_lines
                 site_data["site_daily_flow"] = daily_flow

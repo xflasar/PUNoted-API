@@ -174,7 +174,7 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
 
             if total_ms > 0:
                 daily_cycles = (pl.get("capacity", 0) * MS_PER_DAY) / total_ms
-                planet_id = pl.get("planetnaturalid", "Unknown")
+                planet_id = pl.get("planetname", "planetnaturalid")
 
                 for order in active_orders:
                     r_id = order.get("RecipeId")

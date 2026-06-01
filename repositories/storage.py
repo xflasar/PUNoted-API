@@ -18,7 +18,7 @@ async def fetch_user_storages(db: Database, user_id: str):
                     s.weightcapacity,
                     s.weightload,
                     s.xata_updatedat,
-                    COALESCE(p_site.name, p_warehouse.name) as planet_name,
+                    COALESCE(p_site.name, p_site.naturalid, p_warehouse.name, p_warehouse.naturalid) as planet_name,
                     station.name as station_name,
                     si.quantity,
                     si.currencyamount,

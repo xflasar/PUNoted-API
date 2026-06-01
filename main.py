@@ -75,6 +75,8 @@ from routers.internal.leaderboard import leaderboard_router
 from routers.internal.production import production_router
 from routers.internal.storage import storage_router
 from routers.internal.users import users_router
+from routers.internal.ships import ships_router
+from routers.internal.sites import sites_router
 from routers.logistics import logistics_router
 from routers.map import map_router
 from routers.planets import planets_router
@@ -338,6 +340,8 @@ app.include_router(internal_buildings_router, prefix="/internal/buildings", tags
 app.include_router(internal_materials_router, prefix="/internal/materials", tags=["Materials"])
 app.include_router(cx_internal_router, prefix="/internal/cx", tags=["CX"])
 app.include_router(users_router, prefix="/internal/users", tags=["Users"])
+app.include_router(ships_router, prefix="/internal/ships", tags=["Ships"])
+app.include_router(sites_router, prefix="/internal/sites", tags=["Sites"])
 
 # Protected External API v1
 app.include_router(api_user_router, prefix="/v1/user", tags=["User Data"])

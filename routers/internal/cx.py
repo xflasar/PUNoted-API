@@ -5,7 +5,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from app.api.db.dependencies import get_db
+from app.db.dependencies import get_db
 from app.core.security import require_internal_origin
 from app.core.redis_client import redis_client # Ensure this is imported
 
