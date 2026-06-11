@@ -5,7 +5,7 @@ import time
 from contextlib import asynccontextmanager
 
 import sentry_sdk
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi_cache import FastAPICache
@@ -287,11 +287,13 @@ app.add_middleware(SecurityLoggerMiddleware)
 # Middleware
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["http://localhost:5174", "http://127.0.0.1:5174", "https://punoted.net"],
+    allow_origin_regex=r"chrome-extension://.*", 
     allow_credentials=True,
-    allow_origin_regex="https?://.*",
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 

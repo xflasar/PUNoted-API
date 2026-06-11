@@ -8,35 +8,36 @@ async def repo_get_ships_by_user(conn: Connection, user_id: str) -> List[Record]
     """
     query = """
         SELECT 
-            shipid,
-            userid,
-            name,
-            registration,
-            type,
-            addressplanetid,
-            addressstationid,
-            addresssystemid,
-            acceleration,
-            thrust,
-            volume,
-            mass,
-            operatingemptymass,
-            reactorpower,
-            emitterpower,
-            stlfuelflowrate,
-            status,
-            condition,
-            commissioningtime,
-            lastrepair,
-            flightid,
-            idftlfuelstore,
-            idstlfuelstore,
-            idshipstore,
-            operatingtimeftl,
-            operatingtimestl,
-            blueprintnaturalid
-        FROM ships
-        WHERE userid = $1
-        ORDER BY name ASC;
+            s.shipid,
+            s.userid,
+            s.name,
+            s.registration,
+            s.type,
+            s.addressplanetid,
+            s.addressstationid,
+            s.addresssystemid,
+            s.acceleration,
+            s.thrust,
+            s.volume,
+            s.mass,
+            s.operatingemptymass,
+            s.reactorpower,
+            s.emitterpower,
+            s.stlfuelflowrate,
+            s.status,
+            s.condition,
+            s.commissioningtime,
+            s.lastrepair,
+            s.flightid,
+            s.idftlfuelstore,
+            s.idstlfuelstore,
+            s.idshipstore,
+            s.operatingtimeftl,
+            s.operatingtimestl,
+            s.blueprintnaturalid
+        FROM ships s
+        JOIN users u ON s.userid = u.userdataid
+        WHERE u.accountid = $1
+        ORDER BY s.name ASC;
     """
     return await conn.fetch(query, user_id)

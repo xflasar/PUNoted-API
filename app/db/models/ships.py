@@ -14,7 +14,7 @@ class Ship(BaseModel):
     """
     ship_id: str = Field(..., alias="shipid")
     user_id: str = Field(..., alias="userid")
-    name: str = Field(...)
+    name: Optional[str] = Field(None)
     registration: str = Field(...)
     ship_type: str = Field(..., alias="type")
     
@@ -49,10 +49,6 @@ class Ship(BaseModel):
     
     # Meta
     blueprint_natural_id: Optional[str] = Field(None, alias="blueprintnaturalid")
-    xata_id: str = Field(..., alias="xata_id")
-    xata_version: int = Field(..., alias="xata_version")
-    xata_created_at: datetime = Field(..., alias="xata_createdat")
-    xata_updated_at: datetime = Field(..., alias="xata_updatedat")
 
     model_config = model_config
 
