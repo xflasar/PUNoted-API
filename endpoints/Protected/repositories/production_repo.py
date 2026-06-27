@@ -109,7 +109,7 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
     # 2. Extract unique line/recipe pairs
     for row in rows:
         pl = dict(row)
-        pl["orders"] = json.loads(pl["production_orders"])
+        pl["orders"] = json.loads(pl["production_orders"]) if isinstance(pl["production_orders"], str) else pl["production_orders"]
         raw_lines.append(pl)
 
         for order in pl["orders"]:

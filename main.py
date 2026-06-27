@@ -4,7 +4,6 @@ import os
 import time
 from contextlib import asynccontextmanager
 
-import sentry_sdk
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -88,14 +87,6 @@ from routers.websocket_router import ws_router
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-sentry_sdk.init(
-    dsn=os.getenv("SENTRY_DSN"),
-    # Set traces_sample_rate to 1.0 to capture 100% of transactions for debugging.
-    # In high-traffic production, lower this to 0.1 or 0.01.
-    traces_sample_rate=1.0,
-    profiles_sample_rate=1.0,
-)
 
 # --- Lifecycle Events ---
 @asynccontextmanager
@@ -392,15 +383,6 @@ def read_main():
 @app.get("/status")
 async def status_check():
     return {"status": "online", "db_check": "success"}
-
-@app.get("/debug-sentry")
-async def trigger_error():
-    """
-    Temporary endpoint to verify GlitchTip integration.
-    """
-    division_by_zero = 1 / 0
-    return division_by_zero
-
 
 if __name__ == "__main__":
     import uvicorn

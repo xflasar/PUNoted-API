@@ -65,6 +65,25 @@ services:
       timeout: 10s
       retries: 3
 
+  background_worker:
+    image: ghcr.io/xflasar/punoted-api:main
+    container_name: punoted_background_prod
+    command: ["python", "run_background.py"]
+    depends_on:
+      redis_cache:
+        condition: service_started
+      prod_db:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://redis_cache:6379/0
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@prod_db:5432/${DB_NAME}
+      - XATA_DATABASE_URL=postgresql://${DB_USER}:${DB_PASS}@prod_db:5432/${DB_NAME}
+    networks:
+      - punoted_prod_net
+    restart: always
+
   # ==============================================================================
   # 2. MONITORING STACK
   # ==============================================================================
@@ -114,66 +133,6 @@ services:
     networks:
       - punoted_prod_net
 
-  # ==============================================================================
-  # 3. GLITCHTIP (Error Tracking)
-  # ==============================================================================
-
-  # --- GLITCHTIP DEDICATED DATABASE ---
-  glitchtip_db:
-    image: postgres:15.12-alpine
-    container_name: punoted_glitchtip_db
-    environment:
-      POSTGRES_USER: glitchtip
-      POSTGRES_PASSWORD: ${DB_PASS}
-      POSTGRES_DB: glitchtip
-    volumes:
-      - glitchtip_data:/var/lib/postgresql/data
-    networks:
-      - punoted_prod_net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U glitchtip -d glitchtip"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  glitchtip-web:
-    image: glitchtip/glitchtip:latest
-    container_name: punoted_glitchtip_web
-    depends_on:
-      redis_cache:
-        condition: service_started
-      glitchtip_db:
-        condition: service_healthy
-    ports:
-      - "8000:8000"
-    environment:
-      # Connects to the dedicated 'glitchtip_db' container
-      - DATABASE_URL=postgres://glitchtip:${DB_PASS}@glitchtip_db:5432/glitchtip
-      - REDIS_URL=redis://redis_cache:6379/1 # Uses DB 1 on shared Redis
-      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
-      - PORT=8000
-      - GLITCHTIP_DOMAIN=${GLITCHTIP_DOMAIN}
-      - ENABLE_USER_REGISTRATION=True
-      - ALLOWED_HOSTS=localhost,127.0.0.1,glitchtip-web,punoted_glitchtip_web
-    networks:
-      - punoted_prod_net
-
-  glitchtip_worker:
-    image: glitchtip/glitchtip:latest
-    container_name: punoted_glitchtip_worker
-    command: ./bin/run-celery-with-beat.sh
-    depends_on:
-      redis_cache:
-        condition: service_started
-      glitchtip_db:
-        condition: service_healthy
-    environment:
-      - DATABASE_URL=postgres://glitchtip:${DB_PASS}@glitchtip_db:5432/glitchtip
-      - REDIS_URL=redis://redis_cache:6379/1
-      - SECRET_KEY=${GLITCHTIP_SECRET_KEY}
-    networks:
-      - punoted_prod_net
-
   db_maintenance:
     build: ./maintenance
     container_name: db_maintenance_worker
@@ -201,7 +160,6 @@ networks:
 
 volumes:
   prod_data: # Main App Data
-  glitchtip_data: # GlitchTip Data (Isolated)
   redis_data: # Shared Cache
   grafana_data: # Monitoring Configs
   prometheus_data: # Metrics History

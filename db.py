@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from typing import Any, Optional
 
@@ -7,6 +8,13 @@ import asyncpg
 from config import XATA_DATABASE_URL
 
 logger = logging.getLogger(__name__)
+
+
+def json_decoder(value):
+    """Safely decodes json/jsonb columns into native Python dictionaries."""
+    if value is None:
+        return None
+    return json.loads(value)
 
 
 class Database:
@@ -20,8 +28,22 @@ class Database:
         pass
 
     async def init_connection(self, con):
-        """Sets a statement timeout on the connection."""
+        """Sets statement timeout and registers JSON/JSONB type codecs."""
         await con.execute("SET statement_timeout = '15s'")
+        
+        # Register JSON and JSONB codecs globally on connection initialization
+        await con.set_type_codec(
+            'json',
+            encoder=json.dumps,
+            decoder=json_decoder,
+            schema='pg_catalog'
+        )
+        await con.set_type_codec(
+            'jsonb',
+            encoder=json.dumps,
+            decoder=json_decoder,
+            schema='pg_catalog'
+        )
 
     async def create_pool(self):
         self.poolInit = True

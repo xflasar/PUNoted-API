@@ -32,9 +32,6 @@ try:
     from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 except ImportError:
     from jwt import ExpiredSignatureError, InvalidTokenError
-
-import sentry_sdk
-
 import config
 
 auth_router = APIRouter()
@@ -403,11 +400,6 @@ async def get_current_user_id(request: Request, token: str = Depends(oauth2_sche
         if user_id.startswith("rec_"):
             user_id = await conn.fetch("SELECT accountid FROM users WHERE xata_id=$1", user_id)
             user_id = str(user_id[0]["accountid"])
-
-        sentry_sdk.set_user({
-            "id": str(user_id),
-            "ip_address": "{{auto}}", # Let Sentry extract IP
-        })
 
         return user_id
 

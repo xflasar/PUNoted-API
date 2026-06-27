@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Dict
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -35,35 +36,10 @@ async def get_materials_price_list(
 
         current_user_id_str = str(user_id)
 
-        query = """
-            -- 1. Find the single storage ID for the authenticated user (if they have one).
-            WITH user_single_storage AS (
-                SELECT
-                    s.storageid
-                FROM
-                    storages AS s
-                INNER JOIN
-                    warehouses AS w ON w.warehouseid = s.addressableid
-                INNER JOIN
-                    systems AS sys ON w.addresssystem = sys.systemid
-                INNER JOIN
-                    users_data AS ud ON ud.userid = s.userid
-                INNER JOIN
-                    users AS u ON u.userdataid = ud.userid
-                INNER JOIN
-                    stations AS st ON st.warehouseid = w.warehouseid
-                WHERE
-                    u.accountid = $2 
-                    AND sys.name = 'Hortus'
-                    AND st.name != 'Hortus'
-                LIMIT 1
-            )
-            -- 2. Select all materials for the given CX, and optionally join the user's storage quantity.
+        query_materials = """
             SELECT
                 mt.ticker,
                 mt.materialid,
-                COALESCE(si.quantity, 0) AS quantity,
-                cxb.askprice,
                 mp.price AS corpprice
             FROM
                 cx_brokers AS cxb
@@ -71,24 +47,38 @@ async def get_materials_price_list(
                 materials AS mt ON mt.materialid = cxb.materialid
             INNER JOIN
                 material_prices AS mp ON mp.ticker = mt.ticker
-            LEFT JOIN
-                storage_items AS si 
-                ON 
-                    si.materialid = mt.materialid 
-                    -- This subquery returns the storageid if found, or NULL if the CTE is empty.
-                    AND si.storageid = (SELECT storageid FROM user_single_storage) 
             WHERE
                 cxb.ticker LIKE $1
             ORDER BY
                 cxb.ticker;
         """
 
+        query_storage = """
+            SELECT 
+                si.materialid,
+                COALESCE(st.stationid, pl.planetid, pl_w.planetid)::text AS location_id, 
+                COALESCE(st.name, pl.name, pl_w.name)::text AS location_name,
+                COALESCE(st.naturalid, pl.naturalid, pl_w.naturalid)::text AS location_code,
+                SUM(si.quantity) AS available
+            FROM storages s
+            JOIN storage_items si ON si.storageid = s.storageid
+            JOIN materials m ON m.materialid = si.materialid
+            JOIN warehouses w ON w.warehouseid = s.addressableid
+            LEFT JOIN stations st ON st.warehouseid = w.warehouseid
+            LEFT JOIN sites site ON site.siteid = s.addressableid
+            LEFT JOIN planets pl ON pl.planetid = site.addressplanetid
+            LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
+            INNER JOIN users u ON u.userdataid = s.userid
+            WHERE u.accountid = $1
+            GROUP BY si.materialid, location_id, location_name, location_code;
+        """
+
         search_pattern = f"%.{cx}"
 
         async with pool.acquire() as con:
-            materials_data = await con.fetch(query, search_pattern, current_user_id_str)
+            materials_data = await con.fetch(query_materials, search_pattern)
+            storage_data = await con.fetch(query_storage, current_user_id_str)
 
-            # Check if any materials were found and return the data
             if not materials_data:
                 return JSONResponse(
                     status_code=404,
@@ -98,7 +88,33 @@ async def get_materials_price_list(
                     },
                 )
 
-            data = [dict(record) for record in materials_data]
+            # Group storage items by materialid
+            storage_by_material = {}
+            for record in storage_data:
+                row = dict(record)
+                mat_id = row["materialid"]
+                if mat_id not in storage_by_material:
+                    storage_by_material[mat_id] = []
+                storage_by_material[mat_id].append({
+                    "id": row["location_id"],
+                    "location_name": row["location_name"],
+                    "location_code": row["location_code"],
+                    "available": int(row["available"])
+                })
+
+            # Format final response
+            data = []
+            for record in materials_data:
+                row = dict(record)
+                mat_id = row["materialid"]
+                
+                for key, value in row.items():
+                    if isinstance(value, Decimal):
+                        row[key] = float(value)
+                
+                row["locations"] = storage_by_material.get(mat_id, [])
+                row["quantity"] = sum(loc["available"] for loc in row["locations"])
+                data.append(row)
 
             return JSONResponse(status_code=200, content={"success": True, "materials": data})
 

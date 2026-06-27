@@ -16,7 +16,7 @@ class Ship(BaseModel):
     user_id: str = Field(..., alias="userid")
     name: Optional[str] = Field(None)
     registration: str = Field(...)
-    ship_type: str = Field(..., alias="type")
+    ship_type: Optional[str] = Field(..., alias="type")
     
     # Addressing / Location
     address_planet_id: Optional[str] = Field(None, alias="addressplanetid")
@@ -32,6 +32,7 @@ class Ship(BaseModel):
     reactor_power: int = Field(..., alias="reactorpower")
     emitter_power: int = Field(..., alias="emitterpower")
     stl_fuel_flow_rate: float = Field(..., alias="stlfuelflowrate")
+    ship_type: Optional[str] = Field(None, alias="shiptype")
     
     # Operational Data
     status: str = Field(...)
@@ -39,6 +40,7 @@ class Ship(BaseModel):
     commissioning_time: Optional[datetime] = Field(None, alias="commissioningtime")
     last_repair: Optional[datetime] = Field(None, alias="lastrepair")
     flight_id: Optional[str] = Field(None, alias="flightid")
+    plan: Optional[Dict[str, Any]] = Field(None) # Fix the model
     
     # Stores / Operating Time
     id_ftl_fuel_store: Optional[str] = Field(None, alias="idftlfuelstore")
@@ -49,6 +51,11 @@ class Ship(BaseModel):
     
     # Meta
     blueprint_natural_id: Optional[str] = Field(None, alias="blueprintnaturalid")
+    is_owner: bool = Field(default=False)
+    is_corp: bool = Field(default=False, alias="is_corp")
+    company_code: Optional[str] = Field(None, alias="companycode")
+    display_name: Optional[str] = Field(None, alias="displayname")
+    personal_suffix: Optional[str] = Field(None, alias="personalsuffix")
 
     model_config = model_config
 
