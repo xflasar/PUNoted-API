@@ -1,4 +1,5 @@
 
+from typing import List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from app.core.security import require_internal_origin
@@ -11,6 +12,11 @@ from models.contracts_schema import (
     DashboardWidgetLists,
     LoansList,
     PaginatedContractList,
+    BankCreate,
+    BankResponse,
+    LoanRequestCreate,
+    LoanRequestResponse,
+    LoanRequestAction,
 )
 from repositories.contracts_repo import ContractsRepository
 from services.internal.contracts_service import ContractsService
@@ -71,3 +77,100 @@ async def get_dashboard_widgets(
     service: ContractsService = Depends(get_service)
 ):
     return await service.repo.get_dashboard_widgets(user_id)
+
+
+@contracts_router.post("/banks", response_model=BankResponse)
+async def create_player_bank(
+    data: BankCreate,
+    user_id: str = Depends(get_current_user_id),
+    service: ContractsService = Depends(get_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        owner_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+        if not owner_username:
+            raise HTTPException(status_code=404, detail="User username not found")
+    
+    existing = await service.get_bank_by_owner(owner_username)
+    if existing:
+        raise HTTPException(status_code=400, detail="You already own a bank")
+        
+    return await service.create_bank(owner_username, data.name, data.description, data.liquidity, data.default_interest_rate)
+
+
+@contracts_router.get("/banks", response_model=List[BankResponse])
+async def list_player_banks(
+    service: ContractsService = Depends(get_service)
+):
+    return await service.get_banks()
+
+
+@contracts_router.get("/banks/my-bank", response_model=Optional[BankResponse])
+async def get_my_bank(
+    user_id: str = Depends(get_current_user_id),
+    service: ContractsService = Depends(get_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        owner_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+        if not owner_username:
+            return None
+    return await service.get_bank_by_owner(owner_username)
+
+
+@contracts_router.post("/banks/request", response_model=LoanRequestResponse)
+async def request_bank_loan(
+    data: LoanRequestCreate,
+    user_id: str = Depends(get_current_user_id),
+    service: ContractsService = Depends(get_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        requester_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+        if not requester_username:
+            raise HTTPException(status_code=404, detail="User username not found")
+            
+    return await service.create_loan_request(requester_username, data.bank_id, data.amount, data.interest_rate, data.term_days)
+
+
+@contracts_router.get("/banks/loans/requested", response_model=List[LoanRequestResponse])
+async def get_my_requested_loans(
+    user_id: str = Depends(get_current_user_id),
+    service: ContractsService = Depends(get_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+        if not username:
+            return []
+    return await service.get_requested_loans(username)
+
+
+@contracts_router.get("/banks/loans/received", response_model=List[LoanRequestResponse])
+async def get_bank_received_loans(
+    bank_id: int = Query(..., description="The ID of the bank"),
+    user_id: str = Depends(get_current_user_id),
+    service: ContractsService = Depends(get_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+        owner_username = await conn.fetchval("SELECT owner_username FROM player_banks WHERE id = $1", bank_id)
+        if not username or username != owner_username:
+            raise HTTPException(status_code=403, detail="You do not own this bank")
+            
+    return await service.get_bank_loan_requests(bank_id)
+
+
+@contracts_router.post("/banks/loans/action")
+async def action_bank_loan_request(
+    data: LoanRequestAction,
+    user_id: str = Depends(get_current_user_id),
+    service: ContractsService = Depends(get_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+        bank_id = await conn.fetchval("SELECT bank_id FROM bank_loan_requests WHERE id = $1", data.loan_id)
+        if not bank_id:
+            raise HTTPException(status_code=404, detail="Loan request not found")
+        owner_username = await conn.fetchval("SELECT owner_username FROM player_banks WHERE id = $1", bank_id)
+        if not username or username != owner_username:
+            raise HTTPException(status_code=403, detail="You do not own this bank")
+            
+    success = await service.action_loan_request(data.loan_id, data.status, data.contract_id)
+    return {"success": success}

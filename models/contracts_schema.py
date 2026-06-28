@@ -18,8 +18,20 @@ class ContractCondition(BaseModel):
     repaymentamount: Optional[float] = None
     totalamount: Optional[float] = None
     implied_interest_rate: Optional[float] = None
-    # Material info flattened for summary
     material_summary: Optional[str] = None
+    addresssystemid: Optional[str] = None
+    addressplanetid: Optional[str] = None
+    addressstationid: Optional[str] = None
+    destinationsystemid: Optional[str] = None
+    destinationplanetid: Optional[str] = None
+    destinationstationid: Optional[str] = None
+    reputationchange: Optional[float] = None
+    addresssystemname: Optional[str] = None
+    addressplanetname: Optional[str] = None
+    addressstationname: Optional[str] = None
+    destinationsystemname: Optional[str] = None
+    destinationplanetname: Optional[str] = None
+    destinationstationname: Optional[str] = None
 
 class ContractListItem(BaseModel):
     id: str
@@ -37,11 +49,11 @@ class ContractListItem(BaseModel):
     installment_done: Optional[int] = None
     installment_interval: Optional[int] = None
     loan_strategy: Optional[str] = None
-
-    # Computed fields
+    party: str = "UNKNOWN" 
+    is_income: bool = False 
     total_amount: float = 0.0
     currency: str = "ICA"
-    operation_type: str = "UNKNOWN" # BUY vs SELL based on party
+    operation_type: str = "UNKNOWN"
 
 class ContractDetail(ContractListItem):
     preamble: Optional[str] = None
@@ -86,3 +98,49 @@ class PaginatedContractList(BaseModel):
 class LoansList(BaseModel):
     items: List[ContractListItem]
     total: int
+
+
+class BankCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    liquidity: float = 0.0
+    default_interest_rate: float = 5.0
+
+
+class BankResponse(BaseModel):
+    id: int
+    name: str
+    owner_username: str
+    liquidity: float
+    default_interest_rate: float
+    description: Optional[str] = None
+    created_at: datetime
+    active_loans_count: Optional[int] = 0
+
+
+class LoanRequestCreate(BaseModel):
+    bank_id: int
+    amount: float
+    interest_rate: float
+    term_days: int
+
+
+class LoanRequestResponse(BaseModel):
+    id: int
+    bank_id: int
+    requester_username: str
+    amount: float
+    interest_rate: float
+    term_days: int
+    status: str
+    contract_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    bank_name: Optional[str] = None
+
+
+class LoanRequestAction(BaseModel):
+    loan_id: int
+    status: str
+    contract_id: Optional[str] = None
+

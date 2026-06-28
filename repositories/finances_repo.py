@@ -121,7 +121,22 @@ VirtualLedger AS (
         'CX_' || t.tradeid AS id,  -- <--- ADDED ID
         t.pricecurrency AS currency, 
         CASE 
-            WHEN EXISTS (SELECT 1 FROM corporation_shareholders cs WHERE cs.companycode = t.partnercode) THEN 'CORP_CX' 
+            WHEN COALESCE(
+                (
+                    SELECT EXISTS(
+                        SELECT 1 
+                        FROM corporation_shareholders_history csh 
+                        WHERE csh.companycode = t.partnercode 
+                          AND csh.snapshot_at::date = t.tradetime::date
+                    )
+                    WHERE EXISTS (SELECT 1 FROM corporation_shareholders_history WHERE snapshot_at::date = t.tradetime::date)
+                ),
+                EXISTS(
+                    SELECT 1 
+                    FROM corporation_shareholders cs 
+                    WHERE cs.companycode = t.partnercode
+                )
+            ) THEN 'CORP_CX' 
             ELSE 'CX' 
         END AS category, 
         (t.amount * t.priceamount) AS amount, 
@@ -140,7 +155,22 @@ VirtualLedger AS (
         'CX_' || t.tradeid AS id,  -- <--- ADDED ID
         t.pricecurrency AS currency, 
         CASE 
-            WHEN EXISTS (SELECT 1 FROM corporation_shareholders cs WHERE cs.companycode = t.partnercode) THEN 'CORP_CX' 
+            WHEN COALESCE(
+                (
+                    SELECT EXISTS(
+                        SELECT 1 
+                        FROM corporation_shareholders_history csh 
+                        WHERE csh.companycode = t.partnercode 
+                          AND csh.snapshot_at::date = t.tradetime::date
+                    )
+                    WHERE EXISTS (SELECT 1 FROM corporation_shareholders_history WHERE snapshot_at::date = t.tradetime::date)
+                ),
+                EXISTS(
+                    SELECT 1 
+                    FROM corporation_shareholders cs 
+                    WHERE cs.companycode = t.partnercode
+                )
+            ) THEN 'CORP_CX' 
             ELSE 'CX' 
         END AS category, 
         -(t.amount * t.priceamount) AS amount, 
@@ -159,7 +189,22 @@ VirtualLedger AS (
         'CTR_' || c.id AS id,  -- <--- ADDED ID
         cc.currencymoney AS currency, 
         CASE 
-            WHEN EXISTS (SELECT 1 FROM corporation_shareholders cs WHERE cs.companycode = c.partnercode) THEN 'CORP_CONTRACT' 
+            WHEN COALESCE(
+                (
+                    SELECT EXISTS(
+                        SELECT 1 
+                        FROM corporation_shareholders_history csh 
+                        WHERE csh.companycode = c.partnercode 
+                          AND csh.snapshot_at::date = c.date::date
+                    )
+                    WHERE EXISTS (SELECT 1 FROM corporation_shareholders_history WHERE snapshot_at::date = c.date::date)
+                ),
+                EXISTS(
+                    SELECT 1 
+                    FROM corporation_shareholders cs 
+                    WHERE cs.companycode = c.partnercode
+                )
+            ) THEN 'CORP_CONTRACT' 
             ELSE 'CONTRACT' 
         END AS category, 
         CASE 
@@ -235,7 +280,17 @@ DailyBalances AS (
     FROM user_currency_accounts_history
     WHERE userid IN (SELECT userdataid FROM TargetUser)
       AND snapshot_at >= NOW() - INTERVAL '30 days'
-    ORDER BY balancecurrencycode, DATE(snapshot_at), snapshot_at DESC
+    
+    UNION
+    
+    SELECT 
+        balancecurrencycode AS currency,
+        CURRENT_DATE AS date,
+        balanceamount AS closing_balance
+    FROM user_currency_accounts
+    WHERE userid IN (SELECT userdataid FROM TargetUser)
+    
+    ORDER BY currency, date ASC
 ),
 AggregatedHistory AS (
     SELECT
