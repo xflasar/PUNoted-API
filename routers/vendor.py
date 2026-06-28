@@ -40,12 +40,13 @@ async def get_materials_price_list(
             SELECT
                 mt.ticker,
                 mt.materialid,
+                cxb.askprice as askprice,
                 mp.price AS corpprice
             FROM
                 cx_brokers AS cxb
-            INNER JOIN
+            LEFT JOIN
                 materials AS mt ON mt.materialid = cxb.materialid
-            INNER JOIN
+            LEFT JOIN
                 material_prices AS mp ON mp.ticker = mt.ticker
             WHERE
                 cxb.ticker LIKE $1
