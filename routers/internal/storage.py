@@ -18,33 +18,101 @@ async def get_user_storage(request: Request, user_id: str = Depends(get_current_
         async with pool.acquire() as conn:
             records = await conn.fetch(
                 """
-                SELECT 
-                    s.storageid,
-                    s.name as storage_name,
-                    s.type,
-                    s.volumecapacity,
-                    s.volumeload,
-                    s.weightcapacity,
-                    s.weightload,
-                    s.xata_updatedat,
-                    COALESCE(p_site.name, p_warehouse.name) as planet_name,
-                    COALESCE(p_site.naturalid, p_warehouse.naturalid) as planet_naturalid,
-                    station.name as station_name,
-                    si.quantity,
-                    si.currencyamount,
-                    mt.ticker
-                FROM storages as s
-                LEFT JOIN storage_items as si ON s.storageid = si.storageid
-                LEFT JOIN materials as mt ON mt.materialid = si.materialid
-                LEFT JOIN warehouses as w ON s.addressableid = w.warehouseid
-                LEFT JOIN sites as st ON s.addressableid = st.siteid
-                LEFT JOIN planets as p_site ON st.addressplanetid = p_site.planetid
-                LEFT JOIN planets as p_warehouse ON w.addressplanet = p_warehouse.planetid
-                LEFT JOIN stations as station ON station.warehouseid = w.warehouseid
-                INNER JOIN users_data as ud ON s.userid = ud.userid
-                INNER JOIN users as u ON u.userdataid = ud.userid
-                WHERE u.accountid = $1
-            """,
+                WITH
+                	ME AS (
+                		SELECT
+                            U.ACCOUNTID::TEXT AS MY_ACCOUNTID,
+                			U.USERDATAID::TEXT AS MY_UID,
+                			UD.DISPLAYNAME AS USERNAME,
+                			CD.COMPANYCODE
+                		FROM
+                			USERS U
+                			LEFT JOIN USERS_DATA UD ON U.USERDATAID = UD.USERID
+                			LEFT JOIN COMPANY_DATA CD ON U.USERDATAID = CD.USERDATAID
+                		WHERE
+                			U.ACCOUNTID = $1::UUID
+                	),
+                	INBOUNDLEASES AS (
+                		SELECT
+                			L ->> 'siteId' AS LEASED_SITEID,
+                			U_LANDLORD.USERDATAID::TEXT AS LANDLORD_UID
+                		FROM
+                			USER_GLOBAL_SETTINGS UGS
+                            JOIN USERS U_LANDLORD ON U_LANDLORD.ACCOUNTID::TEXT = UGS.USERID::TEXT
+                			CROSS JOIN JSONB_ARRAY_ELEMENTS(COALESCE(UGS.INTERNAL_LEASED_SITES, '[]'::JSONB)) L
+                			CROSS JOIN ME
+                		WHERE
+                			UGS.USERID::TEXT != ME.MY_ACCOUNTID
+                			AND (
+                				L ->> 'tenant' = ME.USERNAME
+                				OR L ->> 'tenant' = ME.COMPANYCODE
+                				OR L ->> 'tenant' = ME.USERNAME || ' (' || ME.COMPANYCODE || ')'
+                			)
+                	),
+                	TARGETSTORAGES AS (
+                		-- 1. My Own Storages
+                		SELECT
+                			STORAGEID
+                		FROM
+                			STORAGES
+                		WHERE
+                			USERID::TEXT = (
+                				SELECT
+                					MY_UID
+                				FROM
+                					ME
+                			)
+                		UNION
+                		-- 2. Landlord's Site Storage (The base itself)
+                		SELECT
+                			ST.STORAGEID
+                		FROM
+                			STORAGES ST
+                			JOIN INBOUNDLEASES IL ON ST.ADDRESSABLEID::TEXT = IL.LEASED_SITEID
+                			AND ST.USERID::TEXT = IL.LANDLORD_UID
+                		UNION
+                		-- 3. Landlord's Warehouse Storage (On the same planet as the leased site)
+                		SELECT
+                			ST.STORAGEID
+                		FROM
+                			STORAGES ST
+                			JOIN INBOUNDLEASES IL ON ST.USERID::TEXT = IL.LANDLORD_UID
+                			JOIN WAREHOUSES W ON W.STOREID::TEXT = ST.STORAGEID::TEXT
+                			AND W.USERID::TEXT = IL.LANDLORD_UID
+                			JOIN SITES S ON S.SITEID::TEXT = IL.LEASED_SITEID
+                			AND S.ADDRESSPLANETID = W.ADDRESSPLANET
+                	)
+                SELECT
+                	S.STORAGEID,
+                	S.ADDRESSABLEID,
+                	S.NAME AS STORAGE_NAME,
+                	S.TYPE,
+                	S.VOLUMECAPACITY,
+                	S.VOLUMELOAD,
+                	S.WEIGHTCAPACITY,
+                	S.WEIGHTLOAD,
+                	S.XATA_UPDATEDAT,
+                	COALESCE(P_SITE.NAME, P_WAREHOUSE.NAME) AS PLANET_NAME,
+                	COALESCE(P_SITE.PLANETID, P_WAREHOUSE.PLANETID) AS PLANET_ID,
+                	COALESCE(P_SITE.NATURALID, P_WAREHOUSE.NATURALID) AS PLANET_NATURALID,
+                	STATION.NAME AS STATION_NAME,
+                	STATION.STATIONID AS STATION_ID,
+                	SI.QUANTITY,
+                	SI.CURRENCYAMOUNT,
+                	MT.TICKER,
+                	UD.DISPLAYNAME AS USERNAME
+                FROM
+                	TARGETSTORAGES TS
+                	JOIN STORAGES S ON S.STORAGEID = TS.STORAGEID
+                	LEFT JOIN STORAGE_ITEMS AS SI ON S.STORAGEID = SI.STORAGEID
+                	LEFT JOIN MATERIALS AS MT ON MT.MATERIALID = SI.MATERIALID
+                	LEFT JOIN WAREHOUSES AS W ON W.STOREID::TEXT = S.STORAGEID::TEXT
+                	LEFT JOIN SITES AS ST ON S.ADDRESSABLEID = ST.SITEID
+                	LEFT JOIN PLANETS AS P_SITE ON ST.ADDRESSPLANETID = P_SITE.PLANETID
+                	LEFT JOIN PLANETS AS P_WAREHOUSE ON W.ADDRESSPLANET = P_WAREHOUSE.PLANETID
+                	LEFT JOIN STATIONS AS STATION ON STATION.WAREHOUSEID = W.WAREHOUSEID
+                	INNER JOIN USERS_DATA AS UD ON S.USERID = UD.USERID;
+                """,
                 user_id,
             )
 
@@ -63,9 +131,10 @@ async def get_user_storage(request: Request, user_id: str = Depends(get_current_
                     if record["planet_name"] and record["planet_naturalid"]:
                         storagelocation = f"{record['planet_name']} ({record['planet_naturalid']})"
 
-
                     grouped_storage_data[storage_id] = {
                         "storageid": storage_id,
+                        "addressableid": record["addressableid"],
+                        "owner": record["username"],
                         "name": storage_name,
                         "type": record["type"],
                         "volumecapacity": record["volumecapacity"],
@@ -74,6 +143,8 @@ async def get_user_storage(request: Request, user_id: str = Depends(get_current_
                         "weightload": record["weightload"],
                         "xata_update": record["xata_updatedat"].isoformat() if record["xata_updatedat"] else None,
                         "storagelocation": storagelocation,
+                        "storageplanetid": record["planet_id"],
+                        "storagestationid": record["station_id"],
                         "total_worth": 0.0,
                         "items": [],
                     }

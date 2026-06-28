@@ -8,7 +8,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import jwt
 from fastapi import (
@@ -18,6 +18,8 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
+    Cookie,
     WebSocket,
     status,
 )
@@ -30,9 +32,6 @@ try:
     from jwt.exceptions import ExpiredSignatureError, InvalidTokenError
 except ImportError:
     from jwt import ExpiredSignatureError, InvalidTokenError
-
-import sentry_sdk
-
 import config
 
 auth_router = APIRouter()
@@ -171,31 +170,52 @@ def send_password_reset_email(email: str, code: str):
 # ==============================================================================
 
 
-async def generate_token(conn, user_id: str, request: Request, is_website: bool = False) -> tuple[str, int]:
-    # 1. Setup metadata
-    token_type = "access" if is_website else "extension_access"
-    lifespan = timedelta(days=7) if is_website else timedelta(days=365)
-
+async def generate_auth_tokens(conn, user_id: str, request: Request, is_website: bool = False) -> tuple[str, str, int]:
+    """
+    Generates both a short-lived Access Token and a long-lived Refresh Token.
+    Returns: (access_token, refresh_token, access_expires_at_timestamp)
+    """
     user_agent = request.headers.get("user-agent", "Unknown Browser")
     x_forwarded_for = request.headers.get("X-Forwarded-For")
     ip_address = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host or "N/A")
-    iat_id = secrets.token_hex(8)
-
+    
     now_aware = datetime.now(timezone.utc)
-    expires_at_dt = now_aware + lifespan
-    expires_at_naive = expires_at_dt.replace(tzinfo=None)
+    
+    # Lifespans
+    access_lifespan = timedelta(days=7) if is_website else timedelta(days=365)
+    refresh_lifespan = timedelta(days=30)
+    
+    access_expires_dt = now_aware + access_lifespan
+    refresh_expires_dt = now_aware + refresh_lifespan
 
-    # 2. Generate JWT
-    payload = {
+    # Generate Access Token
+    access_payload = {
         "user_id": user_id,
-        "type": token_type,
-        "iat_id": iat_id,
-        "exp": expires_at_dt,
+        "type": "access" if is_website else "extension_access",
+        "iat_id": secrets.token_hex(8),
+        "exp": access_expires_dt,
         "iat": now_aware.timestamp()
     }
-    token = jwt.encode(payload, config.JWT_SECRET_KEY, algorithm="HS256")
+    access_token = jwt.encode(access_payload, config.JWT_SECRET_KEY, algorithm="HS256")
+
+    # Generate Refresh Token (Only for website)
+    refresh_token = ""
+    if is_website:
+        refresh_payload = {
+            "user_id": user_id,
+            "type": "refresh",
+            "iat_id": secrets.token_hex(8),
+            "exp": refresh_expires_dt,
+            "iat": now_aware.timestamp()
+        }
+        refresh_token = jwt.encode(refresh_payload, config.JWT_SECRET_KEY, algorithm="HS256")
 
     try:
+        # Store the REFRESH token in the DB (or the access token for extensions)
+        db_token = refresh_token if is_website else access_token
+        db_token_type = "refresh" if is_website else "extension_access"
+        db_expires_naive = (refresh_expires_dt if is_website else access_expires_dt).replace(tzinfo=None)
+        
         await conn.execute(
             """
             WITH inserted AS (
@@ -212,76 +232,60 @@ async def generate_token(conn, user_id: str, request: Request, is_website: bool 
                 OFFSET 10
             ) OR (userid = $1 AND expiresat < NOW());
             """,
-            user_id, token_type, token, expires_at_naive, user_agent, ip_address, iat_id
+            user_id, db_token_type, db_token, db_expires_naive, user_agent, ip_address, access_payload["iat_id"]
         )
-        return token, int(expires_at_dt.timestamp())
+        return access_token, refresh_token, int(access_expires_dt.timestamp())
     except Exception as e:
         print(f"Database error during token generation: {e}")
-        return "", 0
+        return "", "", 0
 
 async def validate_token(conn, token: str) -> tuple[str, int, None] | tuple[None, None, str]:
     """
-    Validate a JWT access token and check its expiration against the database.
-
-    Returns:
-        - The user ID (str) if valid.
-        - The access token's expiration timestamp (int) from the DB record.
-        - An error message (str) if not valid.
+    Validates a JWT. 
+    - Web Access Tokens are validated statelessly (cryptographically).
+    - Refresh and Extension Tokens are validated statefully (checked against the DB).
     """
     try:
-        # Decode the JWT with a leeway to account for clock skew
+        # 1. Cryptographic Validation (Checks signature and 'exp' date)
         decoded_payload = jwt.decode(token, config.JWT_SECRET_KEY, algorithms=["HS256"], leeway=5)
     except ExpiredSignatureError:
-        logger.warning("Access token expired")
-        return None, None, "Access token expired"
+        logger.warning("Token expired")
+        return None, None, "Token expired"
     except InvalidTokenError as e:
-        logger.warning(f"Invalid access token: {e}")
-        return None, None, f"Invalid access token: {e}"
+        logger.warning(f"Invalid token: {e}")
+        return None, None, f"Invalid token: {e}"
 
     user_id_from_jwt = decoded_payload.get("user_id")
     token_type = decoded_payload.get("type")
-    # Check if it's NOT one of the valid types
-    if not user_id_from_jwt or token_type not in ["access", "extension_access"]:
-        return (
-            None,
-            None,
-            "Invalid token: User ID or token type missing/incorrect from payload.",
-        )
+    
+    if not user_id_from_jwt or token_type not in ["access", "extension_access", "refresh"]:
+        return None, None, "Invalid token payload."
 
-    # Check if the token exists in the database
-    db_token_record = await conn.fetch(
+    if token_type == "access":
+        return user_id_from_jwt, int(decoded_payload["exp"]), None
+
+    db_token_record = await conn.fetchrow(
         """
         SELECT id, userid, expiresat
         FROM user_tokens
-        WHERE userid = $1;
+        WHERE token = $1 AND type = $2;
         """,
-        user_id_from_jwt,
+        token, token_type
     )
 
     if not db_token_record:
-        return (
-            None,
-            None,
-            "Access token not found in database (possibly revoked or never issued).",
-        )
+        return None, None, "Token revoked or not found in database."
 
-    if db_token_record[0]["userid"] != user_id_from_jwt:
-        return (
-            None,
-            None,
-            "Token mismatch: User ID in token does not match database record.",
-        )
+    if str(db_token_record["userid"]) != str(user_id_from_jwt):
+        return None, None, "Token mismatch: User ID does not match database record."
 
-    db_expires_at_dt = db_token_record[0]["expiresat"]
+    db_expires_at_dt = db_token_record["expiresat"]
 
-    # Check if the token has expired
-    if datetime.now() > db_expires_at_dt:
-        # Token expired, delete it from DB
-        await conn.execute("DELETE FROM user_tokens WHERE id = $1;", db_token_record[0]["id"])
-        return None, None, "Access token expired (database check)."
+    if datetime.now(timezone.utc).replace(tzinfo=None) > db_expires_at_dt.replace(tzinfo=None):
+        await conn.execute("DELETE FROM user_tokens WHERE id = $1;", db_token_record["id"])
+        return None, None, "Token expired (database check)."
 
     return user_id_from_jwt, int(db_expires_at_dt.timestamp()), None
-
 
 # ==============================================================================
 # Email Verification Code Functions
@@ -382,7 +386,6 @@ async def delete_verification_code(conn, record_id: str) -> bool:
         return False
 
 
-# TODO: dependency function for other routes (Currently running 500 instead of not auth will be fixed later)
 async def get_current_user_id(request: Request, token: str = Depends(oauth2_scheme)) -> str:
     pool = request.app.state.db.pool
 
@@ -397,11 +400,6 @@ async def get_current_user_id(request: Request, token: str = Depends(oauth2_sche
         if user_id.startswith("rec_"):
             user_id = await conn.fetch("SELECT accountid FROM users WHERE xata_id=$1", user_id)
             user_id = str(user_id[0]["accountid"])
-
-        sentry_sdk.set_user({
-            "id": str(user_id),
-            "ip_address": "{{auto}}", # Let Sentry extract IP
-        })
 
         return user_id
 
@@ -480,8 +478,74 @@ class RequireAuth:
         requested_users = [u.strip() for u in requested_users_str.split(",") if u.strip()] if requested_users_str else None
 
         async with pool.acquire() as conn:
+            req_perm = self.required_permissions[0] if self.required_permissions else None
+
             # ==================================================================
-            # PATH A: GROUP TOKEN
+            # PATH A: STATELESS JWT (Web Access Tokens)
+            # ==================================================================
+            try:
+                user_id, _, error = await validate_token(conn, final_token)
+                
+                if user_id and not error:
+                    request.state.rate_limit_key = user_id
+                    me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+                    
+                    if requested_users:
+                        sql_targets = """
+                            SELECT DISTINCT u.username
+                            FROM users u
+                            LEFT JOIN users_data ud ON ud.userid = u.userdataid
+                            WHERE (
+                                u.accountid = $1
+                                OR EXISTS (
+                                    SELECT 1
+                                    FROM data_group_members gm_target
+                                    JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
+                                    WHERE gm_target.user_id = u.accountid
+                                        AND gm_requester.user_id = $1
+                                        AND gm_requester.status = 'ACCEPTED'
+                                        AND gm_requester.can_read_data = TRUE
+                                        AND gm_target.status = 'ACCEPTED'
+                                        AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
+                                )
+                            )
+                            AND (u.username = ANY($3::text[]) OR ud.displayname = ANY($3::text[]))
+                        """
+                        valid_rows = await conn.fetch(sql_targets, user_id, req_perm, requested_users)
+                        valid_usernames = [r["username"] for r in valid_rows]
+
+                    else:
+                        if self.is_single_user_endpoint:
+                            valid_usernames = [me_username] if me_username else []
+                        else:
+                            sql_targets = """
+                                SELECT DISTINCT u.username
+                                FROM users u
+                                WHERE (
+                                    u.accountid = $1
+                                    OR EXISTS (
+                                        SELECT 1
+                                        FROM data_group_members gm_target
+                                        JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
+                                        WHERE gm_target.user_id = u.accountid
+                                            AND gm_requester.user_id = $1
+                                            AND gm_requester.status = 'ACCEPTED'
+                                            AND gm_requester.can_read_data = TRUE
+                                            AND gm_target.status = 'ACCEPTED'
+                                            AND ($2::text IS NULL OR gm_target.granted_permissions @> jsonb_build_array($2::text) OR gm_target.granted_permissions @> '["all"]')
+                                    )
+                                )
+                            """
+                            valid_rows = await conn.fetch(sql_targets, user_id, req_perm)
+                            valid_usernames = [r["username"] for r in valid_rows]
+
+                    request.state.valid_target_users = valid_usernames
+                    return user_id
+            except Exception:
+                pass
+
+            # ==================================================================
+            # PATH B: GROUP TOKEN (Stateful DB Lookup)
             # ==================================================================
             if "grp_" in final_token:
                 try:
@@ -505,8 +569,6 @@ class RequireAuth:
                 requester_username = member["username"]
                 requester_id = str(member["accountid"])
                 can_read_data = member["can_read_data"]
-
-                req_perm = self.required_permissions[0] if self.required_permissions else None
 
                 if requested_users:
                     sql_targets = """
@@ -547,7 +609,7 @@ class RequireAuth:
                 return requester_id
 
             # ==================================================================
-            # PATH B: PERSONAL TOKEN
+            # PATH C: PERSONAL API TOKEN (Stateful DB Lookup)
             # ==================================================================
             else:
                 query = """
@@ -585,7 +647,6 @@ class RequireAuth:
                         )
 
                 me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
-                req_perm = self.required_permissions[0] if self.required_permissions else None
 
                 if allow_group_access:
                     if requested_users:
@@ -670,11 +731,9 @@ class OptionalAuth(RequireAuth):
     ) -> Optional[str]:
         raw_token = token_header or token_query
 
-        # If no token, allow Public Access
         if not raw_token:
             return None
 
-        # If token exists, validate it strictly
         return await super().__call__(request, token_header, token_query)
 
 # ==============================================================================
@@ -713,7 +772,7 @@ async def extension_sync(
             raise HTTPException(status_code=404, detail="User not found")
 
         # GENERATE EXTENSION TOKEN (is_website=False)
-        token, expires_at_ts = await generate_token(conn, user_id, request, is_website=False)
+        token, _, expires_at_ts = await generate_auth_tokens(conn, user_id, request, is_website=False)
 
         return {
             "success": True,
@@ -721,6 +780,51 @@ async def extension_sync(
             "username": user_record["username"],
             "expires_at": expires_at_ts
         }
+    
+@auth_router.post("/refresh")
+async def refresh_access_token(request: Request, response: Response, refresh_token: Optional[str] = Cookie(None)):
+    print("\n--- DEBUG REFRESH ENDPOINT ---")
+    print(f"Incoming Cookies: {request.cookies}")
+    
+    if not refresh_token:
+        print("FAILURE: The browser did not send the 'refresh_token' cookie!")
+        raise HTTPException(status_code=401, detail="Refresh token missing")
+
+    async with request.app.state.db.pool.acquire() as conn:
+        user_id, _, error = await validate_token(conn, refresh_token)
+        
+        if error or not user_id:
+            print(f"FAILURE: Database validation failed. Error: {error}")
+            response.delete_cookie("refresh_token")
+            raise HTTPException(status_code=401, detail=f"Invalid token: {error}")
+        
+        print("SUCCESS: Token is valid. Generating new tokens...")
+        
+        new_access, new_refresh, expires_at = await generate_auth_tokens(conn, user_id, request, is_website=True)
+        
+        # Hardcode secure=False for local dev
+        is_secure = request.url.scheme == "https" and request.client.host not in ["127.0.0.1", "localhost"]
+        
+        response.set_cookie(
+            key="refresh_token",
+            value=new_refresh,
+            httponly=True,
+            secure=is_secure, 
+            samesite="lax",
+            max_age=30 * 24 * 60 * 60, 
+        )
+        
+        return {"success": True, "token": new_access, "expires_at": expires_at}
+
+@auth_router.post("/logout")
+async def logout(response: Response, request: Request, refresh_token: str = Cookie(None)):
+    """Clears the cookie and deletes it from the database."""
+    if refresh_token:
+        async with request.app.state.db.pool.acquire() as conn:
+            await conn.execute("DELETE FROM user_tokens WHERE token = $1", refresh_token)
+            
+    response.delete_cookie("refresh_token")
+    return {"success": True, "message": "Logged out successfully"}
 
 @auth_router.post("/register")
 async def register(user_data: Dict[str, str], request: Request):
@@ -989,10 +1093,11 @@ async def set_new_password(password_data: Dict[str, str], request: Request):
 
 
 @auth_router.post("/login")
-async def login(login_data: Dict[str, str], request: Request):
+async def login(login_data: Dict[str, Any], request: Request, response: Response):
     raw_identifier = login_data.get("username", "")
     password = login_data.get("password")
-    is_web_bool = str(login_data.get("isWebsite")).lower() == "true"
+    is_web_raw = login_data.get("isWebsite")
+    is_web_bool = str(is_web_raw).lower() == "true"
 
     # 1. Sanitize Username/Email
     if "@" in raw_identifier:
@@ -1028,23 +1133,34 @@ async def login(login_data: Dict[str, str], request: Request):
             if not user["isverified"]:
                 raise HTTPException(status_code=403, detail="Please verify your email address first.")
 
-            # 4. Generate Token
-            token, expires_at = await generate_token(conn, str(user["accountid"]), request, is_website=is_web_bool)
+            # 4. Generate Tokens
+            access_token, refresh_token, expires_at = await generate_auth_tokens(conn, str(user["accountid"]), request, is_website=is_web_bool)
 
-            if not token:
+            if not access_token:
                 raise HTTPException(status_code=500, detail="Failed to generate token")
 
-            # 5. Build Response
-            response = {
+            # 5. Set the Refresh Token as a secure HttpOnly cookie
+            if is_web_bool:
+                response.set_cookie(
+                    key="refresh_token",
+                    value=refresh_token,
+                    httponly=True,
+                    secure=True,
+                    samesite="lax",
+                    max_age=30 * 24 * 60 * 60, # 30 days in seconds
+                )
+
+            # 6. Build Response (Only send access_token in the JSON body)
+            json_response = {
                 "success": True,
                 "message": "Login successful",
-                "token": token,
+                "token": access_token,
                 "expires_at": expires_at,
                 "username": user["username"],
             }
 
             if is_web_bool:
-                response.update({
+                json_response.update({
                     "displayName": user["displayname"],
                     "companyName": user.get("companyname"),
                     "companyCode": user.get("companycode"),
@@ -1053,7 +1169,7 @@ async def login(login_data: Dict[str, str], request: Request):
                     "isSynchronized": user.get("is_synchronized"),
                 })
 
-            return response
+            return json_response
 
         else:
             raise HTTPException(status_code=403, detail="Invalid username or password")

@@ -42,6 +42,5 @@ Werkzeug
 websockets
 ruff
 fastapi-cache2[redis]
-sentry_sdk
 prometheus-fastapi-instrumentator
 networkx

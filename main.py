@@ -4,8 +4,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 
-import sentry_sdk
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi_cache import FastAPICache
@@ -75,6 +74,8 @@ from routers.internal.leaderboard import leaderboard_router
 from routers.internal.production import production_router
 from routers.internal.storage import storage_router
 from routers.internal.users import users_router
+from routers.internal.ships import ships_router
+from routers.internal.sites import sites_router
 from routers.logistics import logistics_router
 from routers.map import map_router
 from routers.planets import planets_router
@@ -86,14 +87,6 @@ from routers.websocket_router import ws_router
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(name)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-sentry_sdk.init(
-    dsn=os.getenv("SENTRY_DSN"),
-    # Set traces_sample_rate to 1.0 to capture 100% of transactions for debugging.
-    # In high-traffic production, lower this to 0.1 or 0.01.
-    traces_sample_rate=1.0,
-    profiles_sample_rate=1.0,
-)
 
 # --- Lifecycle Events ---
 @asynccontextmanager
@@ -285,11 +278,13 @@ app.add_middleware(SecurityLoggerMiddleware)
 # Middleware
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=["http://localhost:5174", "http://127.0.0.1:5174", "https://punoted.net"],
+    allow_origin_regex=r"chrome-extension://.*", 
     allow_credentials=True,
-    allow_origin_regex="https?://.*",
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
@@ -338,6 +333,8 @@ app.include_router(internal_buildings_router, prefix="/internal/buildings", tags
 app.include_router(internal_materials_router, prefix="/internal/materials", tags=["Materials"])
 app.include_router(cx_internal_router, prefix="/internal/cx", tags=["CX"])
 app.include_router(users_router, prefix="/internal/users", tags=["Users"])
+app.include_router(ships_router, prefix="/internal/ships", tags=["Ships"])
+app.include_router(sites_router, prefix="/internal/sites", tags=["Sites"])
 
 # Protected External API v1
 app.include_router(api_user_router, prefix="/v1/user", tags=["User Data"])
@@ -386,15 +383,6 @@ def read_main():
 @app.get("/status")
 async def status_check():
     return {"status": "online", "db_check": "success"}
-
-@app.get("/debug-sentry")
-async def trigger_error():
-    """
-    Temporary endpoint to verify GlitchTip integration.
-    """
-    division_by_zero = 1 / 0
-    return division_by_zero
-
 
 if __name__ == "__main__":
     import uvicorn

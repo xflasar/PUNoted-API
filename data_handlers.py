@@ -808,7 +808,7 @@ async def get_user_vendor_stores(request: Request, user_id: str = Depends(get_cu
             # Step 2: Fetch Inventory (Optimized)
             inventory_records = await conn.fetch(
                 """
-                SELECT m.ticker, COALESCE(st.stationid, pl.planetid)::text AS location_id, SUM(si.quantity) AS quantity
+                SELECT m.ticker, COALESCE(st.stationid, pl.planetid, pl_w.planetid)::text AS location_id, SUM(si.quantity) AS quantity
                 FROM storages s
                 JOIN storage_items si ON si.storageid = s.storageid
                 JOIN materials m ON m.materialid = si.materialid
@@ -816,6 +816,7 @@ async def get_user_vendor_stores(request: Request, user_id: str = Depends(get_cu
                 LEFT JOIN stations st ON st.warehouseid = w.warehouseid
                 LEFT JOIN sites site ON site.siteid = s.addressableid
                 LEFT JOIN planets pl ON pl.planetid = site.addressplanetid
+                LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
                 INNER JOIN users u ON u.userdataid = s.userid
                 WHERE u.accountid = $1
                 GROUP BY m.ticker, location_id
@@ -1177,35 +1178,10 @@ async def get_materials_price_list(
 
         current_user_id_str = str(user_id)
 
-        query = """
-            -- 1. Find the single storage ID for the authenticated user (if they have one).
-            WITH user_single_storage AS (
-                SELECT
-                    s.storageid
-                FROM
-                    storages AS s
-                INNER JOIN
-                    warehouses AS w ON w.warehouseid = s.addressableid
-                INNER JOIN
-                    systems AS sys ON w.addresssystem = sys.systemid
-                INNER JOIN
-                    users_data AS ud ON ud.userid = s.userid
-                INNER JOIN
-                    users AS u ON u.userdataid = ud.userid
-                INNER JOIN
-                    stations AS st ON st.warehouseid = w.warehouseid
-                WHERE
-                    u.accountid = $2 
-                    AND sys.name = 'Hortus'
-                    AND st.name != 'Hortus'
-                LIMIT 1
-            )
-            -- 2. Select all materials for the given CX, and optionally join the user's storage quantity.
+        query_materials = """
             SELECT
                 mt.ticker,
                 mt.materialid,
-                COALESCE(si.quantity, 0) AS quantity,
-                cxb.askprice,
                 mp.price AS corpprice
             FROM
                 cx_brokers AS cxb
@@ -1213,21 +1189,36 @@ async def get_materials_price_list(
                 materials AS mt ON mt.materialid = cxb.materialid
             INNER JOIN
                 material_prices AS mp ON mp.ticker = mt.ticker
-            LEFT JOIN
-                storage_items AS si 
-                ON 
-                    si.materialid = mt.materialid 
-                    AND si.storageid = (SELECT storageid FROM user_single_storage) 
             WHERE
                 cxb.ticker LIKE $1
             ORDER BY
                 cxb.ticker;
         """
 
+        query_storage = """
+            SELECT 
+                si.materialid,
+                COALESCE(st.stationid, pl.planetid, pl_w.planetid)::text AS location_id, 
+                COALESCE(st.name, pl.name, pl_w.name)::text AS location_name,
+                COALESCE(st.naturalid, pl.naturalid, pl_w.naturalid)::text AS location_code,
+                SUM(si.quantity) AS available
+            FROM storages s
+            JOIN storage_items si ON si.storageid = s.storageid
+            JOIN warehouses w ON w.warehouseid = s.addressableid
+            LEFT JOIN stations st ON st.warehouseid = w.warehouseid
+            LEFT JOIN sites site ON site.siteid = s.addressableid
+            LEFT JOIN planets pl ON pl.planetid = site.addressplanetid
+            LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
+            INNER JOIN users u ON u.userdataid = s.userid
+            WHERE u.accountid = $1
+            GROUP BY si.materialid, location_id, location_name, location_code;
+        """
+
         search_pattern = f"%.{cx}"
 
         async with pool.acquire() as con:
-            materials_data = await con.fetch(query, search_pattern, current_user_id_str)
+            materials_data = await con.fetch(query_materials, search_pattern)
+            storage_data = await con.fetch(query_storage, current_user_id_str)
 
             if not materials_data:
                 return JSONResponse(
@@ -1238,15 +1229,33 @@ async def get_materials_price_list(
                     },
                 )
 
-            # --- SANITIZATION: Convert Decimal to float ---
+            # Group storage items by materialid
+            storage_by_material = {}
+            for record in storage_data:
+                row = dict(record)
+                mat_id = row["materialid"]
+                if mat_id not in storage_by_material:
+                    storage_by_material[mat_id] = []
+                storage_by_material[mat_id].append({
+                    "id": row["location_id"],
+                    "location_name": row["location_name"],
+                    "location_code": row["location_code"],
+                    "available": int(row["available"])
+                })
+
+            # Format final response
             data = []
             for record in materials_data:
                 row = dict(record)
+                mat_id = row["materialid"]
+                
                 for key, value in row.items():
                     if isinstance(value, Decimal):
                         row[key] = float(value)
+                
+                row["locations"] = storage_by_material.get(mat_id, [])
+                row["quantity"] = sum(loc["available"] for loc in row["locations"])
                 data.append(row)
-            # ---------------------------------------------
 
             return JSONResponse(status_code=200, content={"success": True, "materials": data})
 
@@ -1665,6 +1674,9 @@ async def get_dashboard_map(request: Request):
                     FROM planet_populations
                     ORDER BY populationid, time DESC
                 ),
+                latest_phys AS (
+                    SELECT DISTINCT ON (planetid) * FROM planet_physical_data ORDER BY planetid, xata_updatedat DESC
+                ),
                 res_agg AS (
                     SELECT 
                         pr.planetid,
@@ -1679,12 +1691,12 @@ async def get_dashboard_map(request: Request):
                     p.name, p.systemid, p.planetid, p.mass, p.countryname, p.countrycode,
                     pd.orbitindex, pd.semimajoraxis, pd.eccentricity, pd.inclination, pd.rightascension,
                     CASE 
-                        WHEN p.surface IS TRUE AND p.temperature > 0 AND p.temperature < 40 AND p.fertility > 0 THEN 'EARTH_LIKE'
-                        WHEN p.surface IS TRUE AND p.temperature > 100 THEN 'ROCKY_LIKE_LAVA'
-                        WHEN p.surface IS TRUE AND p.temperature < 100 AND p.temperature > 0 AND p.fertility <= 0 THEN 'ROCKY_LIKE_ROCK'
-                        WHEN p.surface IS TRUE AND p.temperature < 0 AND p.fertility <= 0  THEN 'ROCKY_LIKE_ICE'
-                        WHEN p.surface IS FALSE AND p.temperature > 0 AND p.fertility <= 0 THEN 'GAS_LIKE_HOT'
-                        WHEN p.surface IS FALSE AND p.temperature < 0 AND p.fertility <= 0 THEN 'GAS_LIKE_COLD'
+                        WHEN p.surface IS TRUE AND COALESCE(phys.temperature, p.temperature) > 0 AND COALESCE(phys.temperature, p.temperature) < 40 AND COALESCE(phys.fertility, p.fertility) > 0 THEN 'EARTH_LIKE'
+                        WHEN p.surface IS TRUE AND COALESCE(phys.temperature, p.temperature) > 100 THEN 'ROCKY_LIKE_LAVA'
+                        WHEN p.surface IS TRUE AND COALESCE(phys.temperature, p.temperature) < 100 AND COALESCE(phys.temperature, p.temperature) > 0 AND COALESCE(phys.fertility, p.fertility) <= 0 THEN 'ROCKY_LIKE_ROCK'
+                        WHEN p.surface IS TRUE AND COALESCE(phys.temperature, p.temperature) < 0 AND COALESCE(phys.fertility, p.fertility) <= 0  THEN 'ROCKY_LIKE_ICE'
+                        WHEN p.surface IS FALSE AND COALESCE(phys.temperature, p.temperature) > 0 AND COALESCE(phys.fertility, p.fertility) <= 0 THEN 'GAS_LIKE_HOT'
+                        WHEN p.surface IS FALSE AND COALESCE(phys.temperature, p.temperature) < 0 AND COALESCE(phys.fertility, p.fertility) <= 0 THEN 'GAS_LIKE_COLD'
                         ELSE 'UNKNOWN'
                     END AS planet_type,
                     pd.periapsis,
@@ -1692,6 +1704,11 @@ async def get_dashboard_map(request: Request):
                     TO_CHAR(lp.time, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS time, 
                     lp.simulationperiod, lp.explorersgraceenabled, lp.governmentprogramtype,
                     COALESCE(ra.resources, '[]'::json) AS resources,
+                    COALESCE(phys.gravity, 0.0) AS gravity,
+                    COALESCE(phys.pressure, 0.0) AS pressure,
+                    COALESCE(phys.temperature, p.temperature, 0.0) AS temperature,
+                    COALESCE(phys.fertility, p.fertility, 0.0) AS fertility,
+                    p.cogc AS cogc,
                     
                     jsonb_build_object(
                         'PIONEER', COALESCE(lp.nextpopulationpioneer, 0),
@@ -1738,6 +1755,7 @@ async def get_dashboard_map(request: Request):
                 LEFT JOIN planet_orbit as pd ON pd.planetid = p.planetid
                 LEFT JOIN res_agg ra ON ra.planetid = p.planetid
                 LEFT JOIN latest_pop lp ON lp.populationid = p.populationid
+                LEFT JOIN latest_phys phys ON phys.planetid = p.planetid
             ) t;
         """
 
@@ -2702,191 +2720,3 @@ async def get_user_workforce_with_needs(request: Request, user_id: str = Depends
         workforce_by_site[site_id].append(mutable_record)
 
     return JSONResponse(content={"success": True, "data": workforce_by_site})
-
-
-@data_router.get(
-    "/user_site_platforms/{site_id}",
-    summary="Get Site Details and Nested Production Lines",
-    description="Retrieves site-wide building/platform details, a list of all production lines, and aggregated repair materials.",
-    response_model=Dict[str, Any],
-)
-async def get_user_siteplatforms(
-    request: Request,
-    user_account_id: str = Depends(get_current_user_id),
-    site_id: str = Path(..., description="The ID of the site to query."),
-):
-    """
-    Executes three separate queries to fetch site-wide platform data, line data,
-    and aggregated repair materials, then merges them into the desired nested object structure.
-    """
-
-    # 1. QUERY A: Site-Wide Platform & Building Aggregation
-    # Fetches all relevant building/platform data and aggregates it into arrays.
-    sql_query_A = """
-        SELECT
-            p.naturalid AS planet_name,
-            ARRAY_AGG(b.ticker ORDER BY b.ticker) AS site_building_tickers,
-            ARRAY_AGG(sp.condition ORDER BY b.ticker) AS site_platform_conditions
-        FROM
-            public.sites s
-        INNER JOIN
-            public.users u ON u.userdataid = s.userid
-        INNER JOIN
-            public.site_platforms sp ON sp.siteid = s.siteid
-        INNER JOIN
-            public.buildings b ON b.buildingid = sp.buildingid
-        INNER JOIN
-            public.planets p ON p.planetid = s.addressplanetid
-        WHERE
-            s.siteid = $1
-        AND
-            u.accountid = $2
-        AND
-            (b.type = 'PRODUCTION' OR b.type = 'RESOURCES')
-        GROUP BY
-            s.siteid, p.naturalid;
-    """
-
-    # 2. QUERY B: Simple Production Line Details
-    # Fetches a clean list of all production lines on the site (no platform joins).
-    sql_query_B = """
-        SELECT
-            pl.productionlineid AS line_id,
-            pl.condition AS line_condition,
-            pl.type AS line_type
-        FROM
-            public.site_production_lines pl
-        INNER JOIN
-            public.sites s ON s.siteid = pl.siteid
-        INNER JOIN
-            public.users u ON u.userdataid = s.userid
-        WHERE
-            pl.siteid = $1
-        AND
-            u.accountid = $2
-        ORDER BY
-            pl.productionlineid;
-    """
-
-    # 3. QUERY C: Platform Repair Material Aggregation (New Query)
-    # Fetches the sum of repair materials needed for all platforms on the site.
-    sql_query_C = """
-        WITH UsersWithSellOrders AS (
-            SELECT DISTINCT
-                u.userdataid,
-                uvo.materialid
-            FROM
-                user_vendor_orders uvo
-            INNER JOIN
-                user_vendors uv ON uv.vendorid = uvo.vendorid
-            INNER JOIN
-                users u ON u.accountid = uuid(uv.userid)
-            WHERE
-                uvo.ordertype = 'sell'
-        ),
-        FilteredUserSupply AS (
-            SELECT
-                m.ticker,
-                SUM(sti.quantity) AS total_inventory_at_hrt
-            FROM
-                storage_items sti
-            INNER JOIN
-                materials m ON m.materialid = sti.materialid
-            INNER JOIN
-                storages st ON sti.storageid = st.storageid
-            INNER JOIN
-                warehouses wh ON st.addressableid = wh.warehouseid
-            INNER JOIN
-                stations stat ON stat.warehouseid = wh.warehouseid
-            INNER JOIN
-                UsersWithSellOrders uws 
-                    ON uws.userdataid = st.userid 
-                    AND uws.materialid = sti.materialid 
-            WHERE
-                stat.naturalid = 'HRT' -- Filter by location
-            GROUP BY
-                m.ticker
-        )
-        SELECT
-            m.ticker,
-            pm.materialtype,
-            mp.price AS corp_price,
-            cb.price AS market_price,
-            cb.supply AS market_supply,
-            SUM(pm.amount) AS total_amount,
-            COALESCE(fus.total_inventory_at_hrt, 0) AS corp_supply
-        FROM
-            public.platform_materials pm
-        INNER JOIN
-            site_platforms sp ON pm.platformid = sp.platformid
-        INNER JOIN
-            sites s ON s.siteid = sp.siteid
-        INNER JOIN
-            materials m ON m.materialid = pm.materialid
-        INNER JOIN
-            material_prices mp ON m.ticker = mp.ticker
-        INNER JOIN
-            cx_brokers cb ON cb.materialid = m.materialid
-        LEFT JOIN
-            FilteredUserSupply fus ON fus.ticker = m.ticker
-        WHERE
-            s.siteid = $1
-            AND pm.materialtype = 'repair'
-            AND cb.currencyid = 'ICA'
-        GROUP BY
-            m.ticker,
-            pm.materialtype,
-            mp.price,
-            cb.price,
-            cb.supply,
-            fus.total_inventory_at_hrt
-        ORDER BY
-            m.ticker;
-    """
-
-    pool = request.app.state.db.pool
-
-    try:
-        async with pool.acquire() as conn:
-            # --- EXECUTE QUERY A: Get Site-Wide Aggregated Data (Requires site_id and user_account_id) ---
-            site_records = await conn.fetch(sql_query_A, site_id, user_account_id)
-
-            # Initialize with defaults in case the site exists but has no relevant buildings
-            site_data = {
-                "siteid": site_id,
-                "planet_name": "Unknown",
-                "site_building_tickers": [],
-                "site_platform_conditions": [],
-                "production_lines": [],
-                "platform_repair_list": [],
-            }
-
-            if site_records:
-                # Merge the aggregated data into the structure
-                site_data.update(dict(site_records[0]))
-
-            # --- EXECUTE QUERY B: Get Production Line Details (Requires site_id and user_account_id) ---
-            line_records = await conn.fetch(sql_query_B, site_id, user_account_id)
-
-            # --- EXECUTE QUERY C: Get Platform Repair Materials (Requires only site_id) ---
-            repair_records = await conn.fetch(sql_query_C, site_id)
-
-            # --- ASSEMBLE FINAL OBJECT IN PYTHON ---
-            # Add production lines
-            site_data["production_lines"] = [dict(r) for r in line_records]
-
-            # Add repair material list
-            site_data["platform_repair_list"] = [dict(r) for r in repair_records]
-
-            return site_data
-
-    except Exception as e:
-        logger.error(
-            f"Database error in get_user_siteplatforms for site_id {site_id}: {e}",
-            exc_info=True,
-        )
-        # Raise a 500 status exception for internal server error
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error while fetching site production data.",
-        )

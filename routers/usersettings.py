@@ -356,7 +356,7 @@ async def get_privacy_settings(request: Request, user_id: str = Depends(get_curr
         rows = await conn.fetch(query, user_id)
 
     # 1. Load DB Data
-    settings_map = {row["page_context"]: orjson.loads(row["preferences"]) for row in rows}
+    settings_map = {row["page_context"]: orjson.loads(row["preferences"]) if isinstance(row["preferences"], str) else row["preferences"] for row in rows}
 
     # 2. STRICT Defaults
     default_web_settings = [

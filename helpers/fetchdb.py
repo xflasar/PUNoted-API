@@ -359,7 +359,7 @@ async def fetch_logistics_sites(db, user_id: str, production_summary: Dict[str, 
                     "maxVolume": r["volumecapacity"] or 0,
                     "currentTonnage": r["weightload"] or 0,
                     "currentVolume": r["volumeload"] or 0,
-                    "items": orjson.loads(r["items"] or "[]"),
+                    "items": orjson.loads(r["items"]) if isinstance(r["items"], str) else (r["items"] or []),
                 }
             )
 
@@ -374,7 +374,7 @@ async def fetch_logistics_sites(db, user_id: str, production_summary: Dict[str, 
                     "maxVolume": r["volumecapacity"] or 0,
                     "currentTonnage": r["weightload"] or 0,
                     "currentVolume": r["volumeload"] or 0,
-                    "items": orjson.loads(r["items"] or "[]"),
+                    "items": orjson.loads(r["items"]) if isinstance(r["items"], str) else (r["items"] or []),
                 }
 
             planet_warehouses = warehouses_by_planet.get(r["planetid"])

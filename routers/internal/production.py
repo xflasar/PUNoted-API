@@ -42,13 +42,13 @@ MyOwnedSites AS (
     WHERE u.accountid = $1::uuid
 ),
 MyOutboundLeases AS (
-    SELECT l->>'siteId' as siteid, l->>'tenant' as tenant
+    SELECT l->>'siteId' as siteid, l->>'tenant' as tenant, 'Type' as lease_type
     FROM user_global_settings ugs
     CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
     WHERE ugs.userid::text = $1::text
 ),
 MyInboundLeases AS (
-    SELECT l->>'siteId' as siteid, 
+    SELECT l->>'siteId' as siteid, 'Type' as lease_type, 
            (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
             FROM users u2 
             LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
@@ -87,22 +87,44 @@ SQL_GET_SITES_AND_INFRA = """
 WITH UserSites AS (
     SELECT 
         s.siteid::text as siteid, s.area, s.investedpermits, s.maximumpermits, s.foundedtimestamp, 
-        p.naturalid AS planet_name, p.name AS planet_name_alt
+        p.naturalid AS planet_name, p.name AS planet_name_alt, 
+        p.planetid::text as planetid, 
+        s.userid::text as userid
     FROM sites s
     INNER JOIN planets p ON p.planetid = s.addressplanetid
     WHERE s.siteid::text = ANY($1::text[])
 )
 SELECT 
     us.*,
+    -- 1. STRICTLY SITE STORAGE
     (
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
-            'material_id', ssi.materialid::text, 'ticker', m.ticker, 'amount', ssi.quantity
+            'material_id', ssi.materialid::text, 
+            'ticker', m.ticker, 
+            'amount', ssi.quantity,
+            'type', 'site'
         )), '[]'::jsonb)
-        FROM storage_items ssi
-        JOIN storages st ON st.storageid = ssi.storageid
+        FROM storages st
+        JOIN storage_items ssi ON st.storageid = ssi.storageid
         JOIN materials m ON m.materialid = ssi.materialid
-        WHERE st.addressableid::text = us.siteid
-    ) AS storage_items,
+        WHERE st.addressableid::text = us.siteid 
+    ) AS site_storage_items,
+    
+    -- 2. STRICTLY WAREHOUSE STORAGE (Belonging to the Site Owner)
+    (
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'material_id', ssi.materialid::text, 
+            'ticker', m.ticker, 
+            'amount', ssi.quantity,
+            'type', 'warehouse'
+        )), '[]'::jsonb)
+        FROM storages st
+        JOIN storage_items ssi ON st.storageid = ssi.storageid
+        JOIN materials m ON m.materialid = ssi.materialid
+        JOIN warehouses wh ON wh.warehouseid = st.addressableid
+        WHERE wh.addressplanet = us.planetid 
+              AND st.userid IN (us.userid)
+    ) AS warehouse_storage_items,
     (
         SELECT jsonb_build_object(
             'overall', COALESCE(AVG(CASE WHEN b.type IN ('PRODUCTION', 'RESOURCES') THEN sp.condition END), 0.0),
@@ -228,6 +250,7 @@ async def get_user_production(
                     tenant_str = f"Owner: {leased_from}"
                     
                 lease_context[sid] = {
+                    "type": row.get("lease_type"),
                     "isLeased": is_leased,
                     "tenant": tenant_str
                 }
@@ -245,13 +268,13 @@ async def get_user_production(
                 if not isinstance(p_data, dict):
                     p_data = {}
 
-                storage_data = safe_json(row["storage_items"])
                 context = lease_context.get(sid, {"isLeased": False, "tenant": None})
 
                 results[sid] = {
                     "siteid": sid,
                     "planet_name": row["planet_name"],
                     "planet_name_alt": row["planet_name_alt"],
+                    "planetid": row["planetid"],
                     "area": row["area"],
                     "invested_permits": row["investedpermits"],
                     "maximum_permits": row["maximumpermits"],
@@ -260,7 +283,6 @@ async def get_user_production(
                     "site_building_tickers": p_data.get("tickers", []),
                     "site_platform_conditions": p_data.get("conditions", []),
                     "platform_repair_list": [],
-                    "storage_items": storage_data,
                     "production_lines": [],
                     "site_daily_flow": {},
                     "isLeased": context["isLeased"],
@@ -295,6 +317,7 @@ async def get_user_production(
                         "efficiency": row["efficiency"],
                         "condition": row["condition"],
                         "production_orders": orders,
+                        "line_daily_flow": {},
                     }
                 )
 
@@ -337,11 +360,12 @@ async def get_user_production(
                 daily_flow = {}
 
                 # 4a. Initialize Flow with Current Storage
-                for item in site_data["storage_items"]:
-                    ticker = item["ticker"]
-                    if ticker not in daily_flow:
-                        daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0}
-                    daily_flow[ticker]["currentAmount"] = item["amount"]
+                # Combine site and warehouse storage for initial flow calculation
+                ##for item in site_data["site_storage_items"] + site_data["warehouse_storage_items"]:
+                ##    ticker = item["ticker"]
+                 ##   if ticker not in daily_flow:
+                 ##       daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0}
+                  ##  daily_flow[ticker]["currentAmount"] += item["amount"]
 
                 hydrated_lines = []
 
@@ -409,6 +433,7 @@ async def get_user_production(
                         if ticker not in daily_flow:
                             daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0}
                         daily_flow[ticker]["flow"] += r_flow
+                        line["line_daily_flow"][ticker] = r_flow
 
                 site_data["production_lines"] = hydrated_lines
                 site_data["site_daily_flow"] = daily_flow

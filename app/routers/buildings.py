@@ -3,7 +3,7 @@ from typing import List
 
 from fastapi import APIRouter, Depends
 
-from app.api.db.dependencies import get_db
+from app.db.dependencies import get_db
 from app.core.security import require_internal_origin
 from app.repositories.buildings_repository import BuildingsRepository
 from app.schemas.internal_planner import InternalBuildingDTO

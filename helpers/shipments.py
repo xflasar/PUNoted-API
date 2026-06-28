@@ -325,7 +325,7 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
         ) as final_payload
     """
     async with db.pool.acquire() as conn:
-        json_str = await conn.fetchval(query, account_id)
-        if not json_str:
+        parsed_json = await conn.fetchval(query, account_id)
+        if not parsed_json:
             return {"contracts": [], "ships": {}}
-        return json.loads(json_str)
+        return parsed_json

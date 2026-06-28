@@ -6,16 +6,12 @@ from db import Database
 
 logger = logging.getLogger(__name__)
 
-"""
-    Needs rewriting to use transaction
-"""
-
 
 async def handle_warehouse_data_message(db: Database, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     start_time = time.perf_counter()
     logger.debug("Starting processing warehouse data.")
 
-    converted_data = raw_payload["data"]
+    converted_data = raw_payload.get("data", [])
     table_name = "warehouses"
 
     if not converted_data:
@@ -23,75 +19,54 @@ async def handle_warehouse_data_message(db: Database, raw_payload: Dict[str, Any
         return {"success": True, "message": "No warehouse records to process."}
 
     try:
-        # Get user ID and userdataid
         user_response = await db.fetch_one(
             "SELECT accountid, userdataid FROM users WHERE accountid = $1;",
-            raw_payload["userId"],
+            raw_payload.get("userId"),
         )
+        
         if user_response and user_response.get("userdataid") is not None:
-            userid = user_response.get("userdataid")
+            userid = str(user_response.get("userdataid"))
         elif user_response:
-            userid = user_response.get("accountid")
+            userid = str(user_response.get("accountid"))
         else:
             return {"success": False, "message": "User not found."}
 
-        incoming_storage_ids = [record.get("warehouseid") for record in converted_data if record.get("warehouseid")]
-        if not incoming_storage_ids:
-            return {"success": False, "message": "No valid werehouse IDs found."}
-
-        # Query for existing werehouse records in bulk
-        query_response = await db.fetch_rows(
-            f"SELECT warehouseid FROM {table_name} WHERE warehouseid = ANY($1::text[]);",
-            incoming_storage_ids,
-        )
-
-        existing_ids_map = [record["warehouseid"] for record in query_response]
-        existing_storage_ids = set(existing_ids_map)
-
-        records_to_insert = []
-        records_to_update = []
-
+        valid_records = []
         for record in converted_data:
-            storage_id = record.get("warehouseid")
-            record["userid"] = userid
-            if not storage_id:
-                continue
+            if record.get("warehouseid") and record.get("storeid"):
+                record["userid"] = userid
+                valid_records.append(record)
 
-            temp_record = record.copy()
+        if not valid_records:
+            return {"success": False, "message": "No valid warehouse records with warehouseid and storeid found."}
 
-            if storage_id not in existing_storage_ids:
-                records_to_insert.append(temp_record)
-            else:
-                records_to_update.append(temp_record)
+        keys = list(valid_records[0].keys())
+        columns_str = ", ".join(keys)
+        placeholders_str = ", ".join([f"${i + 1}" for i in range(len(keys))])
+        update_keys = [k for k in keys if k not in ("warehouseid", "storeid")]
+        update_set_str = ", ".join([f"{k} = EXCLUDED.{k}" for k in update_keys])
+        
+        query = f"""
+            INSERT INTO {table_name} ({columns_str}) 
+            VALUES ({placeholders_str})
+            ON CONFLICT (warehouseid, storeid) 
+            DO UPDATE SET {update_set_str};
+        """
+        
+        values_list = [[rec[k] for k in keys] for rec in valid_records]
 
-        # Perform bulk inserts
-        if records_to_insert:
-            logger.debug(f"Found {len(records_to_insert)} new storage records. Performing bulk insert.")
-            keys = ", ".join(records_to_insert[0].keys())
-            values_placeholders = ", ".join([f"${i + 1}" for i in range(len(records_to_insert[0]))])
-            query = f"INSERT INTO {table_name} ({keys}) VALUES ({values_placeholders}) ON CONFLICT DO NOTHING;"
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                await con.executemany(query, values_list)
 
-            for rec_values in [list(rec.values()) for rec in records_to_insert]:
-                await db.execute(query, *rec_values)
-
-        # Perform bulk updates
-        if records_to_update:
-            logger.debug(f"Found {len(records_to_update)} existing storage records. Performing bulk update.")
-
-            for record_to_update in records_to_update:
-                update_data = record_to_update.copy()
-                record_id = update_data.pop("warehouseid")
-                update_fields = ", ".join([f"{key} = ${i + 2}" for i, key in enumerate(update_data.keys())])
-                query = f"UPDATE {table_name} SET {update_fields} WHERE warehouseid = $1;"
-
-                await db.execute(query, record_id, *update_data.values())
         end_time = time.perf_counter()
         logger.debug(f"Processing warehouse records took {end_time - start_time:.4f} seconds")
 
         return {
             "success": True,
-            "message": f"Processed {len(converted_data)} . {len(records_to_insert)} items inserted | {len(records_to_update)} updated.",
+            "message": f"Processed {len(valid_records)} warehouse records successfully via bulk UPSERT.",
         }
+
     except Exception as e:
         logger.error(f"Error processing warehouse data: {e}", exc_info=True)
         raise

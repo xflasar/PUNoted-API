@@ -53,7 +53,7 @@ async def get_ship_storage(db, ship_ids: List[str]) -> Dict[str, Any]:
                 "maxVolume": r["volumecapacity"],
                 "currentTonnage": r["weightload"],
                 "currentVolume": r["volumeload"],
-                "items": orjson.loads(r["items"] or "[]"),
+                "items": orjson.loads(r["items"]) if isinstance(r["items"], str) else (r["items"] or []),
             }
         return storages
 

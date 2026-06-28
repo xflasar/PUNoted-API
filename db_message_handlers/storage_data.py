@@ -93,7 +93,7 @@ async def handle_storage_removed_message(db: Database, raw_payload: Dict[str, An
         raise
 
 
-async def handle_storage_data_message(db: Database, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
+async def handle_storage_data_message(db, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     start_time = time.perf_counter()
     logger.debug("Starting processing storage data.")
 
@@ -121,8 +121,9 @@ async def handle_storage_data_message(db: Database, raw_payload: Dict[str, Any])
         else:
             return {"success": False, "message": "User not found."}
 
-        # ✔ GET ALL STORAGE IDs
+        # GET ALL STORAGE IDs and ADDRESSABLE IDs for later use in tenant routing and shipment triggers
         storage_ids = [rec["storageid"] for rec in storage_records]
+        addressable_ids = [rec["addressableid"] for rec in storage_records]
 
         async with db.pool.acquire() as con:
             async with con.transaction():
@@ -146,12 +147,85 @@ async def handle_storage_data_message(db: Database, raw_payload: Dict[str, Any])
                 # Step 2: UPSERT storages
                 await upsert_storage_records(con, "storages", storage_records, userid)
 
+                # Fetch updated storages from the database to broadcast
                 storage_data = await fetch_user_storages_by_id(con, userid, storage_ids)
 
+                # Send update to the storage owner
                 await ws_manager.send_personal_message(
                     raw_payload.get("userId"),
                     {"type": "STORAGE_DATA_UPDATE", "data": storage_data},
                 )
+
+                # --- STEP 2.5: TENANT WS ROUTING ---
+                # Resolve tenants leasing sites from this user and determine their planets
+                SQL_RESOLVE_TENANTS = """
+                    WITH OutboundLeases AS (
+                        SELECT l->>'siteId' as siteid, l->>'tenant' as tenant_str
+                        FROM user_global_settings ugs
+                        CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
+                        WHERE ugs.userid::text = $1::text
+                    ),
+                    Tenants AS (
+                        SELECT ol.siteid, u.accountid::text as accountid
+                        FROM OutboundLeases ol
+                        JOIN users u ON true
+                        LEFT JOIN users_data ud ON u.userdataid = ud.userid
+                        LEFT JOIN company_data cd ON u.userdataid = cd.userdataid
+                        WHERE ol.tenant_str = ud.displayname
+                           OR ol.tenant_str = cd.companycode
+                           OR ol.tenant_str = ud.displayname || ' (' || cd.companycode || ')'
+                    )
+                    SELECT t.accountid, t.siteid, s.addressplanetid::text as addressplanetid
+                    FROM Tenants t
+                    LEFT JOIN sites s ON s.siteid::text = t.siteid
+                """
+                tenant_links = await con.fetch(SQL_RESOLVE_TENANTS, raw_payload.get("userId"))
+
+                if tenant_links:
+                    SQL_WH_PLANETS = """
+                        SELECT warehouseid::text as addressableid, addressplanet::text as planetid
+                        FROM warehouses
+                        WHERE userid::text = $1::text AND warehouseid::text = ANY($2::text[])
+                    """
+                    wh_planets_records = await con.fetch(SQL_WH_PLANETS, userid, addressable_ids)
+                    wh_planet_map = {r["addressableid"]: r["planetid"] for r in wh_planets_records}
+
+                    tenant_updates = {}
+
+                    for link in tenant_links:
+                        t_acc = link["accountid"]
+                        t_site = link["siteid"]
+                        t_planet = link["addressplanetid"]
+                        
+                        allowed_storages = []
+                        for s in storage_data:
+                            s_addressable = s.get("addressableid")
+                            
+                            # Link criteria:
+                            # 1. The storage IS the leased site itself
+                            # 2. The storage is the Owner's Warehouse on the same planet as the leased site
+                            if s_addressable == t_site:
+                                allowed_storages.append(s)
+                            elif s_addressable in wh_planet_map and wh_planet_map[s_addressable] == t_planet:
+                                allowed_storages.append(s)
+                                
+                        if allowed_storages:
+                            if t_acc not in tenant_updates:
+                                tenant_updates[t_acc] = []
+                            tenant_updates[t_acc].extend(allowed_storages)
+
+                    # Dispatch specific storage arrays to respective tenants
+                    for t_acc, t_storages in tenant_updates.items():
+                        # Deduplicate in case multiple leased sites exist on the same planet 
+                        # triggering duplicate warehouse attachments
+                        unique_storages = {s["storageid"]: s for s in t_storages}.values()
+                        try:
+                            await ws_manager.send_personal_message(
+                                t_acc,
+                                {"type": "STORAGE_DATA_UPDATE", "data": list(unique_storages)},
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to push storage update to tenant {t_acc}: {e}")
 
                 # --- STEP 3: SMART SHIPMENT TRIGGER ---
                 # Check if any "SHIPMENT" type items were involved in this update

@@ -45,6 +45,7 @@ async def fetch_storages_as_json(db, usernames_list: list, location_filter: Opti
                         stn.name, 
                         p.name, 
                         p.naturalid, 
+                        p_via_w.name, 
                         p_via_w.naturalid, 
                         w.warehouseid, 
                         sh.registration,

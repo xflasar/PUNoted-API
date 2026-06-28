@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 import asyncpg
 
+from app.db.models.ships import Ship
 from db import Database
 from helpers.shipments import fetch_active_shipments_structured
 from managers.global_ws_manager import global_ws_manager
@@ -25,14 +26,55 @@ def serialize_ws_payload(data: Any) -> str:
     return json.dumps(data, default=default_serializer)
 
 
-async def fetch_updated_ships_batch(conn, updated_ships_ids):
+async def fetch_updated_ships_batch(conn: asyncpg.Connection, updated_ships_ids: List[str]) -> List[dict]:
     sql_query = """
-        SELECT *
-        FROM ships
-        WHERE shipid = ANY($1::text[]);
+        SELECT 
+            s.*, 
+            ud.displayname AS displayname, 
+            cd.companycode AS companycode,
+            
+            CASE 
+                WHEN s.flightid IS NOT NULL THEN (
+                    SELECT row_to_json(f)::jsonb || jsonb_build_object(
+                        'segments', (
+                            SELECT COALESCE(json_agg(row_to_json(seg) ORDER BY seg.segment_index ASC), '[]'::json)
+                            FROM ship_flight_segments seg
+                            WHERE seg.flightid = f.id
+                        )
+                    )
+                    FROM flights f 
+                    WHERE f.id = s.flightid
+                )
+                ELSE NULL 
+            END AS plan,
+            CASE
+                WHEN st.volumecapacity >= 5000 AND st.weightcapacity >= 5000 THEN 'HCB'
+                WHEN st.volumecapacity = 3000 AND st.weightcapacity = 1000 THEN 'VCB'
+                WHEN st.volumecapacity = 1000 AND st.weightcapacity = 3000 THEN 'WCB'
+                WHEN st.volumecapacity = 2000 AND st.weightcapacity = 2000 THEN 'LCB'
+                WHEN st.volumecapacity = 500  AND st.weightcapacity = 500  THEN 'TINY'
+                ELSE 'UNKNOWN'
+            END AS ship_type
+
+        FROM ships s
+        JOIN storages st ON st.storageid = s.idshipstore
+        JOIN users_data ud ON ud.userid = s.userid
+        JOIN company_data cd ON cd.companyid = ud.companyid
+        WHERE s.shipid = ANY($1);
     """
     ships_records = await conn.fetch(sql_query, updated_ships_ids)
-    return [dict(record) for record in ships_records]
+    
+    parsed_records = []
+    for r in ships_records:
+        r_dict = dict(r)
+        
+        if isinstance(r_dict.get('plan'), str):
+            r_dict['plan'] = json.loads(r_dict['plan'])
+            
+        r_dict['is_owner'] = False
+        parsed_records.append(r_dict)
+
+    ships = [Ship(**rec) for rec in parsed_records]
 
 
 async def handle_ship_data_message(db: Database, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -118,18 +160,31 @@ async def handle_ship_data_message(db: Database, raw_payload: Dict[str, Any]) ->
                 user_corp_ids = [str(r["corporationid"]) for r in corp_records]
 
             if updated_ships_payload:
-                update_message = {
+                # 1. Create the personal version (is_owner = True)
+                personal_payload_data = [
+                    {**ship, "is_owner": True} for ship in updated_ships_payload
+                ]
+                personal_message = {
                     "type": "SHIP_DATA_UPDATE",
-                    "data": updated_ships_payload,
+                    "data": personal_payload_data,
                 }
 
-                # Broadcast to Personal Channel
-                user_channel = f"map:user:{raw_payload['userId']}"
-                await global_ws_manager.broadcast(user_channel, update_message)
+                # 2. Create the corporate version (is_owner = False)
+                corp_payload_data = [
+                    {**ship, "is_owner": False} for ship in updated_ships_payload
+                ]
+                corp_message = {
+                    "type": "SHIP_DATA_UPDATE",
+                    "data": corp_payload_data,
+                }
 
-                # Broadcast to Corp Channels
+                # 3. Broadcast to Personal Channel
+                user_channel = f"map:user:{raw_payload['userId']}"
+                await global_ws_manager.broadcast(user_channel, personal_message)
+
+                # 4. Broadcast to Corp Channels
                 for corp_id in user_corp_ids:
-                    await global_ws_manager.broadcast(f"map:corp:{corp_id}", update_message)
+                    await global_ws_manager.broadcast(f"map:corp:{corp_id}", corp_message)
 
     except Exception as e:
         logger.error(f"Error broadcasting ship updates: {e}")
