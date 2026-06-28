@@ -44,3 +44,4 @@ ruff
 fastapi-cache2[redis]
 prometheus-fastapi-instrumentator
 networkx
+jinja2

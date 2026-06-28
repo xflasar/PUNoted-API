@@ -41,7 +41,7 @@ services:
   backend:
     image: ghcr.io/xflasar/punoted-api:main
     container_name: punoted_backend_prod
-    #build: -- For local development
+    #build:
     #  context: . # The directory containing Dockerfile
     #  dockerfile: Dockerfile
     depends_on:
@@ -68,6 +68,9 @@ services:
   background_worker:
     image: ghcr.io/xflasar/punoted-api:main
     container_name: punoted_background_prod
+    #build:
+    #  context: . # Re-uses the same local Dockerfile definition
+    #  dockerfile: Dockerfile
     command: ["python", "run_background.py"]
     depends_on:
       redis_cache:
