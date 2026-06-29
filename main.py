@@ -282,7 +282,7 @@ app.add_middleware(
     allow_origin_regex=r"chrome-extension://.*", 
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "X-Data-Token"],
 )
 
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
