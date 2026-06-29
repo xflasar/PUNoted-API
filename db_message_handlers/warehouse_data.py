@@ -40,9 +40,14 @@ async def handle_warehouse_data_message(db: Database, raw_payload: Dict[str, Any
         if not valid_records:
             return {"success": False, "message": "No valid warehouse records with warehouseid and storeid found."}
 
-        keys = list(valid_records[0].keys())
+        all_keys = set()
+        for rec in valid_records:
+            all_keys.update(rec.keys())
+        keys = sorted(list(all_keys))
+
         columns_str = ", ".join(keys)
         placeholders_str = ", ".join([f"${i + 1}" for i in range(len(keys))])
+        
         update_keys = [k for k in keys if k not in ("warehouseid", "storeid")]
         update_set_str = ", ".join([f"{k} = EXCLUDED.{k}" for k in update_keys])
         
@@ -53,7 +58,7 @@ async def handle_warehouse_data_message(db: Database, raw_payload: Dict[str, Any
             DO UPDATE SET {update_set_str};
         """
         
-        values_list = [[rec[k] for k in keys] for rec in valid_records]
+        values_list = [[rec.get(k) for k in keys] for rec in valid_records]
 
         async with db.pool.acquire() as con:
             async with con.transaction():
