@@ -40,9 +40,15 @@ async def get_storages_json(
         if not valid_targets:
             return Response(content='[]', media_type="application/json")
 
-        json_str = await fetch_storages_as_json(db, valid_targets, location)
+        db_data = await fetch_storages_as_json(db, valid_targets, location)
 
-        return Response(content=json_str, media_type="application/json")
+        if not db_data:
+            return []
+
+        if isinstance(db_data, dict) and 'Storages' in db_data:
+            return db_data['Storages']
+
+        return DefaultJSONResponse(content=db_data, media_type="application/json")
 
     except Exception as e:
         print(f"Storage API Error: {e}")
@@ -72,17 +78,15 @@ async def get_storages_user(
         if not valid_targets:
             raise HTTPException(status_code=404, detail="User not found or access denied")
 
-        # 1. Fetch standard multi-user structure
         json_str = await fetch_storages_as_json(db, valid_targets, location)
 
-        # 2. Unwrap to return ONLY the Storages list
-        try:
-            data_list = orjson.loads(json_str)
-            if data_list and "Storages" in data_list[0]:
-                return data_list[0]["Storages"]
+        if not json_str:
             return []
-        except Exception:
-            return []
+
+        if isinstance(json_str, dict) and 'Storages' in json_str:
+            return json_str['Storages']
+        
+        return DefaultJSONResponse(content=json_str, media_type="application/json")
 
     except HTTPException as he:
         raise he

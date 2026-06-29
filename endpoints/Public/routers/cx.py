@@ -64,12 +64,9 @@ async def get_cx_prices_json(
 ):
     db = request.app.state.db
 
-    json_data = await generate_json_data(db)
+    cx_data = await generate_json_data(db)
 
-    return Response(
-        content=json.dumps(json_data),
-        media_type="application/json",
-        headers={
-            "Cache-Control": "public, max-age=1800"
-        }
-    )
+    if not cx_data:
+        return []
+    
+    return cx_data

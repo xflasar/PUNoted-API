@@ -77,21 +77,21 @@ AggregatedSegments AS (
                 
                 'OriginLines', (
                     SELECT jsonb_agg(line) FROM (
-                        SELECT jsonb_build_object('Type', 'system', 'LineId', sd.o_sys_id, 'LineNaturalId', sd.o_sys_nat, 'LineName', sd.o_sys_name) WHERE sd.o_sys_id IS NOT NULL
+                        SELECT jsonb_build_object('Type', 'system', 'LineId', sd.o_sys_id, 'LineNaturalId', sd.o_sys_nat, 'LineName', sd.o_sys_name) AS Entity WHERE sd.o_sys_id IS NOT NULL
                         UNION ALL
-                        SELECT jsonb_build_object('Type', 'planet', 'LineId', sd.o_pl_id, 'LineNaturalId', sd.o_pl_nat, 'LineName', sd.o_pl_name) WHERE sd.o_pl_id IS NOT NULL
+                        SELECT jsonb_build_object('Type', 'planet', 'LineId', sd.o_pl_id, 'LineNaturalId', sd.o_pl_nat, 'LineName', sd.o_pl_name) AS Entity WHERE sd.o_pl_id IS NOT NULL
                         UNION ALL
-                        SELECT jsonb_build_object('Type', 'station', 'LineId', sd.o_st_id, 'LineNaturalId', sd.o_st_nat, 'LineName', sd.o_st_name) WHERE sd.o_st_id IS NOT NULL
+                        SELECT jsonb_build_object('Type', 'station', 'LineId', sd.o_st_id, 'LineNaturalId', sd.o_st_nat, 'LineName', sd.o_st_name) AS Entity WHERE sd.o_st_id IS NOT NULL
                     ) line
                 ),
 
                 'DestinationLines', (
                     SELECT jsonb_agg(line) FROM (
-                        SELECT jsonb_build_object('Type', 'system', 'LineId', sd.d_sys_id, 'LineNaturalId', sd.d_sys_nat, 'LineName', sd.d_sys_name) WHERE sd.d_sys_id IS NOT NULL
+                        SELECT jsonb_build_object('Type', 'system', 'LineId', sd.d_sys_id, 'LineNaturalId', sd.d_sys_nat, 'LineName', sd.d_sys_name) AS Entity WHERE sd.d_sys_id IS NOT NULL
                         UNION ALL
-                        SELECT jsonb_build_object('Type', 'planet', 'LineId', sd.d_pl_id, 'LineNaturalId', sd.d_pl_nat, 'LineName', sd.d_pl_name) WHERE sd.d_pl_id IS NOT NULL
+                        SELECT jsonb_build_object('Type', 'planet', 'LineId', sd.d_pl_id, 'LineNaturalId', sd.d_pl_nat, 'LineName', sd.d_pl_name) AS Entity WHERE sd.d_pl_id IS NOT NULL
                         UNION ALL
-                        SELECT jsonb_build_object('Type', 'station', 'LineId', sd.d_st_id, 'LineNaturalId', sd.d_st_nat, 'LineName', sd.d_st_name) WHERE sd.d_st_id IS NOT NULL
+                        SELECT jsonb_build_object('Type', 'station', 'LineId', sd.d_st_id, 'LineNaturalId', sd.d_st_nat, 'LineName', sd.d_st_name) AS Entity WHERE sd.d_st_id IS NOT NULL
                     ) line
                 ),
 
@@ -159,6 +159,7 @@ SELECT
                 'Username', sub.username,
                 'Flights', sub.flights
             )
+            ORDER BY sub.username ASC
         ), 
         '[]'::jsonb
     )

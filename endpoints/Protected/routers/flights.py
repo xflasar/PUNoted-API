@@ -33,13 +33,20 @@ async def get_flights(
     pool = request.app.state.db.pool
     valid_targets = getattr(request.state, "valid_target_users", [])
 
+    if usernames:
+        requested_users = [u.strip() for u in usernames.split(",") if u.strip()]
+        valid_targets = [u for u in valid_targets if u in requested_users]
+
     if not valid_targets:
-        return Response(content='[]', media_type="application/json")
+        return []
 
     async with pool.acquire() as conn:
         flights_data = await search_flights(conn, valid_targets, ship, current, limit)
 
-    return Response(content=flights_data, media_type="application/json")
+    if flights_data is None:
+        return []
+
+    return flights_data
 
 
 # --------------------------------------------------------
@@ -67,14 +74,9 @@ async def get_flight_user(
 
     async with pool.acquire() as conn:
         # 1. Fetch standard structure: '[{"Username": "...", "Flights": [...]}]'
-        json_str = await search_flights(conn, valid_targets, ship, current, limit)
+        flights_data = await search_flights(conn, valid_targets, ship, current, limit)
 
-        # 2. Unwrap to return ONLY the Flights list
-        try:
-            data_list = orjson.loads(json_str)
-            if data_list and "Flights" in data_list[0]:
-                return data_list[0]["Flights"]
-            else:
-                return []
-        except Exception:
+        if not flights_data:
             return []
+
+        return flights_data

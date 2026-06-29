@@ -20,15 +20,10 @@ async def get_public_company(
     if not company_code or len(company_code) > 4:
         raise HTTPException(status_code=400, detail="Invalid company code format.")
 
-    json_string = await fetch_public_company_profile(db, company_code)
+    company_data = await fetch_public_company_profile(db, company_code)
 
-    if not json_string:
-        raise HTTPException(status_code=404, detail="Company not found.")
+    if not company_data:
+        return []
+    
+    return company_data
 
-    return Response(
-        content=json_string,
-        media_type="application/json",
-        headers={
-            "Cache-Control": "public, max-age=3600"
-        }
-    )

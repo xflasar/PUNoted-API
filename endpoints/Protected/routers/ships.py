@@ -40,7 +40,7 @@ async def search_user_ships(
         return Response(content='[]', media_type="application/json")
 
     async with pool.acquire() as conn:
-        json_data = await search_ships(
+        ships_data = await search_ships(
             conn,
             valid_targets,
             shipname=shipname,
@@ -48,8 +48,12 @@ async def search_user_ships(
             location=location,
             ship_type=type,
         )
+    
+    if not ships_data:
+        return []
 
-    return Response(content=json_data, media_type="application/json")
+    return ships_data
+
 
 
 # ==============================================================================
@@ -79,7 +83,7 @@ async def search_user_ships_single(
 
     async with pool.acquire() as conn:
         # 1. Fetch standard multi-user structure
-        json_str = await search_ships(
+        ships_data = await search_ships(
             conn,
             valid_targets,
             shipname=shipname,
@@ -88,11 +92,8 @@ async def search_user_ships_single(
             ship_type=type,
         )
 
-        # 2. Unwrap to return ONLY the Ships list
-        try:
-            data_list = orjson.loads(json_str)
-            if data_list and "Ships" in data_list[0]:
-                return data_list[0]["Ships"] # Returns just the list of ships
-            return []
-        except Exception:
-            return []
+    if not ships_data:
+        return []
+
+    return ships_data
+

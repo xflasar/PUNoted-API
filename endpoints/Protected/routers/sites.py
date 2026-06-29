@@ -43,7 +43,7 @@ async def search_sites(
         return Response(content='[]', media_type="application/json")
 
     async with pool.acquire() as conn:
-        json_data = await fetch_sites(
+        sites_data = await fetch_sites(
             conn,
             valid_targets,
             location=location,
@@ -52,7 +52,10 @@ async def search_sites(
             include_repair=include_repair,
         )
 
-    return Response(content=json_data, media_type="application/json")
+    if not sites_data:
+        return []
+
+    return sites_data
 
 
 # ==============================================================================
@@ -85,7 +88,7 @@ async def search_sites_user(
 
     async with pool.acquire() as conn:
         # 1. Fetch standard multi-user structure
-        json_str = await fetch_sites(
+        sites_data = await fetch_sites(
             conn,
             valid_targets,
             location=location,
@@ -94,11 +97,7 @@ async def search_sites_user(
             include_repair=include_repair,
         )
 
-        # 2. Unwrap to return ONLY the Sites list
-        try:
-            data_list = orjson.loads(json_str)
-            if data_list and "Sites" in data_list[0]:
-                return data_list[0]["Sites"] # Returns just the list of sites
-            return []
-        except Exception:
-            return []
+    if not sites_data:
+        return []
+
+    return sites_data

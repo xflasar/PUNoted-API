@@ -53,7 +53,14 @@ async def get_company_data(
             names=target_names
         )
 
-    return Response(content=json_data, media_type="application/json")
+        if not json_data:
+            return []
+
+        if isinstance(json_data, dict) and 'Company' in json_data:
+            return json_data['Company']
+
+
+    return DefaultJSONResponse(content=json_data, media_type="application/json")
 
 
 # ==============================================================================

@@ -37,9 +37,12 @@ async def get_accounting(
         return Response(content='[]', media_type="application/json")
 
     async with pool.acquire() as conn:
-        json_data = await fetch_user_accounts(conn, valid_targets, currency)
+        accounting_data = await fetch_user_accounts(conn, valid_targets, currency)
 
-    return Response(content=json_data, media_type="application/json")
+    if not accounting_data:
+        return []
+    
+    return accounting_data
 
 
 # ==============================================================================
@@ -66,13 +69,9 @@ async def get_accounting_user(
 
     async with pool.acquire() as conn:
         # 1. Fetch standard multi-user structure
-        json_str = await fetch_user_accounts(conn, valid_targets, currency)
+        accounting_data = await fetch_user_accounts(conn, valid_targets, currency)
 
-        # 2. Unwrap to return ONLY the Accounts list
-        try:
-            data_list = orjson.loads(json_str)
-            if data_list and "Accounts" in data_list[0]:
-                return data_list[0]["Accounts"] # Returns just the list of accounts
-            return []
-        except Exception:
-            return []
+    if not accounting_data:
+        return []
+    
+    return accounting_data

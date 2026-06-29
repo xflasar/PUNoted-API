@@ -23,12 +23,10 @@ async def get_planets(
 ):
     db = request.app.state.db
 
-    json_string = await get_planet_data(db, ticker=ticker, full=full)
+    planets_data = await get_planet_data(db, ticker=ticker, full=full)
 
-    return Response(
-        content=json_string,
-        media_type="application/json",
-        headers={
-            "Cache-Control": "public, s-maxage=86400, max-age=3600"
-        }
-    )
+    if not planets_data:
+        return []
+
+    return planets_data
+

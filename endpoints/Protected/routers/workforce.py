@@ -40,9 +40,13 @@ async def get_workforce_data(
         return Response(content='[]', media_type="application/json")
 
     async with pool.acquire() as conn:
-        json_data = await fetch_workforce_json(conn, valid_targets, location)
+        workforce_data = await fetch_workforce_json(conn, valid_targets, location)
 
-    return Response(content=json_data, media_type="application/json")
+    if not workforce_data:
+        return []
+
+    return workforce_data
+
 
 
 # ==============================================================================
@@ -69,15 +73,12 @@ async def get_workforce_data_user(
 
     async with pool.acquire() as conn:
         # 1. Fetch standard multi-user structure
-        json_str = await fetch_workforce_json(conn, valid_targets, location)
+        worforce_data = await fetch_workforce_json(conn, valid_targets, location)
 
-        try:
-            data_list = orjson.loads(json_str)
-            if data_list and "Workforce" in data_list[0]:
-                return data_list[0]["Workforce"]
-            return []
-        except Exception:
-            return []
+    if not worforce_data:
+        return []
+
+    return worforce_data
 
 
 # ==============================================================================

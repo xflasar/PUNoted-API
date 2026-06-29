@@ -1,12 +1,9 @@
-# endpoints/Protected/routers/vendors.py
-
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.core.limiter import get_auth_key, get_public_key, limiter
 
-# Import OptionalAuth
 from auth import OptionalAuth
 from endpoints.Public.repositories.vendors_repo import fetch_public_vendors
 
@@ -29,6 +26,10 @@ async def get_vendors(
     pool = request.app.state.db.pool
 
     async with pool.acquire() as conn:
-        json_data = await fetch_public_vendors(conn, search=search, corp=corp, operator=operator)
+        vendors_data = await fetch_public_vendors(conn, search=search, corp=corp, operator=operator)
 
-    return Response(content=json_data, media_type="application/json")
+    if not vendors_data:
+        return []
+
+    return vendors_data
+

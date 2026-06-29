@@ -22,12 +22,10 @@ async def get_buildings(
 ):
     db = request.app.state.db
 
-    json_string = await fetch_building_data(db, ticker=ticker)
+    buildings_data = await fetch_building_data(db, ticker=ticker)
 
-    return Response(
-        content=json_string,
-        media_type="application/json",
-        headers={
-            "Cache-Control": "public, s-maxage=86400, max-age=3600"
-        }
-    )
+    if not buildings_data:
+        return []
+
+    return buildings_data
+

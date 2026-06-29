@@ -6,6 +6,7 @@ from typing import Optional
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse as DefaultJSONResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
@@ -61,7 +62,13 @@ async def get_orders_json(
             return Response(content='[]', media_type="application/json")
 
         orders_json_str = await fetch_orders_as_json(db, valid_targets, **params)
-        return Response(content=orders_json_str, media_type="application/json")
+        if not orders_json_str:
+            return []
+
+        if isinstance(orders_json_str, dict) and 'Orders' in orders_json_str:
+            return orders_json_str['Orders']
+
+        return DefaultJSONResponse(content=orders_json_str, media_type="application/json")
 
     except Exception as e:
         print(f"External API Error: {e}")
@@ -88,14 +95,13 @@ async def get_order_user(
 
         orders_json_str = await fetch_orders_as_json(db, valid_targets, **params)
 
-        try:
-            data_list = orjson.loads(orders_json_str)
-            if data_list and "Orders" in data_list[0]:
-                return Response(content=orjson.dumps(data_list[0]["Orders"]), media_type="application/json")
-            else:
-                return Response(content='[]', media_type="application/json")
-        except Exception:
-            return Response(content='[]', media_type="application/json")
+        if not orders_json_str:
+            return []
+
+        if isinstance(orders_json_str, dict) and 'Orders' in orders_json_str:
+            return orders_json_str['Orders']
+
+        return DefaultJSONResponse(content=orders_json_str, media_type="application/json")
 
     except HTTPException as he:
         raise he
