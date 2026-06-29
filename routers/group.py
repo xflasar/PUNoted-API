@@ -149,7 +149,7 @@ async def get_single_group_data(conn: Any, group_id: str) -> Optional[Dict[str, 
     record = await conn.fetchval(query, group_uuid)
 
     if record:
-        return json.loads(record)
+        return record
     return None
 
 
@@ -531,7 +531,7 @@ async def get_all_user_groups(request: Request, user_id: str = Depends(get_curre
         if not results:
             return []
 
-        group_list = [json.loads(record["group_data"]) for record in results]
+        group_list = [record["group_data"] for record in results]
 
         return group_list
 

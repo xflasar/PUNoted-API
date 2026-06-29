@@ -13,7 +13,7 @@ async def get_latest_chain_from_db(pool, group_id: str) -> Optional[Dict[str, An
         row = await conn.fetchrow("SELECT chain_data FROM production_groups WHERE id = $1;", group_id)
         if row:
             try:
-                return json.loads(row["chain_data"])
+                return row["chain_data"]
             except json.JSONDecodeError:
                 pass
     return None

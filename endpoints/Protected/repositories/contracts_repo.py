@@ -256,7 +256,7 @@ async def get_filtered_contracts(
         loan_rows = await conn.fetch(SQL_GET_CONDITIONS_LOAN, ids_list, user_ids)
         for r in loan_rows:
             detail_map[r['contractid']] = {
-                'conditions': json.loads(r['conditions_json']),
+                'conditions': r['conditions_json'],
                 'stats': {
                     'LoanStrategy': r['loan_strategy'],
                     'InstallmentInterval': round(float(r['avg_interval_days'] or 0)),
@@ -272,7 +272,7 @@ async def get_filtered_contracts(
         generic_rows = await conn.fetch(SQL_GET_CONDITIONS_GENERIC, ids_list, user_ids)
         for r in generic_rows:
             detail_map[r['contractid']] = {
-                'conditions': json.loads(r['conditions_json']),
+                'conditions': r['conditions_json'],
                 'stats': {
                     'LoanStrategy': None,
                     'InstallmentInterval': 0,
@@ -411,7 +411,7 @@ async def stream_contracts_csv(
         if c_type == 'LOAN' or c_type is None:
             loan_rows = await conn.fetch(SQL_GET_CONDITIONS_LOAN, chunk_ids, user_ids)
             for r in loan_rows:
-                conds = json.loads(r['conditions_json'])
+                conds = r['conditions_json']
                 total_amt = sum((c['Amount'] or 0) for c in conds)
                 total_principal = sum((c['Principal'] or 0) for c in conds)
                 total_interest = sum((c['Interest'] or 0) for c in conds)
@@ -432,7 +432,7 @@ async def stream_contracts_csv(
         if c_type != 'LOAN':
             generic_rows = await conn.fetch(SQL_GET_CONDITIONS_GENERIC, chunk_ids, user_ids)
             for r in generic_rows:
-                conds = json.loads(r['conditions_json'])
+                conds = r['conditions_json']
                 total_amt = sum((c['Amount'] or 0) for c in conds)
                 currency = conds[0]['Currency'] if conds else 'ICA'
 

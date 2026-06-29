@@ -69,7 +69,7 @@ async def generate_json_data(db) -> list:
         # 1. Check Redis Cache (Crucial for frontend performance)
         cached_json = await redis_client.get(cache_key)
         if cached_json:
-            return json.loads(cached_json)
+            return cached_json
 
         records = await fetch_pivoted_market_data(db)
         json_data = []
