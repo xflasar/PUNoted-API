@@ -1240,35 +1240,37 @@ async def change_password(request: Request, user_id: str = Depends(get_current_u
     """
     if not user_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email is required.")
+    
+    db = request.app.state.db
 
-    conn = await request.app.state.db.pool.acquire()
-    # Check if a user with this email exists
-    email = await conn.fetch("SELECT email FROM users WHERE accountid = $1;", user_id)
-    if not email:
-        return {
-            "success": True,
-            "message": "If this email is registered, a verification code has been sent.",
-        }
+    async with db.pool.acquire() as conn:
+        # Check if a user with this email exists
+        email = await conn.fetch("SELECT email FROM users WHERE accountid = $1;", user_id)
+        if not email:
+            return {
+                "success": True,
+                "message": "If this email is registered, a verification code has been sent.",
+            }
 
-    email = email[0]["email"]
+        email = email[0]["email"]
 
-    # Generate and store a new verification code
-    verification_code = generate_verification_code_str()
-    server_code = generate_verification_code_str()
-    code_stored_id = await store_verification_code(conn, email, verification_code, server_code)
+        # Generate and store a new verification code
+        verification_code = generate_verification_code_str()
+        server_code = generate_verification_code_str()
+        code_stored_id = await store_verification_code(db, email, verification_code, server_code)
 
-    if not code_stored_id:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to store verification code.",
-        )
+        if not code_stored_id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to store verification code.",
+            )
 
-    send_email = send_password_reset_email(email, verification_code)
-    if not send_email:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to send verification email. Please contact support.",
-        )
+        send_email = send_password_reset_email(email, verification_code)
+        if not send_email:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to send verification email. Please contact support.",
+            )
 
     # Send the email with the code
 

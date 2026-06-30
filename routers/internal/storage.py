@@ -33,22 +33,34 @@ async def get_user_storage(request: Request, user_id: str = Depends(get_current_
                 			U.ACCOUNTID = $1::UUID
                 	),
                 	INBOUNDLEASES AS (
-                		SELECT
-                			L ->> 'siteId' AS LEASED_SITEID,
-                			U_LANDLORD.USERDATAID::TEXT AS LANDLORD_UID
-                		FROM
-                			USER_GLOBAL_SETTINGS UGS
-                            JOIN USERS U_LANDLORD ON U_LANDLORD.ACCOUNTID::TEXT = UGS.USERID::TEXT
-                			CROSS JOIN JSONB_ARRAY_ELEMENTS(COALESCE(UGS.INTERNAL_LEASED_SITES, '[]'::JSONB)) L
-                			CROSS JOIN ME
-                		WHERE
-                			UGS.USERID::TEXT != ME.MY_ACCOUNTID
-                			AND (
-                				L ->> 'tenant' = ME.USERNAME
-                				OR L ->> 'tenant' = ME.COMPANYCODE
-                				OR L ->> 'tenant' = ME.USERNAME || ' (' || ME.COMPANYCODE || ')'
-                			)
-                	),
+                    SELECT
+                      L ->> 'siteId' AS LEASED_SITEID,
+                      U_LANDLORD.USERDATAID::TEXT AS LANDLORD_UID
+                    FROM
+                      USER_GLOBAL_SETTINGS UGS
+                      -- Changed to LEFT JOIN to safely allow missing accounts without blowing up loop mechanics
+                      LEFT JOIN USERS U_LANDLORD ON U_LANDLORD.ACCOUNTID::TEXT = UGS.USERID::TEXT
+                      CROSS JOIN JSONB_ARRAY_ELEMENTS(
+                        CASE 
+                            WHEN ugs.internal_leased_sites IS NULL THEN '[]'::jsonb
+                            WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'array' 
+                                THEN ugs.internal_leased_sites::jsonb
+                            WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'string' 
+                                 AND jsonb_typeof((ugs.internal_leased_sites::jsonb #>> '{}')::jsonb) = 'array' 
+                                THEN (ugs.internal_leased_sites::jsonb #>> '{}')::jsonb
+                            ELSE '[]'::jsonb 
+                        END
+                      ) L
+                      CROSS JOIN ME
+                    WHERE
+                      UGS.USERID::TEXT != ME.MY_ACCOUNTID
+                      AND U_LANDLORD.USERDATAID IS NOT NULL
+                      AND (
+                        L ->> 'tenant' = ME.USERNAME
+                        OR L ->> 'tenant' = ME.COMPANYCODE
+                        OR L ->> 'tenant' = ME.USERNAME || ' (' || ME.COMPANYCODE || ')'
+                      )
+                  ),
                 	TARGETSTORAGES AS (
                 		-- 1. My Own Storages
                 		SELECT

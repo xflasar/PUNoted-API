@@ -54,23 +54,24 @@ async def get_materials_price_list(
                 cxb.ticker;
         """
 
+        # Fixed Join logic to correctly map Addressable IDs.
+        # Grouping by the resolved location IDs will automatically add Planetary Sites and Planetary Warehouses together.
         query_storage = """
             SELECT 
                 si.materialid,
-                COALESCE(st.stationid, pl.planetid, pl_w.planetid)::text AS location_id, 
-                COALESCE(st.name, pl.name, pl_w.name)::text AS location_name,
-                COALESCE(st.naturalid, pl.naturalid, pl_w.naturalid)::text AS location_code,
+                COALESCE(st.stationid, pl_site.planetid, pl_w.planetid)::text AS location_id, 
+                COALESCE(st.name, pl_site.name, pl_w.name)::text AS location_name,
+                COALESCE(st.naturalid, pl_site.naturalid, pl_w.naturalid)::text AS location_code,
                 SUM(si.quantity) AS available
             FROM storages s
             JOIN storage_items si ON si.storageid = s.storageid
-            JOIN materials m ON m.materialid = si.materialid
-            JOIN warehouses w ON w.warehouseid = s.addressableid
+            LEFT JOIN warehouses w ON w.storeid = s.storageid AND s.type = 'WAREHOUSE_STORE'
             LEFT JOIN stations st ON st.warehouseid = w.warehouseid
-            LEFT JOIN sites site ON site.siteid = s.addressableid
-            LEFT JOIN planets pl ON pl.planetid = site.addressplanetid
+            LEFT JOIN sites site ON site.siteid = s.addressableid AND s.type = 'STORE'
+            LEFT JOIN planets pl_site ON pl_site.planetid = site.addressplanetid
             LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
-            INNER JOIN users u ON u.userdataid = s.userid
-            WHERE u.accountid = $1
+            WHERE s.userid = (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1)
+            AND s.type IN ('STORE', 'WAREHOUSE_STORE')
             GROUP BY si.materialid, location_id, location_name, location_code;
         """
 
@@ -96,12 +97,15 @@ async def get_materials_price_list(
                 mat_id = row["materialid"]
                 if mat_id not in storage_by_material:
                     storage_by_material[mat_id] = []
-                storage_by_material[mat_id].append({
-                    "id": row["location_id"],
-                    "location_name": row["location_name"],
-                    "location_code": row["location_code"],
-                    "available": int(row["available"])
-                })
+                
+                # Prevent null buckets in edge cases where metadata is still syncing
+                if row["location_id"] is not None:
+                    storage_by_material[mat_id].append({
+                        "id": row["location_id"],
+                        "location_name": row["location_name"],
+                        "location_code": row["location_code"],
+                        "available": int(row["available"])
+                    })
 
             # Format final response
             data = []
@@ -134,44 +138,49 @@ async def get_materials_price_list(
 async def get_locations_list(request: Request, user_id: str = Depends(get_current_user_id)):
     try:
         pool = request.app.state.db.pool
-
         current_user_id_str = str(user_id)
 
         query = """
             WITH user_locations AS (
-                -- 1. Get Stations (User has Storage -> Warehouse -> Station)
+                -- 1. Get Stations from WAREHOUSE_STORE
                 SELECT
                     st.stationid AS location_id,
                     st.naturalid AS location_code,
                     st.name AS location_name,
                     'STATION' as type
-                FROM 
-                    storages s
-                INNER JOIN 
-                    users u ON u.userdataid = s.userid
-                INNER JOIN 
-                    warehouses w ON w.warehouseid = s.addressableid
-                INNER JOIN 
-                    stations st ON st.warehouseid = w.warehouseid
-                WHERE 
-                    u.accountid = $1
+                FROM storages s
+                INNER JOIN warehouses w ON w.storeid = s.storageid
+                INNER JOIN stations st ON st.warehouseid = w.warehouseid
+                WHERE s.userid = (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1)
+                AND s.type = 'WAREHOUSE_STORE'
 
                 UNION
 
-                -- 2. Get Planets (User has Site -> Planet)
+                -- 2. Get Planetary Warehouses from WAREHOUSE_STORE
                 SELECT
                     p.planetid AS location_id,
                     p.naturalid AS location_code,
                     p.name AS location_name,
                     'PLANET' as type
-                FROM 
-                    sites si
-                INNER JOIN 
-                    users u ON u.userdataid = si.userid
-                INNER JOIN 
-                    planets p ON p.planetid = si.addressplanetid
-                WHERE 
-                    u.accountid = $1
+                FROM storages s
+                INNER JOIN warehouses w ON w.storeid = s.storageid
+                INNER JOIN planets p ON p.planetid = w.addressplanet
+                WHERE s.userid = (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1)
+                AND s.type = 'WAREHOUSE_STORE'
+
+                UNION
+
+                -- 3. Get Planetary Sites from STORE
+                SELECT
+                    p.planetid AS location_id,
+                    p.naturalid AS location_code,
+                    p.name AS location_name,
+                    'PLANET' as type
+                FROM storages s
+                INNER JOIN sites site ON site.siteid = s.addressableid
+                INNER JOIN planets p ON p.planetid = site.addressplanetid
+                WHERE s.userid = (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1)
+                AND s.type = 'STORE'
             )
             SELECT DISTINCT
                 location_id,
@@ -180,6 +189,7 @@ async def get_locations_list(request: Request, user_id: str = Depends(get_curren
                 type
             FROM 
                 user_locations 
+            WHERE location_id IS NOT NULL
             ORDER BY 
                 location_name ASC;
         """

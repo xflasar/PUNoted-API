@@ -812,7 +812,7 @@ async def get_user_vendor_stores(request: Request, user_id: str = Depends(get_cu
                 FROM storages s
                 JOIN storage_items si ON si.storageid = s.storageid
                 JOIN materials m ON m.materialid = si.materialid
-                JOIN warehouses w ON w.warehouseid = s.addressableid
+                JOIN warehouses w ON w.storeid = s.storageid
                 LEFT JOIN stations st ON st.warehouseid = w.warehouseid
                 LEFT JOIN sites site ON site.siteid = s.addressableid
                 LEFT JOIN planets pl ON pl.planetid = site.addressplanetid
@@ -933,7 +933,6 @@ async def get_user_vendor_stores(request: Request, user_id: str = Depends(get_cu
         logger.error(f"Failed user vendor fetch: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"success": False, "message": "Server error."})
 
-
 @data_router.get("/vendor_stores")
 async def get_vendor_stores(request: Request):
     try:
@@ -943,41 +942,41 @@ async def get_vendor_stores(request: Request):
             # Step 1: Fetch vendors, orders, raw JSON locations, and prices
             vendors_orders_query = """
                 SELECT
-                	UV.VENDORID,
-                	UV.COMPANYCODE,
-                	UV.COMPANYNAME,
-                	UV.CORPNAME,
-                	UV.GAMENAME,
-                	UV.ISACTIVE,
-                	UV.CX,
-                	UVO.ORDERID,
-                	UVO.MATERIALTICKER,
-                	UVO.ORDERTYPE,
-                	UVO.FIXEDPRICE,
-                	UVO.RESERVED,
-                	COALESCE(UVO.LOCATION, '[]'::JSONB) AS LOCATIONS,
-                	MP.PRICE AS CORPPRICE,
-                	CASE
-                		WHEN UVO.ORDERTYPE = 'buy' THEN CXB.ASKPRICE
-                		ELSE CXB.BIDPRICE
-                	END AS CXPRICE,
+                    UV.VENDORID,
+                    UV.COMPANYCODE,
+                    UV.COMPANYNAME,
+                    UV.CORPNAME,
+                    UV.GAMENAME,
+                    UV.ISACTIVE,
+                    UV.CX,
+                    UVO.ORDERID,
+                    UVO.MATERIALTICKER,
+                    UVO.ORDERTYPE,
+                    UVO.FIXEDPRICE,
+                    UVO.RESERVED,
+                    COALESCE(UVO.LOCATION, '[]'::JSONB) AS LOCATIONS,
+                    MP.PRICE AS CORPPRICE,
+                    CASE
+                        WHEN UVO.ORDERTYPE = 'buy' THEN CXB.ASKPRICE
+                        ELSE CXB.BIDPRICE
+                    END AS CXPRICE,
 
-                	-- Calculate activity label (e.g., '15m', '3h', '5d')
-                	CASE
-                		WHEN EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) < 3600 THEN
-                			FLOOR(EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) / 60)::text || 'm'
-                		WHEN EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) < 86400 THEN
-                			FLOOR(EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) / 3600)::text || 'h'
-                		ELSE
-                			FLOOR(EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) / 86400)::text || 'd'
-                	END AS activity_label
+                    -- Calculate activity label (e.g., '15m', '3h', '5d')
+                    CASE
+                        WHEN EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) < 3600 THEN
+                            FLOOR(EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) / 60)::text || 'm'
+                        WHEN EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) < 86400 THEN
+                            FLOOR(EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) / 3600)::text || 'h'
+                        ELSE
+                            FLOOR(EXTRACT(EPOCH FROM NOW() - U.xata_updatedat) / 86400)::text || 'd'
+                    END AS activity_label
 
                 FROM
-                	USER_VENDORS AS UV
-                	INNER JOIN USER_VENDOR_ORDERS AS UVO ON UVO.VENDORID = UV.VENDORID
-                	LEFT JOIN MATERIAL_PRICES AS MP ON MP.TICKER = UVO.MATERIALTICKER
-                	LEFT JOIN CX_BROKERS AS CXB ON CXB.TICKER = (UVO.MATERIALTICKER || '.' || UV.CX)
-                	INNER JOIN USERS AS U ON U.ACCOUNTID::text = UV.USERID
+                    USER_VENDORS AS UV
+                    INNER JOIN USER_VENDOR_ORDERS AS UVO ON UVO.VENDORID = UV.VENDORID
+                    LEFT JOIN MATERIAL_PRICES AS MP ON MP.TICKER = UVO.MATERIALTICKER
+                    LEFT JOIN CX_BROKERS AS CXB ON CXB.TICKER = (UVO.MATERIALTICKER || '.' || UV.CX)
+                    INNER JOIN USERS AS U ON U.ACCOUNTID::text = UV.USERID
 
                 -- Only select users who have been active within the last 7 days
                 WHERE U.xata_updatedat >= NOW() - INTERVAL '7 days';
@@ -1041,28 +1040,38 @@ async def get_vendor_stores(request: Request):
                 # Create a VALUES list for efficient filtering
                 values_str = ", ".join([f"('{g}', '{t}')" for g, t in set(gamename_ticker_pairs)])
 
-                # Fetches stock for ALL relevant locations
+                # Fetches stock for ALL relevant locations. 
+                # FIXED: Uses ItemSums CTE to prevent duplication, strictly filters by storage type, and correctly resolves location mapping.
                 inventory_query = f"""
+                    WITH ItemSums AS (
+                        SELECT storageid, materialid, SUM(quantity) as total_qty
+                        FROM storage_items
+                        GROUP BY storageid, materialid
+                    )
                     SELECT 
                         ud.displayname, 
                         mt.ticker, 
-                        COALESCE(st.stationid, pl.planetid)::text AS location_id,
-                        SUM(si.quantity) as quantity
+                        COALESCE(st.stationid, pl_site.planetid, pl_w.planetid)::text AS location_id,
+                        SUM(si.total_qty) as quantity
                     FROM storages s
                     JOIN users_data ud ON ud.userid = s.userid
-                    JOIN storage_items si ON si.storageid = s.storageid
+                    JOIN ItemSums si ON si.storageid = s.storageid
                     JOIN materials mt ON mt.materialid = si.materialid
-                    -- Resolve Address (Station OR Planet)
-                    LEFT JOIN warehouses w ON w.warehouseid = s.addressableid
+                    
+                    -- Resolve Address strictly based on Storage Type
+                    LEFT JOIN warehouses w ON w.storeid::text = s.storageid::text AND s.type = 'WAREHOUSE_STORE'
                     LEFT JOIN stations st ON st.warehouseid = w.warehouseid
-                    LEFT JOIN sites site ON site.siteid = s.addressableid
-                    LEFT JOIN planets pl ON pl.planetid = site.addressplanetid
+                    LEFT JOIN sites site ON site.siteid = s.addressableid AND s.type = 'STORE'
+                    LEFT JOIN planets pl_site ON pl_site.planetid = site.addressplanetid
+                    LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
+                    
                     -- Filter by Vendor Owners and Tickers
                     JOIN (VALUES {values_str}) AS t(displayname, ticker) 
                       ON ud.displayname = t.displayname AND mt.ticker = t.ticker
-                    WHERE 
-                        (st.stationid IS NOT NULL OR pl.planetid IS NOT NULL)
-                    GROUP BY 1, 2, 3;
+                      
+                    WHERE s.type IN ('STORE', 'WAREHOUSE_STORE')
+                    GROUP BY 1, 2, 3
+                    HAVING COALESCE(st.stationid, pl_site.planetid, pl_w.planetid) IS NOT NULL;
                 """
                 inv_rows = await con.fetch(inventory_query)
 
@@ -1109,11 +1118,9 @@ async def get_vendor_stores(request: Request):
                     loc_available = 0
                     if r["ordertype"] == "buy":
                         # Buy Order (Demand): Max(0, Target - Stock)
-                        # Example: Wants 100, has 20 -> Demand is 80
                         loc_available = max(0, target_amount - storage_qty)
                     else:
                         # Sell Order (Supply): Max(0, Stock - Reserve)
-                        # Example: Has 120, Reserves 100 -> Supply is 20
                         loc_available = max(0, storage_qty - target_amount)
 
                     total_available += loc_available

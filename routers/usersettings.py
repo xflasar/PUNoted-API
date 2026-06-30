@@ -182,8 +182,8 @@ async def get_global_settings(request: Request, user_id: str = Depends(get_curre
                 for m in matched_rows:
                     rich_data = {
                         "username": m["username"],
-                        "companyCode": m["company_code"],
-                        "isRegistered": m["is_registered"]
+                        "companycode": m["company_code"],
+                        "isregistered": m["is_registered"]
                     }
 
                     if m["username"]: 

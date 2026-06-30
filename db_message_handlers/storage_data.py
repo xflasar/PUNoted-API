@@ -12,9 +12,6 @@ from repositories.storage import fetch_user_storages_by_id
 logger = logging.getLogger(__name__)
 
 
-# TODO: This handler is currently working for storage updates but if we receive partial update it will break the data integrity and delete all storages and insert only the one we have received This happens on Ship construction finished event.
-
-
 async def handle_storage_removed_message(db: Database, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     start_time = time.perf_counter()
     logger.debug("Starting processing storage removed data.")
@@ -53,16 +50,12 @@ async def handle_storage_removed_message(db: Database, raw_payload: Dict[str, An
                 )
 
                 # STEP B: Delete Warehouses
-                # We do this BEFORE deleting storages so we can still look up the link.
+                # Target the exact storage container mapping via storeid instead of the global warehouseid location
                 await con.execute(
                     """
                     DELETE FROM warehouses 
                     WHERE userid = $2
-                      AND warehouseid IN (
-                          SELECT addressableid 
-                          FROM storages 
-                          WHERE storageid = ANY($1::text[])
-                      );
+                      AND storeid = ANY($1::text[]);
                     """,
                     storage_ids,
                     userid,
@@ -162,7 +155,17 @@ async def handle_storage_data_message(db, raw_payload: Dict[str, Any]) -> Dict[s
                     WITH OutboundLeases AS (
                         SELECT l->>'siteId' as siteid, l->>'tenant' as tenant_str
                         FROM user_global_settings ugs
-                        CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
+                        CROSS JOIN jsonb_array_elements(
+                            CASE 
+                                WHEN ugs.internal_leased_sites IS NULL THEN '[]'::jsonb
+                                WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'array' 
+                                    THEN ugs.internal_leased_sites::jsonb
+                                WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'string' 
+                                     AND jsonb_typeof((ugs.internal_leased_sites::jsonb #>> '{}')::jsonb) = 'array' 
+                                    THEN (ugs.internal_leased_sites::jsonb #>> '{}')::jsonb
+                                ELSE '[]'::jsonb 
+                            END
+                        ) l
                         WHERE ugs.userid::text = $1::text
                     ),
                     Tenants AS (

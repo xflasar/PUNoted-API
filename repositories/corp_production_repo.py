@@ -3,7 +3,8 @@ from typing import Any, List
 # --- QUERY 1: Fetch Flat Orders ---
 SQL_FETCH_CORP_FLAT_ORDERS = """
 WITH 
-TargetUser AS (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1),
+TargetUser AS (SELECT userdataid FROM users WHERE accountid = $1::uuid LIMIT 1),
+TargetUserVars AS (SELECT $1::uuid as uid),
 TargetCorp AS (
     SELECT cs.corporationid 
     FROM corporation_shareholders cs
@@ -28,22 +29,32 @@ CorpSites AS (
     JOIN planets p ON p.planetid = s.addressplanetid
     LEFT JOIN user_global_settings ugs ON ugs.userid::uuid = u.accountid
     WHERE u.xata_updatedat > NOW() - INTERVAL '7 day'
-      
-      -- 1. Check Excluded Sites (FIXME: Seems to not work)
-      -- We use COALESCE to handle NULLs safely (treating NULL as an empty list '[]')
-      AND NOT EXISTS (
-          SELECT 1 
-          FROM jsonb_array_elements(COALESCE(ugs.internal_excluded_sites, '[]'::jsonb)) as ex 
-          WHERE ex->>'siteId' = s.siteid
-      )
-      
-      -- 2. Check Leased Sites
-      -- Only checked if the row passed the first barrier
-      AND NOT EXISTS (
-          SELECT 1 
-          FROM jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) as ls 
-          WHERE ls->>'siteId' = s.siteid
-      )
+
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM jsonb_array_elements(
+            CASE 
+                WHEN jsonb_typeof(ugs.internal_excluded_sites) = 'array' THEN ugs.internal_excluded_sites 
+                ELSE '[]'::jsonb 
+            END
+        ) as ex 
+        WHERE ex->>'siteId' = s.siteid
+    )
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM jsonb_array_elements(
+            CASE 
+                WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'array' 
+                    THEN ugs.internal_leased_sites::jsonb
+                WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'string' 
+                     AND jsonb_typeof((ugs.internal_leased_sites::jsonb #>> '{}')::jsonb) = 'array' 
+                    THEN (ugs.internal_leased_sites::jsonb #>> '{}')::jsonb
+                ELSE '[]'::jsonb 
+            END
+        ) as ls 
+        WHERE ls->>'siteId' = s.siteid
+        AND (ls->>'show_in_corp')::boolean IS NOT TRUE 
+    )
 )
 SELECT 
     cs.siteid,
