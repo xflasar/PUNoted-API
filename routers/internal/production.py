@@ -41,34 +41,61 @@ MyOwnedSites AS (
     JOIN users u ON u.userdataid = s.userid
     WHERE u.accountid = $1::uuid
 ),
-MyOutboundLeases AS (
-    SELECT l->>'siteId' as siteid, l->>'tenant' as tenant, 'Type' as lease_type
+AllLeaseElements AS (
+    SELECT 
+        ugs.userid::uuid as setting_owner_account_id,
+        l->>'siteId' as siteid, 
+        l->>'tenant' as tenant
     FROM user_global_settings ugs
-    CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
-    WHERE ugs.userid::text = $1::text
+    CROSS JOIN jsonb_array_elements(
+        CASE 
+            WHEN ugs.internal_leased_sites IS NULL THEN '[]'::jsonb
+            WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'array' 
+                THEN ugs.internal_leased_sites::jsonb
+            WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'string' 
+                 AND jsonb_typeof((ugs.internal_leased_sites::jsonb #>> '{}')::jsonb) = 'array' 
+                THEN (ugs.internal_leased_sites::jsonb #>> '{}')::jsonb
+                
+            ELSE '[]'::jsonb 
+        END
+    ) l
+),
+MyOutboundLeases AS (
+    SELECT ale.siteid, ale.tenant, 'Outbound' as lease_type
+    FROM AllLeaseElements ale
+    JOIN MyOwnedSites os ON ale.siteid = os.siteid
+    CROSS JOIN Me
+    WHERE ale.setting_owner_account_id = $1::uuid
+      AND ale.tenant IS NOT NULL
+      AND ale.tenant != Me.username
+      AND ale.tenant != Me.companycode
+      AND ale.tenant != Me.username || ' (' || Me.companycode || ')'
 ),
 MyInboundLeases AS (
-    SELECT l->>'siteId' as siteid, 'Type' as lease_type, 
+    SELECT ale.siteid, 
            (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
             FROM users u2 
             LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
             LEFT JOIN company_data cd2 ON cd2.userdataid = u2.userdataid 
-            WHERE u2.accountid::text = ugs.userid::text) as landlord
-    FROM user_global_settings ugs
-    CROSS JOIN jsonb_array_elements(COALESCE(ugs.internal_leased_sites, '[]'::jsonb)) l
+            WHERE u2.accountid = ale.setting_owner_account_id) as landlord,
+           'Inbound' as lease_type
+    FROM AllLeaseElements ale
     CROSS JOIN Me
-    WHERE ugs.userid::text != $1::text
+    LEFT JOIN MyOwnedSites os ON ale.siteid = os.siteid
+    WHERE ale.setting_owner_account_id != $1::uuid
+      AND os.siteid IS NULL
       AND (
-          l->>'tenant' = Me.username 
-          OR l->>'tenant' = Me.companycode 
-          OR l->>'tenant' = Me.username || ' (' || Me.companycode || ')'
+          ale.tenant = Me.username 
+          OR ale.tenant = Me.companycode 
+          OR ale.tenant = Me.username || ' (' || Me.companycode || ')'
       )
 )
 SELECT 
     o.siteid,
     TRUE as am_owner,
     outbound.tenant as leased_to,
-    NULL as leased_from
+    NULL as leased_from,
+    COALESCE(outbound.lease_type, 'owned') as lease_type
 FROM MyOwnedSites o
 LEFT JOIN MyOutboundLeases outbound ON outbound.siteid = o.siteid
 
@@ -78,7 +105,8 @@ SELECT
     inbound.siteid,
     FALSE as am_owner,
     NULL as leased_to,
-    inbound.landlord as leased_from
+    inbound.landlord as leased_from,
+    inbound.lease_type as lease_type
 FROM MyInboundLeases inbound;
 """
 
@@ -241,18 +269,21 @@ async def get_user_production(
                 
                 is_leased = False
                 tenant_str = None
+                lease_type = None
                 
                 if am_owner and leased_to:
                     is_leased = True
                     tenant_str = leased_to
+                    lease_type = "Outbound"
                 elif not am_owner and leased_from:
                     is_leased = True
-                    tenant_str = f"Owner: {leased_from}"
-                    
+                    tenant_str = leased_from
+                    lease_type = "Inbound"
                 lease_context[sid] = {
                     "type": row.get("lease_type"),
                     "isLeased": is_leased,
-                    "tenant": tenant_str
+                    "tenant": tenant_str,
+                    "lease_type": lease_type,
                 }
 
             # --- STEP 1: SITES ---
@@ -268,7 +299,7 @@ async def get_user_production(
                 if not isinstance(p_data, dict):
                     p_data = {}
 
-                context = lease_context.get(sid, {"isLeased": False, "tenant": None})
+                context = lease_context.get(sid, {"type": None, "isLeased": False, "tenant": None})
 
                 results[sid] = {
                     "siteid": sid,
@@ -285,6 +316,7 @@ async def get_user_production(
                     "platform_repair_list": [],
                     "production_lines": [],
                     "site_daily_flow": {},
+                    "type": context["lease_type"],
                     "isLeased": context["isLeased"],
                     "tenant": context["tenant"],
                 }
@@ -438,7 +470,21 @@ async def get_user_production(
                 site_data["production_lines"] = hydrated_lines
                 site_data["site_daily_flow"] = daily_flow
 
-            return {"success": True, "data": results}
+            payload = {
+                "owned": [],
+                "inbound": [],
+                "outbound": []
+            }
+
+            for site in results.values():
+                if site.get("type") == "Inbound":
+                    payload["inbound"].append(site)
+                elif site.get("type") == "Outbound":
+                    payload["outbound"].append(site)
+                else:
+                    payload["owned"].append(site)
+
+            return {"success": True, "data": payload}
 
     except Exception as e:
         logger.error(f"Error fetching production data: {e}", exc_info=True)
