@@ -54,17 +54,18 @@ async def get_materials_price_list(
                 cxb.ticker;
         """
 
-        # Fixed Join logic to correctly map Addressable IDs.
         # Grouping by the resolved location IDs will automatically add Planetary Sites and Planetary Warehouses together.
         query_storage = """
             SELECT 
                 si.materialid,
+                m.ticker,
                 COALESCE(st.stationid, pl_site.planetid, pl_w.planetid)::text AS location_id, 
                 COALESCE(st.name, pl_site.name, pl_w.name)::text AS location_name,
                 COALESCE(st.naturalid, pl_site.naturalid, pl_w.naturalid)::text AS location_code,
-                SUM(si.quantity) AS available
+                COALESCE(SUM(si.quantity), 0) AS available
             FROM storages s
             JOIN storage_items si ON si.storageid = s.storageid
+            LEFT JOIN materials m ON m.materialid = si.materialid
             LEFT JOIN warehouses w ON w.storeid = s.storageid AND s.type = 'WAREHOUSE_STORE'
             LEFT JOIN stations st ON st.warehouseid = w.warehouseid
             LEFT JOIN sites site ON site.siteid = s.addressableid AND s.type = 'STORE'
@@ -72,7 +73,13 @@ async def get_materials_price_list(
             LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
             WHERE s.userid = (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1)
             AND s.type IN ('STORE', 'WAREHOUSE_STORE')
-            GROUP BY si.materialid, location_id, location_name, location_code;
+            AND si.type = 'INVENTORY' 
+            GROUP BY 
+                si.materialid, 
+                m.ticker, 
+                location_id, 
+                location_name, 
+                location_code;
         """
 
         search_pattern = f"%.{cx}"
@@ -98,13 +105,14 @@ async def get_materials_price_list(
                 if mat_id not in storage_by_material:
                     storage_by_material[mat_id] = []
                 
-                # Prevent null buckets in edge cases where metadata is still syncing
                 if row["location_id"] is not None:
+                    available_qty = int(row["available"]) if row["available"] is not None else 0
+
                     storage_by_material[mat_id].append({
                         "id": row["location_id"],
                         "location_name": row["location_name"],
                         "location_code": row["location_code"],
-                        "available": int(row["available"])
+                        "available": available_qty
                     })
 
             # Format final response

@@ -47,10 +47,10 @@ def custom_openapi(app: FastAPI):
 
 async def api_v1_docs(request: Request):
     """
-    Serves Swagger UI with a RELATIVE path to the schema.
+    Serves Swagger UI with an absolute path to the schema.
     """
     return get_swagger_ui_html(
-        openapi_url="../openapi.json",
+        openapi_url="/openapi.json",
         title="PUNoted API - Swagger UI",
         swagger_js_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js",
         swagger_css_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css",
