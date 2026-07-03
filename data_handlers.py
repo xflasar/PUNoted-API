@@ -808,23 +808,36 @@ async def get_user_vendor_stores(request: Request, user_id: str = Depends(get_cu
             # Step 2: Fetch Inventory (Optimized)
             inventory_records = await conn.fetch(
                 """
-                SELECT m.ticker, COALESCE(st.stationid, pl.planetid, pl_w.planetid)::text AS location_id, SUM(si.quantity) AS quantity
+                SELECT 
+                    si.materialid,
+                    m.ticker,
+                    COALESCE(st.stationid, pl_site.planetid, pl_w.planetid)::text AS location_id, 
+                    COALESCE(st.name, pl_site.name, pl_w.name)::text AS location_name,
+                    COALESCE(st.naturalid, pl_site.naturalid, pl_w.naturalid)::text AS location_code,
+                    COALESCE(SUM(si.quantity), 0) AS available
                 FROM storages s
                 JOIN storage_items si ON si.storageid = s.storageid
-                JOIN materials m ON m.materialid = si.materialid
-                JOIN warehouses w ON w.storeid = s.storageid
+                LEFT JOIN materials m ON m.materialid = si.materialid
+                LEFT JOIN warehouses w ON w.storeid = s.storageid AND s.type = 'WAREHOUSE_STORE'
                 LEFT JOIN stations st ON st.warehouseid = w.warehouseid
-                LEFT JOIN sites site ON site.siteid = s.addressableid
-                LEFT JOIN planets pl ON pl.planetid = site.addressplanetid
+                LEFT JOIN sites site ON site.siteid = s.addressableid AND s.type = 'STORE'
+                LEFT JOIN planets pl_site ON pl_site.planetid = site.addressplanetid
                 LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
-                INNER JOIN users u ON u.userdataid = s.userid
-                WHERE u.accountid = $1
-                GROUP BY m.ticker, location_id
+                WHERE s.userid = (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1)
+                AND s.type IN ('STORE', 'WAREHOUSE_STORE')
+                -- ADD THIS LINE TO FILTER OUT SHIPMENTS
+                AND si.type = 'INVENTORY' 
+                GROUP BY 
+                    si.materialid, 
+                    m.ticker, 
+                    location_id, 
+                    location_name, 
+                    location_code;
                 """,
                 user_id,
             )
             inventory_map = {
-                (r["ticker"], r["location_id"]): float(r["quantity"]) for r in inventory_records if r["location_id"]
+                (r["ticker"], r["location_id"]): float(r["available"]) for r in inventory_records if r["location_id"]
             }
 
             # Step 3: Fetch Orders
