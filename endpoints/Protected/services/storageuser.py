@@ -73,8 +73,8 @@ async def fetch_storages_as_json(db, usernames_list: list, location_filter: Opti
                 LEFT JOIN planets p ON st.addressplanetid = p.planetid
                 
                 -- Path 2 & 3: Warehouse (General)
-                LEFT JOIN warehouses w ON s.addressableid = w.warehouseid
-                LEFT JOIN stations stn ON stn.warehouseid = w.warehouseid
+                LEFT JOIN warehouses w ON s.storageid::text = w.storeid::text
+                LEFT JOIN stations stn ON stn.warehouseid = s.addressableid
                 
                 -- Path 3: Warehouse -> Site -> Planet (Warehouses on Planets)
                 LEFT JOIN warehouses w_site_p ON w_site_p.warehouseid = s.addressableid
