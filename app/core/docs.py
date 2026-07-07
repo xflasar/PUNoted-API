@@ -9,7 +9,15 @@ def custom_openapi(app: FastAPI):
     if app.openapi_schema:
         return app.openapi_schema
 
-    v1_routes = [route for route in app.routes if getattr(route, "path", "").startswith("/v1")]
+    root_path = (app.root_path or "").rstrip("/")
+    v1_routes = []
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        # Strip root_path prefix if it exists to find the normalized path
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path):]
+        if path.startswith("/v1"):
+            v1_routes.append(route)
 
     schema = get_openapi(
         title=app.title,
@@ -22,7 +30,6 @@ def custom_openapi(app: FastAPI):
     schema["openapi"] = "3.0.2"
 
     # 2. Define Servers so "Try it out" works
-    # These paths will be prepended to the API calls
     schema["servers"] = [
         {"url": "/", "description": "Production Proxy"},
         {"url": "/dev/", "description": "Development Proxy"},
@@ -49,8 +56,9 @@ async def api_v1_docs(request: Request):
     """
     Serves Swagger UI with an absolute path to the schema.
     """
+    root_path = request.scope.get("root_path", "").rstrip("/")
     return get_swagger_ui_html(
-        openapi_url="/openapi.json",
+        openapi_url=f"{root_path}/v1/openapi.json",
         title="PUNoted API - Swagger UI",
         swagger_js_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js",
         swagger_css_url="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css",

@@ -371,11 +371,10 @@ app.include_router(company_public_external_router, prefix="/v1/company", tags=["
 # --- Swagger / Docs Setup ---
 # 1. Register the custom docs endpoint
 app.add_api_route("/v1/docs", api_v1_docs, include_in_schema=False)
-#app.add_api_route("/api/v1/docs", api_v1_docs, include_in_schema=False)
 # 2. Register the schema generator
 app.openapi = lambda: custom_openapi(app)
 
-@app.get("/openapi.json", include_in_schema=False)
+@app.get("/v1/openapi.json", include_in_schema=False)
 async def get_open_api_endpoint():
     return JSONResponse(app.openapi())
 
