@@ -11,6 +11,7 @@ from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Public.services.corp_service import generate_json_data
 from services.internal.corporation_service import build_corp_production_flat_response
+from endpoints.Protected.schemas.corporation import CorpProductionOverviewResponse
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ corporation_router = APIRouter()
 @corporation_router.get(
     "/production",
     description="Get flat corporation production overview. Ideal for tabular or CSV data.",
+    responses={200: {"model": CorpProductionOverviewResponse}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def corporation_production_overview(

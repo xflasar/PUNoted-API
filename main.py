@@ -16,7 +16,6 @@ from slowapi.errors import RateLimitExceeded
 from starlette.types import ASGIApp, Receive, Scope, Send
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-from app.core.docs import api_v1_docs, custom_openapi
 from app.core.event_manager import EventManager
 from app.core.limiter import limiter, rate_limit_exceeded_handler
 from app.routers.buildings import buildings_router as internal_buildings_router
@@ -95,6 +94,7 @@ async def lifespan(app: FastAPI):
     # 1. Database
     await db.create_pool()
     app.state.db = db
+    v1_app.state.db = db  # Propagate to sub-app
     print("Database connected.")
 
     # 2. Redis Cache
@@ -102,19 +102,9 @@ async def lifespan(app: FastAPI):
     FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
     print("Redis initialized.")
 
-    # TEMPORARY SCRAPING SHIP SHEET AND CORP PRICE SHEET
-    #await scrape_and_save_data(db.pool)
-    #await scrape_prices_and_save_data(db.pool)
-
     event_manager = EventManager(db.pool)
     app.state.event_manager = event_manager
-
-
-    # 3. Scheduler
-    #scheduler.add_job(scrape_and_save_data, "interval", minutes=30, args=[db.pool])
-    #scheduler.add_job(scrape_prices_and_save_data, "interval", minutes=30, args=[db.pool])
-    #scheduler.start()
-    #print("Scheduler started.")
+    v1_app.state.event_manager = event_manager  # Propagate to sub-app
 
     print("System initialized successfully.")
 
@@ -123,22 +113,38 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
     if hasattr(db, 'pool') and db.pool:
         await db.pool.close()
-    #scheduler.shutdown()
 
 # --- App Initialization ---
+import os
+
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+
+# Main application (internal)
 app = FastAPI(
+    title="PUNoted API (Internal)",
+    description="Internal endpoints and main frontend API.",
+    version="1.0.0",
+    lifespan=lifespan,
+    openapi_url="/openapi.json" if DEBUG_MODE else None,
+    docs_url="/docs" if DEBUG_MODE else None,
+    redoc_url=None,
+)
+
+# V1 Sub-application for public external API
+v1_app = FastAPI(
     title="PUNoted API (v1)",
     description="Public API for PrUn data.",
     version="1.0.0",
-    docs_url=None,  # Disabled default docs to use custom /api/v1/docs
+    openapi_url="/openapi.json",
+    docs_url="/docs",
     redoc_url=None,
-    lifespan=lifespan,
-    root_url="/",
 )
 
 app.state.limiter = limiter
+v1_app.state.limiter = limiter
 
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+v1_app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 Instrumentator().instrument(app).expose(app)
 
@@ -279,7 +285,7 @@ app.add_middleware(SecurityLoggerMiddleware)
 # Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5174", "http://127.0.0.1:5174", "https://punoted.net"],
+    allow_origins=["http://localhost:5174", "http://127.0.0.1:5174", "https://punoted.net", "*"],
     allow_origin_regex=r"(chrome|moz)-extension://.*", 
     allow_credentials=True,
     allow_methods=["*"],
@@ -337,46 +343,72 @@ app.include_router(users_router, prefix="/internal/users", tags=["Users"])
 app.include_router(ships_router, prefix="/internal/ships", tags=["Ships"])
 app.include_router(sites_router, prefix="/internal/sites", tags=["Sites"])
 
-# Protected External API v1
-app.include_router(api_user_router, prefix="/v1/user", tags=["User Data"])
-app.include_router(flights_router, prefix="/public/flights", tags=["flights"])
-app.include_router(api_cxuser_router, prefix="/v1/cxuser", tags=["CX User Data"])
-app.include_router(api_storageuser_router, prefix="/v1/storages", tags=["Storage User Data"])
-app.include_router(api_usercontracts_external_router, prefix="/v1/contracts", tags=["Contracts Data"])
-app.include_router(api_userflights_external_router, prefix="/v1/flights", tags=["Flights Data"])
-app.include_router(
+# Protected External API v1 (Registered to v1_app sub-app)
+v1_app.include_router(api_user_router, prefix="/user", tags=["User Data"])
+v1_app.include_router(api_cxuser_router, prefix="/cxuser", tags=["CX User Data"])
+v1_app.include_router(api_storageuser_router, prefix="/storages", tags=["Storage User Data"])
+v1_app.include_router(api_usercontracts_external_router, prefix="/contracts", tags=["Contracts Data"])
+v1_app.include_router(api_userflights_external_router, prefix="/flights", tags=["Flights Data"])
+v1_app.include_router(
     api_useraccounting_external_router,
-    prefix="/v1/accounting",
+    prefix="/accounting",
     tags=["Accounting Data"],
 )
-app.include_router(api_usersites_external_router, prefix="/v1/sites", tags=["Sites Data"])
-app.include_router(api_userships_external_router, prefix="/v1/ships", tags=["Ships Data"])
-app.include_router(
+v1_app.include_router(api_usersites_external_router, prefix="/sites", tags=["Sites Data"])
+v1_app.include_router(api_userships_external_router, prefix="/ships", tags=["Ships Data"])
+v1_app.include_router(
     api_userproduction_external_router,
-    prefix="/v1/production",
+    prefix="/production",
     tags=["Production Data"],
 )
-app.include_router(api_userworkforce_external_router, prefix="/v1/workforce", tags=["Workforce Data"])
-app.include_router(corporation_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
+v1_app.include_router(api_userworkforce_external_router, prefix="/workforce", tags=["Workforce Data"])
+v1_app.include_router(corporation_external_router, prefix="/corporation", tags=["Corporation Data"])
 
-# -- Public External API v1
-app.include_router(api_vendors_external_router, prefix="/v1/vendors", tags=["Vendors Data"])
-app.include_router(api_cx_external_router, prefix="/v1/cx", tags=["CX Data"])
-app.include_router(api_materials_external_router, prefix="/v1/materials", tags=["Materials Data"])
-app.include_router(api_planets_external_router, prefix="/v1/planets", tags=["Planets Data"])
-app.include_router(corporation_public_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
-app.include_router(buildings_public_external_router, prefix="/v1/buildings", tags=["Buildings Data"])
-app.include_router(company_public_external_router, prefix="/v1/company", tags=["Company Data"])
+# -- Public External API v1 (Registered to v1_app sub-app)
+v1_app.include_router(api_vendors_external_router, prefix="/vendors", tags=["Vendors Data"])
+v1_app.include_router(api_cx_external_router, prefix="/cx", tags=["CX Data"])
+v1_app.include_router(api_materials_external_router, prefix="/materials", tags=["Materials Data"])
+v1_app.include_router(api_planets_external_router, prefix="/planets", tags=["Planets Data"])
+v1_app.include_router(corporation_public_external_router, prefix="/corporation", tags=["Corporation Data"])
+v1_app.include_router(buildings_public_external_router, prefix="/buildings", tags=["Buildings Data"])
+v1_app.include_router(company_public_external_router, prefix="/company", tags=["Company Data"])
 
-# --- Swagger / Docs Setup ---
-# 1. Register the custom docs endpoint
-app.add_api_route("/v1/docs", api_v1_docs, include_in_schema=False)
-# 2. Register the schema generator
-app.openapi = lambda: custom_openapi(app)
+# Flights router is registered under /public/flights to the main app
+app.include_router(flights_router, prefix="/public/flights", tags=["flights"])
 
-@app.get("/v1/openapi.json", include_in_schema=False)
-async def get_open_api_endpoint():
-    return JSONResponse(app.openapi())
+# If in development mode, register them to the main app as well with "/v1" prefixes,
+# so that the main app's /docs page shows ALL endpoints (both internal and public).
+if DEBUG_MODE:
+    app.include_router(api_user_router, prefix="/v1/user", tags=["User Data"])
+    app.include_router(api_cxuser_router, prefix="/v1/cxuser", tags=["CX User Data"])
+    app.include_router(api_storageuser_router, prefix="/v1/storages", tags=["Storage User Data"])
+    app.include_router(api_usercontracts_external_router, prefix="/v1/contracts", tags=["Contracts Data"])
+    app.include_router(api_userflights_external_router, prefix="/v1/flights", tags=["Flights Data"])
+    app.include_router(
+        api_useraccounting_external_router,
+        prefix="/v1/accounting",
+        tags=["Accounting Data"],
+    )
+    app.include_router(api_usersites_external_router, prefix="/v1/sites", tags=["Sites Data"])
+    app.include_router(api_userships_external_router, prefix="/v1/ships", tags=["Ships Data"])
+    app.include_router(
+        api_userproduction_external_router,
+        prefix="/v1/production",
+        tags=["Production Data"],
+    )
+    app.include_router(api_userworkforce_external_router, prefix="/v1/workforce", tags=["Workforce Data"])
+    app.include_router(corporation_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
+    
+    app.include_router(api_vendors_external_router, prefix="/v1/vendors", tags=["Vendors Data"])
+    app.include_router(api_cx_external_router, prefix="/v1/cx", tags=["CX Data"])
+    app.include_router(api_materials_external_router, prefix="/v1/materials", tags=["Materials Data"])
+    app.include_router(api_planets_external_router, prefix="/v1/planets", tags=["Planets Data"])
+    app.include_router(corporation_public_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
+    app.include_router(buildings_public_external_router, prefix="/v1/buildings", tags=["Buildings Data"])
+    app.include_router(company_public_external_router, prefix="/v1/company", tags=["Company Data"])
+
+# Mount the v1 sub-app under /v1 prefix
+app.mount("/v1", v1_app)
 
 
 @app.get("/")

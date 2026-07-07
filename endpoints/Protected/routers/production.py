@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.production_repo import search_production_lines
+from endpoints.Protected.schemas.production import UserProduction, ProductionLine, BurnRateMaterial
+from typing import List, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,7 @@ class ORJSONResponse(DefaultJSONResponse):
     "/",
     summary="Search Production Lines",
     description="Get production lines list. If no usernames provided, returns your own data.",
+    responses={200: {"model": List[UserProduction]}}
 )
 @limiter.limit("30/minute", key_func=get_auth_key)
 async def search_production(
@@ -52,7 +55,8 @@ async def search_production(
     "/user",
     summary="Get Single User Production",
     description="Returns a flat list of production lines for a specific user.",
-    response_class=ORJSONResponse
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[ProductionLine]}}
 )
 @limiter.limit("30/minute", key_func=get_auth_key)
 async def search_production_user(
@@ -84,7 +88,9 @@ async def search_production_user(
     "/user/burn",
     summary="Get Single User Burn Production",
     description="Returns a dictionary of burn rates grouped by planet for a specific user.",
-    response_class=ORJSONResponse)
+    response_class=ORJSONResponse,
+    responses={200: {"model": Dict[str, List[BurnRateMaterial]]}}
+)
 @limiter.limit("30/minute", key_func=get_auth_key)
 async def search_burn_production_user(
     request: Request,

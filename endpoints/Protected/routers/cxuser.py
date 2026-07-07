@@ -12,6 +12,7 @@ from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 
 from ..services.cxuser import fetch_orders_as_json, stream_orders_csv
+from endpoints.Protected.schemas.cxuser import UserCXOrders, CXOrder
 
 cxuser_router = APIRouter()
 
@@ -46,7 +47,10 @@ async def common_params(
 # ==============================================================================
 # 1. LIST Endpoint (Multi-User JSON)
 # ==============================================================================
-@cxuser_router.get("/orders")
+@cxuser_router.get(
+    "/orders",
+    responses={200: {"model": list[UserCXOrders]}}
+)
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_orders_json(
     request: Request,
@@ -68,7 +72,7 @@ async def get_orders_json(
         if isinstance(orders_json_str, dict) and 'Orders' in orders_json_str:
             return orders_json_str['Orders']
 
-        return DefaultJSONResponse(content=orders_json_str, media_type="application/json")
+        return Response(content=orders_json_str, media_type="application/json")
 
     except Exception as e:
         print(f"External API Error: {e}")
@@ -78,7 +82,10 @@ async def get_orders_json(
 # ==============================================================================
 # 2. SINGLE USER Endpoint (JSON)
 # ==============================================================================
-@cxuser_router.get("/orders/user")
+@cxuser_router.get(
+    "/orders/user",
+    responses={200: {"model": list[CXOrder]}}
+)
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_order_user(
     request: Request,
@@ -98,10 +105,18 @@ async def get_order_user(
         if not orders_json_str:
             return []
 
+        if isinstance(orders_json_str, str):
+            try:
+                data_list = orjson.loads(orders_json_str)
+                if data_list and isinstance(data_list, list) and "Orders" in data_list[0]:
+                    return data_list[0]["Orders"]
+            except Exception:
+                return []
+                
         if isinstance(orders_json_str, dict) and 'Orders' in orders_json_str:
             return orders_json_str['Orders']
 
-        return DefaultJSONResponse(content=orders_json_str, media_type="application/json")
+        return []
 
     except HTTPException as he:
         raise he

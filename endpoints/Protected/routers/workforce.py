@@ -10,6 +10,8 @@ from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.workforce import fetch_workforce_json
 from endpoints.Protected.services.workforce import generate_workforce_csv
+from endpoints.Protected.schemas.workforce import UserWorkforce, Workforce
+from typing import List
 
 workforce_router = APIRouter()
 
@@ -24,7 +26,8 @@ class ORJSONResponse(DefaultJSONResponse):
 @workforce_router.get(
     "/",
     summary="Get Workforce Data",
-    description="Returns workforce list. If no usernames provided, returns your own data."
+    description="Returns workforce list. If no usernames provided, returns your own data.",
+    responses={200: {"model": List[UserWorkforce]}}
 )
 @limiter.limit("30/minute", key_func=get_auth_key)
 async def get_workforce_data(
@@ -42,10 +45,10 @@ async def get_workforce_data(
     async with pool.acquire() as conn:
         workforce_data = await fetch_workforce_json(conn, valid_targets, location)
 
-    if not workforce_data:
-        return []
+    if not workforce_data or workforce_data == "[]":
+        return Response(content="[]", media_type="application/json")
 
-    return workforce_data
+    return Response(content=workforce_data, media_type="application/json")
 
 
 
@@ -56,7 +59,8 @@ async def get_workforce_data(
     "/user",
     summary="Get Single User Workforce",
     description="Returns a flat list of workforce data for a specific user.",
-    response_class=ORJSONResponse
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[Workforce]}}
 )
 @limiter.limit("30/minute", key_func=get_auth_key)
 async def get_workforce_data_user(
@@ -75,10 +79,16 @@ async def get_workforce_data_user(
         # 1. Fetch standard multi-user structure
         worforce_data = await fetch_workforce_json(conn, valid_targets, location)
 
-    if not worforce_data:
+    if not worforce_data or worforce_data == "[]":
         return []
 
-    return worforce_data
+    try:
+        data_list = orjson.loads(worforce_data)
+        if data_list and "Workforce" in data_list[0]:
+            return data_list[0]["Workforce"]
+        return []
+    except Exception:
+        return []
 
 
 # ==============================================================================

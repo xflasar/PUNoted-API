@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.core.limiter import get_auth_key, get_public_key, limiter
 
-# Import OptionalAuth
 from auth import OptionalAuth
 from endpoints.Public.services.material_recipes_service import generate_recipes_json
 from endpoints.Public.services.materials_service import generate_materials_data_csv, generate_materials_data_json
+from endpoints.Public.schemas.materials import Material, Recipe
+from typing import List
 
 materials_router = APIRouter()
 
@@ -17,7 +18,7 @@ materials_router = APIRouter()
     response_class=Response,
     responses={
         200: {
-            "content": {"application/json": {}},
+            "model": List[Material],
             "description": "Returns a JSON list of materials."
         }
     }
@@ -74,7 +75,7 @@ async def get_materials_csv(
     response_class=Response,
     responses={
         200: {
-            "content": {"application/json": {}},
+            "model": List[Recipe],
             "description": "Returns List of recipes."
         }
     }

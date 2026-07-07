@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.accounting_repo import fetch_user_accounts
+from endpoints.Protected.schemas.accounting import UserAccounting, CurrencyAccount
+from typing import List
 
 accounting_router = APIRouter()
 
@@ -22,6 +24,7 @@ class ORJSONResponse(DefaultJSONResponse):
     "/",
     summary="Get Currency Accounts",
     description="Returns accounts list. If no usernames provided, returns group data.",
+    responses={200: {"model": List[UserAccounting]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_accounting(
@@ -39,10 +42,10 @@ async def get_accounting(
     async with pool.acquire() as conn:
         accounting_data = await fetch_user_accounts(conn, valid_targets, currency)
 
-    if not accounting_data:
-        return []
+    if not accounting_data or accounting_data == "[]":
+        return Response(content="[]", media_type="application/json")
     
-    return accounting_data
+    return Response(content=accounting_data, media_type="application/json")
 
 
 # ==============================================================================
@@ -52,7 +55,8 @@ async def get_accounting(
     "/user",
     summary="Get Single User Accounts",
     description="Returns a flat list of accounts for a specific user, if no username provided, returns your own data.",
-    response_class=ORJSONResponse
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[CurrencyAccount]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_accounting_user(
@@ -71,7 +75,13 @@ async def get_accounting_user(
         # 1. Fetch standard multi-user structure
         accounting_data = await fetch_user_accounts(conn, valid_targets, currency)
 
-    if not accounting_data:
+    if not accounting_data or accounting_data == "[]":
         return []
     
-    return accounting_data
+    try:
+        data_list = orjson.loads(accounting_data)
+        if data_list and "Accounts" in data_list[0]:
+            return data_list[0]["Accounts"]
+        return []
+    except Exception:
+        return []

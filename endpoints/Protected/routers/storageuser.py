@@ -10,6 +10,8 @@ from fastapi.responses import StreamingResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.services.storageuser import fetch_storages_as_json, stream_storages_csv
+from endpoints.Protected.schemas.storageuser import UserStorages, Storage
+from typing import List
 
 storage_router = APIRouter()
 
@@ -25,6 +27,7 @@ class ORJSONResponse(DefaultJSONResponse):
     "/",
     summary="Get Storages",
     description="Get all storages and items nested by location. Returns list grouped by user.",
+    responses={200: {"model": List[UserStorages]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_storages_json(
@@ -45,10 +48,19 @@ async def get_storages_json(
         if not db_data:
             return []
 
+        if isinstance(db_data, str):
+            try:
+                parsed = orjson.loads(db_data)
+                if parsed and isinstance(parsed, list) and "Storages" in parsed[0] and isinstance(parsed[0], dict) and len(parsed) == 1 and parsed[0].get("Username") is None: # single format? Not standard
+                    return parsed[0]["Storages"]
+            except Exception:
+                pass
+            return Response(content=db_data, media_type="application/json")
+
         if isinstance(db_data, dict) and 'Storages' in db_data:
             return db_data['Storages']
 
-        return DefaultJSONResponse(content=db_data, media_type="application/json")
+        return Response(content=orjson.dumps(db_data), media_type="application/json")
 
     except Exception as e:
         print(f"Storage API Error: {e}")
@@ -62,7 +74,8 @@ async def get_storages_json(
     "/user",
     summary="Get Single User Storages",
     description="Returns a flat list of storages for a specific user.",
-    response_class=ORJSONResponse
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[Storage]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_storages_user(
@@ -83,10 +96,18 @@ async def get_storages_user(
         if not json_str:
             return []
 
+        if isinstance(json_str, str):
+            try:
+                data_list = orjson.loads(json_str)
+                if data_list and isinstance(data_list, list) and "Storages" in data_list[0]:
+                    return data_list[0]["Storages"]
+            except Exception:
+                return []
+                
         if isinstance(json_str, dict) and 'Storages' in json_str:
             return json_str['Storages']
         
-        return DefaultJSONResponse(content=json_str, media_type="application/json")
+        return []
 
     except HTTPException as he:
         raise he

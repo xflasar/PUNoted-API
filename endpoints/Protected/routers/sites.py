@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.sites_repo import fetch_sites
+from endpoints.Protected.schemas.sites import UserSites, Site
+from typing import List
 
 sites_router = APIRouter()
 
@@ -22,6 +24,7 @@ class ORJSONResponse(DefaultJSONResponse):
     "/",
     summary="Search Sites",
     description="Search for sites list. If no usernames provided, returns your own data.",
+    responses={200: {"model": List[UserSites]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def search_sites(
@@ -52,10 +55,10 @@ async def search_sites(
             include_repair=include_repair,
         )
 
-    if not sites_data:
-        return []
+    if not sites_data or sites_data == "[]":
+        return Response(content="[]", media_type="application/json")
 
-    return sites_data
+    return Response(content=sites_data, media_type="application/json")
 
 
 # ==============================================================================
@@ -65,7 +68,8 @@ async def search_sites(
     "/user",
     summary="Get Single User Sites",
     description="Returns a flat list of sites for a specific user.",
-    response_class=ORJSONResponse
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[Site]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def search_sites_user(
@@ -97,7 +101,13 @@ async def search_sites_user(
             include_repair=include_repair,
         )
 
-    if not sites_data:
+    if not sites_data or sites_data == "[]":
         return []
 
-    return sites_data
+    try:
+        data_list = orjson.loads(sites_data)
+        if data_list and "Sites" in data_list[0]:
+            return data_list[0]["Sites"]
+        return []
+    except Exception:
+        return []

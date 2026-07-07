@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.flights_repo import search_flights
+from endpoints.Protected.schemas.flights import UserFlights, Flight
+from typing import List
 
 flights_router = APIRouter()
 
@@ -20,7 +22,10 @@ class ORJSONResponse(DefaultJSONResponse):
 # 1. LIST Endpoint (Standard)
 # Returns: [ { "Username": "x3m", "Flights": [...] }, ... ]
 # --------------------------------------------------------
-@flights_router.get("/")
+@flights_router.get(
+    "/",
+    responses={200: {"model": List[UserFlights]}}
+)
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_flights(
     request: Request,
@@ -43,17 +48,21 @@ async def get_flights(
     async with pool.acquire() as conn:
         flights_data = await search_flights(conn, valid_targets, ship, current, limit)
 
-    if flights_data is None:
-        return []
+    if not flights_data or flights_data == "[]":
+        return Response(content="[]", media_type="application/json")
 
-    return flights_data
+    return Response(content=flights_data, media_type="application/json")
 
 
 # --------------------------------------------------------
 # 2. SINGLE USER Endpoint (Flattened)
 # Returns: [ { "FlightId": "...", "Origin": "..." }, ... ]
 # --------------------------------------------------------
-@flights_router.get("/user", response_class=ORJSONResponse)
+@flights_router.get(
+    "/user",
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[Flight]}}
+)
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_flight_user(
     request: Request,
@@ -76,7 +85,13 @@ async def get_flight_user(
         # 1. Fetch standard structure: '[{"Username": "...", "Flights": [...]}]'
         flights_data = await search_flights(conn, valid_targets, ship, current, limit)
 
-        if not flights_data:
+        if not flights_data or flights_data == "[]":
             return []
 
-        return flights_data
+        try:
+            data_list = orjson.loads(flights_data)
+            if data_list and "Flights" in data_list[0]:
+                return data_list[0]["Flights"]
+            return []
+        except Exception:
+            return []

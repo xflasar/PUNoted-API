@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.user_repo import fetch_company_data
+from endpoints.Protected.schemas.user import UserCompany, Company
+from typing import List
 
 user_router = APIRouter()
 logger = logging.getLogger("user_router")
@@ -23,7 +25,8 @@ class ORJSONResponse(DefaultJSONResponse):
 @user_router.get(
     "/companydata",
     summary="Get Company Data",
-    description="Search by Usernames, Company Codes, or Names. Scopes automatically to Group or Self."
+    description="Search by Usernames, Company Codes, or Names. Scopes automatically to Group or Self.",
+    responses={200: {"model": List[UserCompany]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_company_data(
@@ -56,11 +59,20 @@ async def get_company_data(
         if not json_data:
             return []
 
+        if isinstance(json_data, str):
+            try:
+                parsed = orjson.loads(json_data)
+                if parsed and isinstance(parsed, list) and "Company" in parsed[0] and isinstance(parsed[0], dict) and len(parsed) == 1 and parsed[0].get("Username") is None: 
+                    return parsed[0]["Company"]
+            except Exception:
+                pass
+            return Response(content=json_data, media_type="application/json")
+            
         if isinstance(json_data, dict) and 'Company' in json_data:
             return json_data['Company']
 
 
-    return DefaultJSONResponse(content=json_data, media_type="application/json")
+    return Response(content=orjson.dumps(json_data), media_type="application/json")
 
 
 # ==============================================================================
@@ -70,7 +82,8 @@ async def get_company_data(
     "/companydata/user",
     summary="Get Single Company Data",
     description="Returns a single company object.",
-    response_class=ORJSONResponse
+    response_class=ORJSONResponse,
+    responses={200: {"model": Company}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_company_data_user(

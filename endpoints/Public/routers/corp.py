@@ -10,6 +10,8 @@ from app.core.limiter import get_auth_key, get_public_key, limiter
 from auth import OptionalAuth, RequireAuth
 from endpoints.Public.repositories.corp_repo import fetch_corp_members
 from endpoints.Public.services.corp_service import generate_json_data
+from endpoints.Public.schemas.corp import CorpPrice, CorpMembersResponse
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +23,7 @@ corporation_router = APIRouter()
     response_class=Response,
     responses={
         200: {
-            "content": {"application/json": {}},
+            "model": List[CorpPrice],
             "description": "Returns corporation market data in JSON format."
         }
     }
@@ -48,7 +50,8 @@ async def get_corporation_prices_json(
 @corporation_router.get(
     "/members",
     summary="Get Corporation Members",
-    description="Returns all company members belonging to the requesting user's corporation."
+    description="Returns all company members belonging to the requesting user's corporation.",
+    responses={200: {"model": CorpMembersResponse}}
 )
 async def get_corporation_members_endpoint(
     request: Request,

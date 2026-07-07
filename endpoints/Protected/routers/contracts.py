@@ -9,6 +9,8 @@ from fastapi.responses import StreamingResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.contracts_repo import get_filtered_contracts, stream_contracts_csv
+from endpoints.Protected.schemas.contracts import UserContracts, ContractDetails
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,10 @@ class ORJSONResponse(DefaultJSONResponse):
 # ==============================================================================
 # 1. MAIN CONTRACTS - LIST (Multi-User, Paginated JSON)
 # ==============================================================================
-@contracts_router.get("/")
+@contracts_router.get(
+    "/",
+    responses={200: {"model": List[UserContracts]}}
+)
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_contracts(
     request: Request,
@@ -61,7 +66,11 @@ async def get_contracts(
 # ==============================================================================
 # 2. MAIN CONTRACTS - SINGLE USER (Unwrapped List, Paginated JSON)
 # ==============================================================================
-@contracts_router.get("/user", response_class=ORJSONResponse)
+@contracts_router.get(
+    "/user",
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[ContractDetails]}}
+)
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def get_contract_user(
     request: Request,

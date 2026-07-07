@@ -7,9 +7,10 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from app.core.limiter import get_auth_key, get_public_key, limiter
 
-# Import OptionalAuth
 from auth import OptionalAuth
 from endpoints.Public.services.cx_service import generate_json_data, generate_market_data_csv
+from endpoints.Public.schemas.cx import CXPrice
+from typing import List
 
 cx_router = APIRouter()
 
@@ -50,7 +51,7 @@ async def get_cx_prices_csv(
     response_class=Response,
     responses={
         200: {
-            "content": {"application/json": {}},
+            "model": List[CXPrice],
             "description": "Returns market data in JSON format."
         }
     }

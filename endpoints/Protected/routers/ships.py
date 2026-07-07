@@ -7,6 +7,8 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.ships_repo import search_ships
+from endpoints.Protected.schemas.ships import UserShips, Ship
+from typing import List
 
 ships_router = APIRouter()
 
@@ -22,6 +24,7 @@ class ORJSONResponse(DefaultJSONResponse):
     "/",
     summary="Search Ships",
     description="Search for ships list. If no usernames provided, returns your own data.",
+    responses={200: {"model": List[UserShips]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def search_user_ships(
@@ -49,10 +52,10 @@ async def search_user_ships(
             ship_type=type,
         )
     
-    if not ships_data:
-        return []
+    if not ships_data or ships_data == "[]":
+        return Response(content="[]", media_type="application/json")
 
-    return ships_data
+    return Response(content=ships_data, media_type="application/json")
 
 
 
@@ -63,7 +66,8 @@ async def search_user_ships(
     "/user",
     summary="Get Single User Ships",
     description="Returns a flat list of ships for a specific user.",
-    response_class=ORJSONResponse
+    response_class=ORJSONResponse,
+    responses={200: {"model": List[Ship]}}
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 async def search_user_ships_single(
@@ -92,8 +96,14 @@ async def search_user_ships_single(
             ship_type=type,
         )
 
-    if not ships_data:
+    if not ships_data or ships_data == "[]":
         return []
 
-    return ships_data
+    try:
+        data_list = orjson.loads(ships_data)
+        if data_list and "Ships" in data_list[0]:
+            return data_list[0]["Ships"]
+        return []
+    except Exception:
+        return []
 
