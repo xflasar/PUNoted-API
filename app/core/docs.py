@@ -11,20 +11,37 @@ def custom_openapi(app: FastAPI):
     if app.openapi_schema and app.openapi_schema.get("paths"):
         return app.openapi_schema
 
-    # Recursive helper to flatten routes and compute their full paths (resolves _IncludedRouter wrappers in newer FastAPI versions)
-    def flatten_routes(routes, prefix=""):
+    # Recursive helper to flatten routes, compute full paths, and propagate tags/context
+    def flatten_routes(routes, prefix="", tags=None):
+        if tags is None:
+            tags = []
         flat = []
         for r in routes:
             if type(r).__name__ == "_IncludedRouter":
+                # Check if this router should be included in the schema
+                if hasattr(r, "include_context") and hasattr(r.include_context, "include_in_schema"):
+                    if not r.include_context.include_in_schema:
+                        continue
+                
                 router_prefix = ""
-                if hasattr(r, "include_context") and hasattr(r.include_context, "prefix"):
-                    router_prefix = r.include_context.prefix or ""
+                router_tags = []
+                if hasattr(r, "include_context"):
+                    if hasattr(r.include_context, "prefix"):
+                        router_prefix = r.include_context.prefix or ""
+                    if hasattr(r.include_context, "tags"):
+                        router_tags = r.include_context.tags or []
+                
                 combined_prefix = prefix + router_prefix
-                flat.extend(flatten_routes(r.original_router.routes, prefix=combined_prefix))
+                combined_tags = list(set(tags + router_tags))
+                flat.extend(flatten_routes(r.original_router.routes, prefix=combined_prefix, tags=combined_tags))
             elif hasattr(r, "path"):
-                rcopy = copy.copy(r)
-                rcopy.path = prefix + r.path
-                flat.append(rcopy)
+                if getattr(r, "include_in_schema", True):
+                    rcopy = copy.copy(r)
+                    rcopy.path = prefix + r.path
+                    # Merge accumulated tags with the route's own tags
+                    route_tags = list(getattr(rcopy, "tags", []))
+                    rcopy.tags = list(set(route_tags + tags))
+                    flat.append(rcopy)
         return flat
 
     all_routes = flatten_routes(app.routes)
