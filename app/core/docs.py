@@ -6,7 +6,7 @@ from fastapi.openapi.utils import get_openapi
 
 
 def custom_openapi(app: FastAPI):
-    if app.openapi_schema:
+    if app.openapi_schema and app.openapi_schema.get("paths"):
         return app.openapi_schema
 
     root_path = (app.root_path or "").rstrip("/")
