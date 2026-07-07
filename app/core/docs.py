@@ -13,10 +13,8 @@ def custom_openapi(app: FastAPI):
     v1_routes = []
     for route in app.routes:
         path = getattr(route, "path", "")
-        # Strip root_path prefix if it exists to find the normalized path
-        if root_path and path.startswith(root_path):
-            path = path[len(root_path):]
-        if path.startswith("/v1"):
+        # Match routes starting with /v1, or starting with root_path/v1
+        if path.startswith("/v1") or (root_path and path.startswith(f"{root_path}/v1")):
             v1_routes.append(route)
 
     schema = get_openapi(
