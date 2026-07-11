@@ -11,7 +11,7 @@ from .bot import bot, get_bot
 router = APIRouter()
 
 # Get the Discord channel ID
-discord_channel_id = int(os.getenv("DISCORD_CHANNEL_ID", "YOUR_CHANNEL_ID_HERE"))
+discord_channel_id = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
 logger = logging.getLogger(__name__)
 
 
