@@ -18,11 +18,12 @@ def client() -> typing.Iterator[fastapi.testclient.TestClient]:
         yield test_client
 
 @pytest.fixture(scope="module")
-def db_setup(client: fastapi.testclient.TestClient) -> typing.Iterator[None]:
+def db_setup(client: fastapi.testclient.TestClient) -> typing.Iterator[tuple[asyncpg.Connection, asyncpg.transaction.Transaction]]:
+    """set up tables for a test module"""
     assert client.portal is not None
     connection, transaction = client.portal.call(prepare_test_db, main.v1_app)
     try:
-        yield
+        yield connection, transaction
     finally:
         client.portal.call(cleanup_test_db, connection, transaction)
 
@@ -97,6 +98,27 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
 async def cleanup_test_db(connection: asyncpg.Connection, transaction: asyncpg.transaction.Transaction) -> None:
     await transaction.rollback()
     await connection.close()
+
+@pytest.fixture
+def db_savepoint(client: fastapi.testclient.TestClient,
+        db_setup: tuple[asyncpg.Connection, asyncpg.transaction.Transaction]) -> typing.Iterator[asyncpg.transaction.Transaction]:
+    """set up a savepoint for a test function, rolling back to the db_setup state after it completes"""
+    assert client.portal is not None
+    connection, _ = db_setup
+    savepoint = client.portal.call(start_test_savepoint, connection)
+    try:
+        yield savepoint
+    finally:
+        client.portal.call(rollback_test_savepoint, savepoint)
+
+async def start_test_savepoint(connection: asyncpg.Connection) -> asyncpg.transaction.Transaction:
+    assert connection.is_in_transaction()
+    savepoint = connection.transaction()
+    await savepoint.start()
+    return savepoint
+
+async def rollback_test_savepoint(transaction: asyncpg.transaction.Transaction) -> None:
+    await transaction.rollback()
 
 class _SingleConnectionPool:
     def __init__(self, connection: asyncpg.Connection):
