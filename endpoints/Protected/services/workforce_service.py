@@ -3,11 +3,11 @@ import csv
 import io
 from typing import List, Optional
 
-from endpoints.Protected.repositories.workforce import fetch_workforce_flat
+from endpoints.Protected.repositories.workforce_repo import fetch_workforce_flat
 
 
-async def generate_workforce_csv(conn, usernames_list: List[str], location: Optional[str] = None) -> io.StringIO:
-    rows = await fetch_workforce_flat(conn, usernames_list, location)
+async def generate_workforce_csv(db, usernames_list: List[str], location: Optional[str] = None) -> io.StringIO:
+    rows = await fetch_workforce_flat(db, usernames_list, location)
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -37,3 +37,7 @@ async def generate_workforce_csv(conn, usernames_list: List[str], location: Opti
 
     output.seek(0)
     return output
+
+async def get_workforce_data(db, usernames_list: List[str], location: Optional[str] = None) -> list:
+    from endpoints.Protected.repositories.workforce_repo import fetch_workforce_json
+    return await fetch_workforce_json(db, usernames_list, location)

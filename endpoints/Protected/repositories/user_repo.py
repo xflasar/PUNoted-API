@@ -46,19 +46,19 @@ FROM TargetData td;
 """
 
 async def fetch_company_data(
-    conn,
+    db,
     usernames: Optional[List[str]] = None,
     codes: Optional[List[str]] = None,
     names: Optional[List[str]] = None
-) -> str:
+) -> list:
     """
     Fetches company data by Usernames, Company Codes, or Company Names.
-    Returns JSON string: [{ "Username": "x", "Company": {...} }]
+    Returns: [{ "Username": "x", "Company": {...} }]
     """
     # Convert empty lists to None for SQL handling to ensure checks are ignored if empty
     p_usernames = usernames if usernames else None
     p_codes = codes if codes else None
     p_names = names if names else None
 
-    json_str = await conn.fetchval(SQL_FETCH_COMPANY_DATA, p_usernames, p_codes, p_names)
-    return json_str or "[]"
+    row = await db.fetch_one(SQL_FETCH_COMPANY_DATA, p_usernames, p_codes, p_names)
+    return row[0] if row else []

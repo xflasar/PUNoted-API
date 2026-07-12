@@ -107,7 +107,7 @@ FROM (
 """
 
 async def search_ships(
-    conn,
+    db,
     usernames_list: list,
     shipname: str = None,
     inflight: bool = None,
@@ -121,5 +121,5 @@ async def search_ships(
     p_shipname = f"%{shipname}%" if shipname else None
     p_location = f"%{location}%" if location else None
 
-    result = await conn.fetchval(SQL_SEARCH_SHIPS, usernames_list, p_shipname, inflight, p_location, ship_type)
-    return result or "[]"
+    row = await db.fetch_one(SQL_SEARCH_SHIPS, usernames_list, p_shipname, inflight, p_location, ship_type)
+    return row[0] if row else []

@@ -43,7 +43,7 @@ async def get_sectors(request: Request):
     ORDER BY name;
     """
 
-    if not hasattr(request.state, "db") or not hasattr(request.app.state.db, "pool"):
+    if not hasattr(request.app.state, "db") or not hasattr(request.app.state.db, "pool"):
         raise HTTPException(status_code=500, detail="Database connection pool not found.")
 
     async with request.app.state.db.pool.acquire() as conn:

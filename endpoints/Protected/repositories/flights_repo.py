@@ -170,9 +170,10 @@ FROM (
 ) sub;
 """
 
-async def search_flights(conn, usernames_list, ship_identifier=None, is_current=None, limit=50):
+async def search_flights(db, usernames_list, ship_identifier=None, is_current=None, limit=50):
     """
     Fetches flights for the list of validated usernames.
     Returns: [{ "Username": "x3m", "Flights": [...] }, ...]
     """
-    return await conn.fetchval(SQL_SEARCH_FLIGHTS, usernames_list, ship_identifier, is_current, limit)
+    row = await db.fetch_one(SQL_SEARCH_FLIGHTS, usernames_list, ship_identifier, is_current, limit)
+    return row[0] if row else []

@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from endpoints.Protected.repositories.sites_repo import fetch_sites
+from endpoints.Protected.services.sites_service import get_sites_data
 from endpoints.Protected.schemas.sites import UserSites, Site
 from typing import List
 
@@ -39,26 +39,21 @@ async def search_sites(
     if (include_reclaimable or include_repair) and not include_buildings:
         raise HTTPException(status_code=400, detail="Cannot request materials without include_buildings=true")
 
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
-        return Response(content='[]', media_type="application/json")
+        return []
 
-    async with pool.acquire() as conn:
-        sites_data = await fetch_sites(
-            conn,
-            valid_targets,
-            location=location,
-            include_buildings=include_buildings,
-            include_reclaimable=include_reclaimable,
-            include_repair=include_repair,
-        )
-
-    if not sites_data or sites_data == "[]":
-        return Response(content="[]", media_type="application/json")
-
-    return Response(content=sites_data, media_type="application/json")
+    sites_data = await get_sites_data(
+        db,
+        valid_targets,
+        location=location,
+        include_buildings=include_buildings,
+        include_reclaimable=include_reclaimable,
+        include_repair=include_repair,
+    )
+    return sites_data
 
 
 # ==============================================================================
@@ -79,35 +74,30 @@ async def search_sites_user(
     include_buildings: bool = Query(False, description="Include buildings list"),
     include_reclaimable: bool = Query(False, description="Include Reclaimable Materials"),
     include_repair: bool = Query(False, description="Include Repair Materials"),
-    user_id: str = Depends(RequireAuth(["sites:read"])),
+    user_id: str = Depends(RequireAuth(["sites:read"], is_single_user_endpoint=True)),
 ):
     if (include_reclaimable or include_repair) and not include_buildings:
         raise HTTPException(status_code=400, detail="Cannot request materials without include_buildings=true")
 
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
-    async with pool.acquire() as conn:
-        # 1. Fetch standard multi-user structure
-        sites_data = await fetch_sites(
-            conn,
-            valid_targets,
-            location=location,
-            include_buildings=include_buildings,
-            include_reclaimable=include_reclaimable,
-            include_repair=include_repair,
-        )
+    # 1. Fetch standard multi-user structure
+    sites_data = await get_sites_data(
+        db,
+        valid_targets,
+        location=location,
+        include_buildings=include_buildings,
+        include_reclaimable=include_reclaimable,
+        include_repair=include_repair,
+    )
 
-    if not sites_data or sites_data == "[]":
+    if not sites_data:
         return []
 
-    try:
-        data_list = orjson.loads(sites_data)
-        if data_list and "Sites" in data_list[0]:
-            return data_list[0]["Sites"]
-        return []
-    except Exception:
-        return []
+    if sites_data and "Sites" in sites_data[0]:
+        return sites_data[0]["Sites"]
+    return []

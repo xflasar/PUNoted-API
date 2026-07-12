@@ -67,6 +67,7 @@ from routers.governance import governance_router
 from routers.group import group_router
 from routers.internal.contracts import contracts_router
 from routers.internal.corporation import corporation_internal_router
+from routers.internal.corporation_ships import corp_ships_internal_router
 from routers.internal.cx import cx_internal_router
 from routers.internal.data_group import group_router as internal_data_group_router
 from routers.internal.finances import finances_router
@@ -98,7 +99,7 @@ async def lifespan(app: FastAPI):
     print("Database connected.")
 
     # 2. Redis Cache
-    redis = aioredis.from_url("redis://redis_cache:6379/0", encoding="utf8", decode_responses=True)
+    redis = aioredis.from_url("redis://localhost:6379/0", encoding="utf8", decode_responses=True)
     FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
     print("Redis initialized.")
 
@@ -142,6 +143,21 @@ v1_app = FastAPI(
 
 app.state.limiter = limiter
 v1_app.state.limiter = limiter
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    try:
+        body = await request.json()
+    except Exception:
+        body = await request.body()
+    logger.error(f"Validation error on {request.method} {request.url.path}: {exc.errors()} | Received body: {body}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body": str(body)}
+    )
 
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 v1_app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
@@ -317,7 +333,6 @@ app.include_router(group_router, prefix="/groups")
 app.include_router(map_router, prefix="/map")
 #app.include_router(contracts_router)
 app.include_router(logistics_router)
-app.include_router(vendor_router)
 app.include_router(cx_router, prefix="/cx", tags=["cx"])
 app.include_router(governance_router, prefix="/governance", tags=["governance"])
 app.include_router(planets_router, prefix="/planets", tags=["planets"])
@@ -327,6 +342,11 @@ app.include_router(
     corporation_internal_router,
     prefix="/internal/corporation",
     tags=["API_corporation"],
+)
+app.include_router(
+    corp_ships_internal_router,
+    prefix="/internal/corporation",
+    tags=["API_corporation_ships"],
 )
 app.include_router(storage_router, prefix="/internal/storage", tags=["API_storage"])
 app.include_router(production_router, prefix="/internal/production", tags=["API_production"])
@@ -342,6 +362,8 @@ app.include_router(cx_internal_router, prefix="/internal/cx", tags=["CX"])
 app.include_router(users_router, prefix="/internal/users", tags=["Users"])
 app.include_router(ships_router, prefix="/internal/ships", tags=["Ships"])
 app.include_router(sites_router, prefix="/internal/sites", tags=["Sites"])
+app.include_router(vendor_router, prefix="/internal/vendor", tags=["Vendor"])
+
 
 # Protected External API v1 (Registered to v1_app sub-app)
 v1_app.include_router(api_user_router, prefix="/user", tags=["User Data"])

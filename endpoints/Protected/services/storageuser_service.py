@@ -94,10 +94,17 @@ async def stream_storages_csv(db, usernames_list: list, location_filter: Optiona
             JOIN users tu ON tu.userdataid = s.userid
             INNER JOIN storage_items si ON s.storageid = si.storageid
             INNER JOIN materials m ON si.materialid = m.materialid
+            LEFT JOIN sites site ON s.addressableid = site.siteid AND s.type = 'STORE'
+            LEFT JOIN planets pl_site ON site.addressplanetid = pl_site.planetid
+            LEFT JOIN warehouses w ON s.storageid = w.storeid AND s.type = 'WAREHOUSE_STORE'
+            LEFT JOIN stations stn ON stn.warehouseid = w.warehouseid
+            LEFT JOIN planets pl_w ON pl_w.planetid = w.addressplanet
+            LEFT JOIN ships sh ON (s.storageid = sh.idshipstore OR s.storageid = sh.idstlfuelstore OR s.storageid = sh.idftlfuelstore OR s.addressableid = sh.shipid) AND s.type NOT IN ('STORE', 'WAREHOUSE_STORE')
             WHERE tu.username = ANY($1::text[]) 
             AND s.type IN ('STORE', 'WAREHOUSE_STORE', 'SHIP_STORE', 'SHIP_STL_FUEL_STORE', 'SHIP_FTL_FUEL_STORE')
             {loc_filter_clause}
             ORDER BY tu.username, location, m.ticker
         """
-        async for record in conn.cursor(query, *params, prefetch=2000):
-            yield list(record.values())
+        async with conn.transaction():
+            async for record in conn.cursor(query, *params, prefetch=2000):
+                yield list(record.values())

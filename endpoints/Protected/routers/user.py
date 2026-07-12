@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from endpoints.Protected.repositories.user_repo import fetch_company_data
+from endpoints.Protected.services.user_service import get_company_data_service
 from endpoints.Protected.schemas.user import UserCompany, Company
 from typing import List
 
@@ -36,43 +36,31 @@ async def get_company_data(
     names: Optional[str] = Query(None, description="Comma-separated Company Names"),
     user_id: str = Depends(RequireAuth(["profile:read"], is_single_user_endpoint=False)),
 ):
-    pool = request.app.state.db.pool
-
-    # 1. Get Validated Targets (Provided by Auth)
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
     if not valid_targets:
-        return Response(content='[]', media_type="application/json")
+        return []
 
-    # 2. Parse Filters
     target_codes = [c.strip() for c in codes.split(",") if c.strip()] if codes else None
     target_names = [n.strip() for n in names.split(",") if n.strip()] if names else None
 
-    # 3. Fetch
-    async with pool.acquire() as conn:
-        json_data = await fetch_company_data(
-            conn,
-            usernames=valid_targets,
-            codes=target_codes,
-            names=target_names
-        )
+    json_data = await get_company_data_service(
+        db,
+        usernames=valid_targets,
+        codes=target_codes,
+        names=target_names
+    )
 
-        if not json_data:
-            return []
+    if not json_data:
+        return []
 
-        if isinstance(json_data, str):
-            try:
-                parsed = orjson.loads(json_data)
-                if parsed and isinstance(parsed, list) and "Company" in parsed[0] and isinstance(parsed[0], dict) and len(parsed) == 1 and parsed[0].get("Username") is None: 
-                    return parsed[0]["Company"]
-            except Exception:
-                pass
-            return Response(content=json_data, media_type="application/json")
-            
-        if isinstance(json_data, dict) and 'Company' in json_data:
-            return json_data['Company']
+    if json_data and isinstance(json_data, list) and "Company" in json_data[0] and isinstance(json_data[0], dict) and len(json_data) == 1 and json_data[0].get("Username") is None: 
+        return json_data[0]["Company"]
 
+    if isinstance(json_data, dict) and 'Company' in json_data:
+        return json_data['Company']
 
-    return Response(content=orjson.dumps(json_data), media_type="application/json")
+    return json_data
 
 
 # ==============================================================================
@@ -93,9 +81,7 @@ async def get_company_data_user(
     name: Optional[str] = Query(None, description="Specific Company Name"),
     user_id: str = Depends(RequireAuth(["profile:read"], is_single_user_endpoint=True)),
 ):
-    pool = request.app.state.db.pool
-
-    # 1. Get Validated Targets
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
     if not valid_targets:
         raise HTTPException(status_code=404, detail="Company not found or access denied")
@@ -103,18 +89,13 @@ async def get_company_data_user(
     target_codes = [code.strip()] if code else None
     target_names = [name.strip()] if name else None
 
-    async with pool.acquire() as conn:
-        json_str = await fetch_company_data(
-            conn,
-            usernames=valid_targets,
-            codes=target_codes,
-            names=target_names
-        )
+    json_data = await get_company_data_service(
+        db,
+        usernames=valid_targets,
+        codes=target_codes,
+        names=target_names
+    )
 
-        try:
-            data_list = orjson.loads(json_str)
-            if data_list and "Company" in data_list[0]:
-                return data_list[0]["Company"]
-            return {}
-        except Exception:
-            return {}
+    if json_data and "Company" in json_data[0]:
+        return json_data[0]["Company"]
+    return {}

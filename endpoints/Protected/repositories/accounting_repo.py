@@ -32,9 +32,10 @@ user_account_data AS (
 SELECT COALESCE(jsonb_agg(user_data_obj), '[]'::jsonb) FROM user_account_data;
 """
 
-async def fetch_user_accounts(conn: Connection, target_usernames: list, currency: str = None):
+async def fetch_user_accounts(db, target_usernames: list, currency: str = None):
     """
     Fetches accounts for the provided list of users.
     Optionally filters by currency code (e.g., 'ICA').
     """
-    return await conn.fetchval(SQL_FETCH_ACCOUNTS_LIST, target_usernames, currency)
+    row = await db.fetch_one(SQL_FETCH_ACCOUNTS_LIST, target_usernames, currency)
+    return row[0] if row else []

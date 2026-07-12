@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 
-from ..services.cxuser import fetch_orders_as_json, stream_orders_csv
+from ..services.cxuser_service import fetch_orders_as_json, stream_orders_csv
 from endpoints.Protected.schemas.cxuser import UserCXOrders, CXOrder
 
 cxuser_router = APIRouter()
@@ -63,16 +63,10 @@ async def get_orders_json(
         valid_targets = getattr(request.state, "valid_target_users", [])
 
         if not valid_targets:
-            return Response(content='[]', media_type="application/json")
-
-        orders_json_str = await fetch_orders_as_json(db, valid_targets, **params)
-        if not orders_json_str:
             return []
 
-        if isinstance(orders_json_str, dict) and 'Orders' in orders_json_str:
-            return orders_json_str['Orders']
-
-        return Response(content=orders_json_str, media_type="application/json")
+        orders_data = await fetch_orders_as_json(db, valid_targets, **params)
+        return orders_data if orders_data else []
 
     except Exception as e:
         print(f"External API Error: {e}")
@@ -91,7 +85,7 @@ async def get_order_user(
     request: Request,
     username: Optional[str] = Query(None, description="Specific username to fetch"),
     params: dict = Depends(common_params),
-    user_id: str = Depends(RequireAuth(["cxdata:read"])),
+    user_id: str = Depends(RequireAuth(["cxdata:read"], is_single_user_endpoint=True)),
 ):
     try:
         db = request.app.state.db
@@ -100,21 +94,18 @@ async def get_order_user(
         if not valid_targets:
             raise HTTPException(status_code=404, detail="User not found or access denied")
 
-        orders_json_str = await fetch_orders_as_json(db, valid_targets, **params)
+        orders_data = await fetch_orders_as_json(db, valid_targets, **params)
 
-        if not orders_json_str:
-            return []
+        if isinstance(orders_data, list) and orders_data and "Orders" in orders_data[0]:
+            return orders_data[0]["Orders"]
 
-        if isinstance(orders_json_str, str):
+        if isinstance(orders_data, str):
             try:
-                data_list = orjson.loads(orders_json_str)
+                data_list = orjson.loads(orders_data)
                 if data_list and isinstance(data_list, list) and "Orders" in data_list[0]:
                     return data_list[0]["Orders"]
             except Exception:
                 return []
-                
-        if isinstance(orders_json_str, dict) and 'Orders' in orders_json_str:
-            return orders_json_str['Orders']
 
         return []
 

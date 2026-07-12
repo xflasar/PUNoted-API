@@ -17,7 +17,7 @@ SELECT jsonb_build_object(
     'Translator', translator,
     'ActiveDaysPerWeek', active_days_per_week,
     'CreatedTimestamp', created_timestamp,
-    'Gifts', COALESCE(gifts, '{}'::jsonb)
+    'Gifts', CASE WHEN jsonb_typeof(gifts) = 'string' THEN (gifts->>0)::jsonb ELSE COALESCE(gifts, '{}'::jsonb) END
 )::text
 FROM public_users_data
 WHERE UPPER(company_code) = UPPER($1)

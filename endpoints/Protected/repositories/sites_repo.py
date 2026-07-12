@@ -109,7 +109,7 @@ FROM (
 """
 
 async def fetch_sites(
-    conn,
+    db,
     usernames_list: list,
     location: str = None,
     include_buildings: bool = False,
@@ -132,5 +132,5 @@ async def fetch_sites(
         include_repair,
     ]
 
-    result = await conn.fetchval(SQL_FETCH_SITES, *params)
-    return result or "[]"
+    row = await db.fetch_one(SQL_FETCH_SITES, *params)
+    return row[0] if row else []

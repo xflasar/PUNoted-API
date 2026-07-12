@@ -48,7 +48,6 @@ async def get_cx_prices_csv(
 @cx_router.get(
     "/prices",
     description="Get CX market data in JSON format. Public access allowed.",
-    response_class=Response,
     responses={
         200: {
             "model": List[CXPrice],

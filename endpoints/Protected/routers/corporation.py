@@ -12,6 +12,8 @@ from auth import RequireAuth
 from endpoints.Public.services.corp_service import generate_json_data
 from services.internal.corporation_service import build_corp_production_flat_response
 from endpoints.Protected.schemas.corporation import CorpProductionOverviewResponse
+from models.ship_management_models import ShipTypePreset, ShipOrder
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -135,3 +137,5 @@ async def get_corporation_prices_json(
             "Cache-Control": "public, max-age=1800"
         }
     ) """
+
+# GET endpoints moved to Public router to handle both Auth/OptionalAuth under a single route.

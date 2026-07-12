@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from endpoints.Protected.repositories.ships_repo import search_ships
+from endpoints.Protected.services.ships_service import get_ships_data
 from endpoints.Protected.schemas.ships import UserShips, Ship
 from typing import List
 
@@ -36,26 +36,21 @@ async def search_user_ships(
     type: Optional[Literal["HCB", "WCB", "VCB", "LCB", "TINY"]] = Query(None, description="Filter by hull type"),
     user_id: str = Depends(RequireAuth(["ships:read"])),
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
-        return Response(content='[]', media_type="application/json")
+        return []
 
-    async with pool.acquire() as conn:
-        ships_data = await search_ships(
-            conn,
-            valid_targets,
-            shipname=shipname,
-            inflight=inflight,
-            location=location,
-            ship_type=type,
-        )
-    
-    if not ships_data or ships_data == "[]":
-        return Response(content="[]", media_type="application/json")
-
-    return Response(content=ships_data, media_type="application/json")
+    ships_data = await get_ships_data(
+        db,
+        valid_targets,
+        shipname=shipname,
+        inflight=inflight,
+        location=location,
+        ship_type=type,
+    )
+    return ships_data
 
 
 
@@ -77,33 +72,28 @@ async def search_user_ships_single(
     inflight: Optional[bool] = Query(None, description="Filter by flight status"),
     location: Optional[str] = Query(None, description="Partial match for Location"),
     type: Optional[Literal["HCB", "WCB", "VCB", "LCB", "TINY"]] = Query(None, description="Filter by hull type"),
-    user_id: str = Depends(RequireAuth(["ships:read"])),
+    user_id: str = Depends(RequireAuth(["ships:read"], is_single_user_endpoint=True)),
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
-    async with pool.acquire() as conn:
-        # 1. Fetch standard multi-user structure
-        ships_data = await search_ships(
-            conn,
-            valid_targets,
-            shipname=shipname,
-            inflight=inflight,
-            location=location,
-            ship_type=type,
-        )
+    # 1. Fetch standard multi-user structure
+    ships_data = await get_ships_data(
+        db,
+        valid_targets,
+        shipname=shipname,
+        inflight=inflight,
+        location=location,
+        ship_type=type,
+    )
 
-    if not ships_data or ships_data == "[]":
+    if not ships_data:
         return []
 
-    try:
-        data_list = orjson.loads(ships_data)
-        if data_list and "Ships" in data_list[0]:
-            return data_list[0]["Ships"]
-        return []
-    except Exception:
-        return []
+    if ships_data and "Ships" in ships_data[0]:
+        return ships_data[0]["Ships"]
+    return []
 

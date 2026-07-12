@@ -9,7 +9,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from endpoints.Protected.services.storageuser import fetch_storages_as_json, stream_storages_csv
+from endpoints.Protected.services.storageuser_service import fetch_storages_as_json, stream_storages_csv
 from endpoints.Protected.schemas.storageuser import UserStorages, Storage
 from typing import List
 
@@ -41,26 +41,10 @@ async def get_storages_json(
         valid_targets = getattr(request.state, "valid_target_users", [])
 
         if not valid_targets:
-            return Response(content='[]', media_type="application/json")
-
-        db_data = await fetch_storages_as_json(db, valid_targets, location)
-
-        if not db_data:
             return []
 
-        if isinstance(db_data, str):
-            try:
-                parsed = orjson.loads(db_data)
-                if parsed and isinstance(parsed, list) and "Storages" in parsed[0] and isinstance(parsed[0], dict) and len(parsed) == 1 and parsed[0].get("Username") is None: # single format? Not standard
-                    return parsed[0]["Storages"]
-            except Exception:
-                pass
-            return Response(content=db_data, media_type="application/json")
-
-        if isinstance(db_data, dict) and 'Storages' in db_data:
-            return db_data['Storages']
-
-        return Response(content=orjson.dumps(db_data), media_type="application/json")
+        db_data = await fetch_storages_as_json(db, valid_targets, location)
+        return db_data if db_data else []
 
     except Exception as e:
         print(f"Storage API Error: {e}")
@@ -91,22 +75,19 @@ async def get_storages_user(
         if not valid_targets:
             raise HTTPException(status_code=404, detail="User not found or access denied")
 
-        json_str = await fetch_storages_as_json(db, valid_targets, location)
+        db_data = await fetch_storages_as_json(db, valid_targets, location)
 
-        if not json_str:
-            return []
-
-        if isinstance(json_str, str):
+        if isinstance(db_data, list) and db_data and "Storages" in db_data[0]:
+            return db_data[0]["Storages"]
+            
+        if isinstance(db_data, str):
             try:
-                data_list = orjson.loads(json_str)
+                data_list = orjson.loads(db_data)
                 if data_list and isinstance(data_list, list) and "Storages" in data_list[0]:
                     return data_list[0]["Storages"]
             except Exception:
                 return []
-                
-        if isinstance(json_str, dict) and 'Storages' in json_str:
-            return json_str['Storages']
-        
+
         return []
 
     except HTTPException as he:

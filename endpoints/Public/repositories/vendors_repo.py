@@ -29,7 +29,7 @@ OrderLocations AS (
     JOIN ActiveVendors AV ON AV.VENDORID = UVO.VENDORID
     LEFT JOIN MATERIAL_PRICES MP ON MP.TICKER = UVO.MATERIALTICKER
     LEFT JOIN CX_BROKERS CXB ON CXB.TICKER = (UVO.MATERIALTICKER || '.' || AV.CX)
-    CROSS JOIN LATERAL jsonb_array_elements(UVO.LOCATION) AS loc_elem
+    CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN UVO.LOCATION IS NOT NULL AND jsonb_typeof(UVO.LOCATION::jsonb) = 'array' THEN UVO.LOCATION::jsonb ELSE '[]'::jsonb END) AS loc_elem
 ),
 InventoryCache AS (
     SELECT 
@@ -92,10 +92,10 @@ FROM ActiveVendors av
 LEFT JOIN AggregatedOrders ao ON ao.VENDORID = av.VENDORID;
 """
 
-async def fetch_public_vendors(conn, search: str = None, corp: str = None, operator: str = None):
+async def fetch_public_vendors(db, search: str = None, corp: str = None, operator: str = None):
     p_search = f"%{search}%" if search else None
     p_corp = f"%{corp}%" if corp else None
     p_operator = f"%{operator}%" if operator else None
     
-    result = await conn.fetchval(SQL_FETCH_VENDORS, p_search, p_corp, p_operator)
-    return result or "[]"
+    row = await db.fetch_one(SQL_FETCH_VENDORS, p_search, p_corp, p_operator)
+    return row[0] if row else []

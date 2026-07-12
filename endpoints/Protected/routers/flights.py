@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from endpoints.Protected.repositories.flights_repo import search_flights
+from endpoints.Protected.services.flights_service import get_flights_data
 from endpoints.Protected.schemas.flights import UserFlights, Flight
 from typing import List
 
@@ -35,7 +35,7 @@ async def get_flights(
     current: Optional[bool] = Query(None),
     limit: int = Query(20, ge=1, le=100),
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if usernames:
@@ -45,13 +45,8 @@ async def get_flights(
     if not valid_targets:
         return []
 
-    async with pool.acquire() as conn:
-        flights_data = await search_flights(conn, valid_targets, ship, current, limit)
-
-    if not flights_data or flights_data == "[]":
-        return Response(content="[]", media_type="application/json")
-
-    return Response(content=flights_data, media_type="application/json")
+    flights_data = await get_flights_data(db, valid_targets, ship, current, limit)
+    return flights_data
 
 
 # --------------------------------------------------------
@@ -72,7 +67,7 @@ async def get_flight_user(
     current: Optional[bool] = Query(None),
     limit: int = Query(20, ge=1, le=100),
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
 
     # Auth logic has already processed 'username' into this list
     valid_targets = getattr(request.state, "valid_target_users", [])
@@ -81,17 +76,12 @@ async def get_flight_user(
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
-    async with pool.acquire() as conn:
-        # 1. Fetch standard structure: '[{"Username": "...", "Flights": [...]}]'
-        flights_data = await search_flights(conn, valid_targets, ship, current, limit)
+    # 1. Fetch standard structure
+    flights_data = await get_flights_data(db, valid_targets, ship, current, limit)
 
-        if not flights_data or flights_data == "[]":
-            return []
+    if not flights_data:
+        return []
 
-        try:
-            data_list = orjson.loads(flights_data)
-            if data_list and "Flights" in data_list[0]:
-                return data_list[0]["Flights"]
-            return []
-        except Exception:
-            return []
+    if flights_data and "Flights" in flights_data[0]:
+        return flights_data[0]["Flights"]
+    return []

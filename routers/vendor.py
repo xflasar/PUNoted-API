@@ -11,7 +11,7 @@ from auth import get_current_user_id
 logger = logging.getLogger(__name__)
 
 
-vendor_router = APIRouter(prefix="/vendor", tags=["Vendor"], dependencies=[Depends(require_internal_origin)])
+vendor_router = APIRouter(dependencies=[Depends(require_internal_origin)])
 
 
 @vendor_router.post("/materials_price_list")

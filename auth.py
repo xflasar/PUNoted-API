@@ -467,8 +467,9 @@ class RequireAuth:
         request: Request,
         token_header: Optional[str] = Header(None, alias="X-Data-Token"),
         token_query: Optional[str] = Query(None, alias="token"),
+        token_cookie_tok: Optional[str] = Cookie(None, alias="refresh_token"),
     ) -> str:
-        raw_token = token_header or token_query
+        raw_token = token_header or token_query or token_cookie_tok
         if not raw_token:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
 
@@ -551,13 +552,19 @@ class OptionalAuth(RequireAuth):
         request: Request,
         token_header: Optional[str] = Header(None, alias="X-Data-Token"),
         token_query: Optional[str] = Query(None, alias="token"),
+        token_cookie_tok: Optional[str] = Cookie(None, alias="refresh_token"),
     ) -> Optional[str]:
-        raw_token = token_header or token_query
+        raw_token = token_header or token_query or token_cookie_tok
 
         if not raw_token:
             return None
 
-        return await super().__call__(request, token_header, token_query)
+        return await super().__call__(
+            request, 
+            token_header, 
+            token_query, 
+            token_cookie_tok, 
+        )
 
 # ==============================================================================
 # Auth Routes
@@ -618,26 +625,50 @@ async def refresh_access_token(request: Request, response: Response, refresh_tok
         
         if error or not user_id:
             print(f"FAILURE: Database validation failed. Error: {error}")
-            response.delete_cookie("refresh_token")
+            response.delete_cookie("refresh_token", httponly=True, secure=True, samesite="lax")
+            response.delete_cookie("refresh_token", httponly=True, secure=False, samesite="lax")
             raise HTTPException(status_code=401, detail=f"Invalid token: {error}")
         
         print("SUCCESS: Token is valid. Generating new tokens...")
         
-        new_access, new_refresh, expires_at = await generate_auth_tokens(conn, user_id, request, is_website=True)
+        # Fetch user metadata
+        import uuid
+        user_uuid = uuid.UUID(user_id) if isinstance(user_id, str) and len(user_id) == 36 else user_id
+        user_row = await conn.fetchrow("""
+            SELECT us.accountid, us.username, 
+                   COALESCE(ud.displayname, us.displayname) AS displayname,
+                   cd.companyname, cd.companycode, c.name as corpname, us.is_synchronized
+            FROM users AS us
+            LEFT JOIN users_data AS ud ON ud.userid = us.userdataid
+            LEFT JOIN company_data AS cd ON cd.userdataid = ud.userid
+            LEFT JOIN corporation_shareholders cs ON cs.companyid = ud.companyid
+            LEFT JOIN corporations c ON c.id = cs.corporationid
+            WHERE us.accountid = $1;
+        """, user_uuid)
         
-        # Hardcode secure=False for local dev
-        is_secure = request.url.scheme == "https" and request.client.host not in ["127.0.0.1", "localhost"]
+        new_access, new_refresh, expires_at = await generate_auth_tokens(conn, user_id, request, is_website=True)
         
         response.set_cookie(
             key="refresh_token",
             value=new_refresh,
             httponly=True,
-            secure=is_secure, 
+            secure=True, 
             samesite="lax",
             max_age=30 * 24 * 60 * 60, 
         )
         
-        return {"success": True, "token": new_access, "expires_at": expires_at}
+        return {
+            "success": True, 
+            "token": new_access, 
+            "expires_at": expires_at,
+            "username": user_row["username"] if user_row else None,
+            "displayName": user_row["displayname"] if user_row else None,
+            "companyName": user_row.get("companyname") if user_row else None,
+            "companyCode": user_row.get("companycode") if user_row else None,
+            "currentUserId": str(user_row["accountid"]) if user_row else None,
+            "corpName": user_row.get("corpname") if user_row else None,
+            "isSynchronized": user_row.get("is_synchronized") if user_row else None
+        }
 
 @auth_router.post("/logout")
 async def logout(response: Response, request: Request, refresh_token: str = Cookie(None)):
@@ -646,7 +677,8 @@ async def logout(response: Response, request: Request, refresh_token: str = Cook
         async with request.app.state.db.pool.acquire() as conn:
             await conn.execute("DELETE FROM user_tokens WHERE token = $1", refresh_token)
             
-    response.delete_cookie("refresh_token")
+    response.delete_cookie("refresh_token", httponly=True, secure=True, samesite="lax")
+    response.delete_cookie("refresh_token", httponly=True, secure=False, samesite="lax")
     return {"success": True, "message": "Logged out successfully"}
 
 @auth_router.post("/register")

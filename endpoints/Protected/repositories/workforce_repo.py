@@ -101,12 +101,12 @@ WHERE
 ORDER BY tu.username, p.name, p.naturalid, w.level, wn.category;
 """
 
-async def fetch_workforce_json(conn, usernames_list: List[str], location: Optional[str] = None):
+async def fetch_workforce_json(db, usernames_list: List[str], location: Optional[str] = None):
     # Pass arguments: $1=list, $2=location_filter
     p_location = f"%{location}%" if location else None
-    result = await conn.fetchval(SQL_FETCH_WORKFORCE_JSON, usernames_list, p_location)
-    return result or "[]"
+    row = await db.fetch_one(SQL_FETCH_WORKFORCE_JSON, usernames_list, p_location)
+    return row[0] if row else []
 
-async def fetch_workforce_flat(conn, usernames_list: List[str], location: Optional[str] = None):
+async def fetch_workforce_flat(db, usernames_list: List[str], location: Optional[str] = None):
     p_location = f"%{location}%" if location else None
-    return await conn.fetch(SQL_FETCH_WORKFORCE_FLAT, usernames_list, p_location)
+    return await db.fetch_rows(SQL_FETCH_WORKFORCE_FLAT, usernames_list, p_location)

@@ -24,6 +24,7 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.requests import ClientDisconnect
@@ -1627,7 +1628,7 @@ async def get_user_production_lines(request: Request, user_id: str = Depends(get
     try:
         production_lines = await get_production_data_nested(request.app.state.db.pool, user_id)
 
-        return JSONResponse(content={"success": True, "data": production_lines})
+        return JSONResponse(content=jsonable_encoder({"success": True, "data": production_lines}))
     except Exception as e:
         logger.error(f"Failed to fetch user production lines: {e}", exc_info=True)
         raise HTTPException(
@@ -1868,11 +1869,12 @@ async def get_dashboard_presence(request: Request, user_id: str = Depends(get_cu
                     u.accountid AS user_id,
                     '#10b981' AS color_code, -- Current User's Color (Emerald Green)
                     'Your Site' AS name,
-                    p.x, 
-                    p.y,
+                    sys.positionx AS x, 
+                    sys.positiony AS y,
                     'planet' AS location_type
                 FROM sites AS st
                 INNER JOIN planets AS p ON st.addressplanetid = p.planetid
+                INNER JOIN systems AS sys ON p.systemid = sys.systemid
                 INNER JOIN users AS u ON st.userid = u.userdataid
                 WHERE u.accountid = $1
                 
@@ -1884,11 +1886,11 @@ async def get_dashboard_presence(request: Request, user_id: str = Depends(get_cu
                     u.accountid AS user_id,
                     '#10b981' AS color_code,
                     ship.name AS name,
-                    sys.x,
-                    sys.y,
+                    sys.positionx AS x,
+                    sys.positiony AS y,
                     'system' AS location_type
                 FROM ships AS ship
-                INNER JOIN systems AS sys ON ship.currentsystemid = sys.systemid
+                INNER JOIN systems AS sys ON ship.addresssystemid = sys.systemid
                 INNER JOIN users AS u ON ship.userid = u.userdataid
                 WHERE u.accountid = $1;
             """,
@@ -1903,8 +1905,8 @@ async def get_dashboard_presence(request: Request, user_id: str = Depends(get_cu
                     'other-user-01' AS user_id,
                     '#facc15' AS color_code, -- Tracked Fleet Color (Yellow)
                     'Tracked Fleet Alpha' AS name,
-                    sys.x, 
-                    sys.y,
+                    sys.positionx AS x, 
+                    sys.positiony AS y,
                     'system' AS location_type
                 FROM systems AS sys
                 WHERE sys.name = 'Alpha Centauri'; -- Mock location for demo
@@ -1912,8 +1914,7 @@ async def get_dashboard_presence(request: Request, user_id: str = Depends(get_cu
 
         # Combine all records
         all_presence_data = [dict(r) for r in user_presence_records] + [dict(r) for r in tracked_presence_records]
-
-        return JSONResponse(content={"success": True, "data": all_presence_data})
+        return JSONResponse(content=jsonable_encoder({"success": True, "data": all_presence_data}))
 
     except Exception as e:
         logger.error(f"Failed to fetch dashboard presence data: {e}", exc_info=True)

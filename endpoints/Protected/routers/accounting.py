@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from endpoints.Protected.repositories.accounting_repo import fetch_user_accounts
+from endpoints.Protected.services.accounting_service import get_accounting_data
 from endpoints.Protected.schemas.accounting import UserAccounting, CurrencyAccount
 from typing import List
 
@@ -33,19 +33,14 @@ async def get_accounting(
     currency: Optional[str] = Query(None, description="Filter by currency code (e.g. ICA, CIS)"),
     user_id: str = Depends(RequireAuth(["accounting:read"], is_single_user_endpoint=False)),
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
-        return Response(content='[]', media_type="application/json")
+        return []
 
-    async with pool.acquire() as conn:
-        accounting_data = await fetch_user_accounts(conn, valid_targets, currency)
-
-    if not accounting_data or accounting_data == "[]":
-        return Response(content="[]", media_type="application/json")
-    
-    return Response(content=accounting_data, media_type="application/json")
+    accounting_data = await get_accounting_data(db, valid_targets, currency)
+    return accounting_data
 
 
 # ==============================================================================
@@ -65,23 +60,17 @@ async def get_accounting_user(
     currency: Optional[str] = Query(None, description="Filter by currency code (e.g. ICA, CIS)"),
     user_id: str = Depends(RequireAuth(["accounting:read"], is_single_user_endpoint=True)),
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
-    async with pool.acquire() as conn:
-        # 1. Fetch standard multi-user structure
-        accounting_data = await fetch_user_accounts(conn, valid_targets, currency)
+    accounting_data = await get_accounting_data(db, valid_targets, currency)
 
-    if not accounting_data or accounting_data == "[]":
+    if not accounting_data:
         return []
     
-    try:
-        data_list = orjson.loads(accounting_data)
-        if data_list and "Accounts" in data_list[0]:
-            return data_list[0]["Accounts"]
-        return []
-    except Exception:
-        return []
+    if accounting_data and "Accounts" in accounting_data[0]:
+        return accounting_data[0]["Accounts"]
+    return []

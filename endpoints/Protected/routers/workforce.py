@@ -8,8 +8,7 @@ from fastapi.responses import StreamingResponse
 
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
-from endpoints.Protected.repositories.workforce import fetch_workforce_json
-from endpoints.Protected.services.workforce import generate_workforce_csv
+from endpoints.Protected.services.workforce_service import get_workforce_data, generate_workforce_csv
 from endpoints.Protected.schemas.workforce import UserWorkforce, Workforce
 from typing import List
 
@@ -30,25 +29,20 @@ class ORJSONResponse(DefaultJSONResponse):
     responses={200: {"model": List[UserWorkforce]}}
 )
 @limiter.limit("30/minute", key_func=get_auth_key)
-async def get_workforce_data(
+async def get_workforce_list(
     request: Request,
     usernames: Optional[str] = Query(None, description="Comma-separated list of usernames"),
     location: Optional[str] = Query(None, description="Filter by Planet Name or Natural ID"),
     user_id: str = Depends(RequireAuth(["workforce:read"]))
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
-        return Response(content='[]', media_type="application/json")
+        return []
 
-    async with pool.acquire() as conn:
-        workforce_data = await fetch_workforce_json(conn, valid_targets, location)
-
-    if not workforce_data or workforce_data == "[]":
-        return Response(content="[]", media_type="application/json")
-
-    return Response(content=workforce_data, media_type="application/json")
+    workforce_data = await get_workforce_data(db, valid_targets, location)
+    return workforce_data
 
 
 
@@ -67,28 +61,23 @@ async def get_workforce_data_user(
     request: Request,
     username: Optional[str] = Query(None, description="Specific username"),
     location: Optional[str] = Query(None, description="Filter by Planet Name or Natural ID"),
-    user_id: str = Depends(RequireAuth(["workforce:read"]))
+    user_id: str = Depends(RequireAuth(["workforce:read"], is_single_user_endpoint=True))
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
-    async with pool.acquire() as conn:
-        # 1. Fetch standard multi-user structure
-        worforce_data = await fetch_workforce_json(conn, valid_targets, location)
+    # 1. Fetch standard multi-user structure
+    workforce_data = await get_workforce_data(db, valid_targets, location)
 
-    if not worforce_data or worforce_data == "[]":
+    if not workforce_data:
         return []
 
-    try:
-        data_list = orjson.loads(worforce_data)
-        if data_list and "Workforce" in data_list[0]:
-            return data_list[0]["Workforce"]
-        return []
-    except Exception:
-        return []
+    if workforce_data and "Workforce" in workforce_data[0]:
+        return workforce_data[0]["Workforce"]
+    return []
 
 
 # ==============================================================================
@@ -106,14 +95,13 @@ async def get_workforce_csv(
     location: Optional[str] = Query(None, description="Filter by Planet Name or Natural ID"),
     user_id: str = Depends(RequireAuth(["workforce:read"]))
 ):
-    pool = request.app.state.db.pool
+    db = request.app.state.db
     valid_targets = getattr(request.state, "valid_target_users", [])
 
     if not valid_targets:
         return Response(content="No permission or users found", media_type="text/plain")
 
-    async with pool.acquire() as conn:
-        csv_buffer = await generate_workforce_csv(conn, valid_targets, location)
+    csv_buffer = await generate_workforce_csv(db, valid_targets, location)
 
     filename = f"workforce_{location}.csv" if location else "workforce.csv"
 
