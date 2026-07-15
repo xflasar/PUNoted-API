@@ -301,11 +301,20 @@ app.add_middleware(SecurityLoggerMiddleware)
 # Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5174", "http://127.0.0.1:5174", "https://punoted.net", "*"],
+    allow_origins=[
+        "http://localhost:5174", 
+        "http://127.0.0.1:5174", 
+        "https://punoted.net"
+    ],
     allow_origin_regex=r"(chrome|moz)-extension://.*", 
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["Authorization", "Content-Type", "X-Data-Token"],
+    allow_headers=[
+        "authorization", 
+        "content-type", 
+        "x-data-token", 
+        "content-encoding"
+    ],
 )
 
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
