@@ -12,7 +12,6 @@ fastapi
 filelock
 HTMLParser
 httpx
-hypothesis
 importlib_resources
 ini2toml
 ipython

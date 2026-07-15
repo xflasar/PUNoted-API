@@ -3,6 +3,9 @@ name = "PUNoted"
 version = "0"
 requires-python = ">=3.11,<3.12"
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [tool.ruff]
 # Target Python 3.11 (matches your container)
 target-version = "py311"
