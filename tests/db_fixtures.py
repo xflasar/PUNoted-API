@@ -75,6 +75,13 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
             xata_id text
         ) ON COMMIT DROP;
 
+        CREATE TEMP TABLE users_data (
+            userid text PRIMARY KEY,
+            displayname text,
+            subscriptionlevel text,
+            subscriptionexpiry timestamptz
+        ) ON COMMIT DROP;
+
         CREATE TEMP TABLE user_api_tokens (
             user_id text NOT NULL,
             group_id text,
