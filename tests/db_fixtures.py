@@ -92,7 +92,7 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
         """
     )
 
-    app.state.db = SimpleNamespace(pool=_SingleConnectionPool(connection))
+    app.state.db = _MockDatabase(connection)
     return connection, transaction
 
 async def cleanup_test_db(connection: asyncpg.Connection, transaction: asyncpg.transaction.Transaction) -> None:
@@ -119,6 +119,25 @@ async def start_test_savepoint(connection: asyncpg.Connection) -> asyncpg.transa
 
 async def rollback_test_savepoint(transaction: asyncpg.transaction.Transaction) -> None:
     await transaction.rollback()
+
+class _MockDatabase:
+    def __init__(self, connection: asyncpg.Connection):
+        self.connection = connection
+        self.pool = _SingleConnectionPool(connection)
+        self.poolInit = True
+        self.timeout = 10
+
+    async def execute(self, query: str, *args, timeout: float | None = None) -> typing.Any:
+        return await self.connection.execute(query, *args, timeout=timeout)
+
+    async def fetch_one(self, query: str, *args, timeout: float | None = None) -> asyncpg.Record | None:
+        return await self.connection.fetchrow(query, *args, timeout=timeout)
+
+    async def fetch_rows(self, query: str, *args, timeout: float | None = None) -> list[asyncpg.Record]:
+        return await self.connection.fetch(query, *args, timeout=timeout)
+
+    async def executemany(self, query: str, args: list[list[typing.Any]], timeout: float | None = None) -> None:
+        await self.connection.executemany(query, args, timeout=timeout)
 
 class _SingleConnectionPool:
     def __init__(self, connection: asyncpg.Connection):
