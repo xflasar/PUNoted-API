@@ -36,7 +36,7 @@ SELECT
                     'CorporationId', td.corpid,
                     'CorporationCode', td.corpcode,
                     'CorporationName', td.corpname,
-                    'Timestamp', EXTRACT(EPOCH FROM td.xata_updatedat) * 1000
+                    'Timestamp', CAST(EXTRACT(EPOCH FROM td.xata_updatedat) * 1000 AS BIGINT)
                 )
             )
         ),
