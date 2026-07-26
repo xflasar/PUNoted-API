@@ -9,8 +9,8 @@ WITH TargetData AS (
         c.xata_updatedat
     FROM company_data c
     JOIN users u ON u.userdataid = c.userdataid
-    LEFT JOIN corporation_shareholders cs ON cs.companyid = c.companyid
-    LEFT JOIN corporations cr ON cr.id = cs.corporationid
+    LEFT JOIN users_data ud ON ud.userid = u.userdataid
+    LEFT JOIN corporations cr ON cr.id = ud.corporationid
     WHERE 
         -- 1. Filter by Usernames (if provided)
         ($1::text[] IS NULL OR u.username = ANY($1::text[]))

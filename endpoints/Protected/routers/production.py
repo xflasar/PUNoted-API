@@ -78,8 +78,18 @@ async def search_production_user(
         # 2. Unwrap to return ONLY the Production list
         try:
             data_list = orjson.loads(json_str)
-            if data_list and "Production" in data_list[0]:
-                return data_list[0]["Production"]
+            target_record = None
+            if not username:
+                me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+                for record in data_list:
+                    if record.get("Username") == me_username:
+                        target_record = record
+                        break
+            if not target_record and data_list:
+                target_record = data_list[0]
+
+            if target_record and "Production" in target_record:
+                return target_record["Production"]
             return []
         except Exception:
             return []
@@ -111,8 +121,18 @@ async def search_burn_production_user(
         # 2. Unwrap to return ONLY the BurnRates object
         try:
             data_list = orjson.loads(json_str)
-            if data_list and "BurnRates" in data_list[0]:
-                return data_list[0]["BurnRates"]
+            target_record = None
+            if not username:
+                me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+                for record in data_list:
+                    if record.get("Username") == me_username:
+                        target_record = record
+                        break
+            if not target_record and data_list:
+                target_record = data_list[0]
+
+            if target_record and "BurnRates" in target_record:
+                return target_record["BurnRates"]
 
             return {}
         except Exception as e:

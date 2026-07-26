@@ -116,7 +116,8 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
             userid text PRIMARY KEY,
             displayname text,
             subscriptionlevel text,
-            subscriptionexpiry timestamptz
+            subscriptionexpiry timestamptz,
+            corporationid text
         ) ON COMMIT DROP;
 
         CREATE TEMP TABLE user_api_tokens (
@@ -164,8 +165,8 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
         INSERT INTO users (accountid, username, userdataid, xata_id)
         VALUES ('acct1', 'testuser', 'userid1', 'fakexataid');
 
-        INSERT INTO users_data (userid, displayname)
-        VALUES ('userid1', 'testuser');
+        INSERT INTO users_data (userid, displayname, corporationid)
+        VALUES ('userid1', 'testuser', 'corp1');
 
         INSERT INTO user_api_tokens (user_id, group_id, token_hash)
         VALUES ('acct1', NULL, 'ptk_fake');

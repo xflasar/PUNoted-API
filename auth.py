@@ -494,18 +494,25 @@ class RequireAuth:
                 sql_targets = """
                     SELECT DISTINCT u.username
                     FROM users u
-                    INNER JOIN data_group_members gm_target ON gm_target.user_id = u.accountid
-                    INNER JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
-                    WHERE gm_requester.user_id = $1
-                      AND gm_requester.status = 'ACCEPTED'
-                      AND gm_target.status = 'ACCEPTED'
-                      AND gm_requester.can_read_data = TRUE
+                    WHERE u.username = ANY($3::text[])
                       AND (
-                          $2::text IS NULL 
-                          OR gm_target.granted_permissions::text LIKE '%' || $2::text || '%'
-                          OR gm_target.granted_permissions::text LIKE '%all%'
+                          u.accountid = $1
+                          OR EXISTS (
+                              SELECT 1
+                              FROM data_group_members gm_target
+                              INNER JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
+                              WHERE gm_target.user_id = u.accountid
+                                AND gm_requester.user_id = $1
+                                AND gm_requester.status = 'ACCEPTED'
+                                AND gm_target.status = 'ACCEPTED'
+                                AND gm_requester.can_read_data = TRUE
+                                AND (
+                                    $2::text IS NULL 
+                                    OR gm_target.granted_permissions::text LIKE '%' || $2::text || '%'
+                                    OR gm_target.granted_permissions::text LIKE '%all%'
+                                )
+                          )
                       )
-                      AND u.username = ANY($3::text[])
                 """
                 valid_rows = await conn.fetch(sql_targets, user_id, req_perm, requested_users)
                 valid_usernames = [r["username"] for r in valid_rows]
@@ -638,11 +645,10 @@ async def refresh_access_token(request: Request, response: Response, refresh_tok
             SELECT us.accountid, us.username, 
                    COALESCE(ud.displayname, us.displayname) AS displayname,
                    cd.companyname, cd.companycode, c.name as corpname, us.is_synchronized
-            FROM users AS us
-            LEFT JOIN users_data AS ud ON ud.userid = us.userdataid
-            LEFT JOIN company_data AS cd ON cd.userdataid = ud.userid
-            LEFT JOIN corporation_shareholders cs ON cs.companyid = ud.companyid
-            LEFT JOIN corporations c ON c.id = cs.corporationid
+             FROM users AS us
+             LEFT JOIN users_data AS ud ON ud.userid = us.userdataid
+             LEFT JOIN company_data AS cd ON cd.userdataid = ud.userid
+             LEFT JOIN corporations c ON c.id = ud.corporationid
             WHERE us.accountid = $1;
         """, user_uuid)
         
@@ -973,8 +979,7 @@ async def login(login_data: Dict[str, Any], request: Request, response: Response
                 FROM users AS us
                 LEFT JOIN users_data AS ud ON ud.userid = us.userdataid
                 LEFT JOIN company_data AS cd ON cd.userdataid = ud.userid
-                LEFT JOIN corporation_shareholders cs ON cs.companyid = ud.companyid
-                LEFT JOIN corporations c ON c.id = cs.corporationid
+                LEFT JOIN corporations c ON c.id = ud.corporationid
                 WHERE us.username = $1 OR us.email = $1;
             """
         else:

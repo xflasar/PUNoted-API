@@ -9,9 +9,48 @@ MS_PER_DAY = 86400000
 
 # --- QUERY 1: LINES & ORDERS ---
 SQL_GET_LINES_AND_QUEUES = """
+WITH AllowedSites AS (
+    -- 1. Sites owned by the users
+    SELECT 
+        u.username,
+        s.siteid,
+        s.addressplanetid,
+        s.addresssystemid
+    FROM sites s
+    JOIN users u ON u.userdataid = s.userid
+    WHERE u.username = ANY($1::text[])
+
+    UNION DISTINCT
+
+    -- 2. Sites leased by the users as tenants (configured in landlord's settings)
+    SELECT 
+        u_tenant.username,
+        l->>'siteId' as siteid,
+        s.addressplanetid,
+        s.addresssystemid
+    FROM user_global_settings ugs
+    CROSS JOIN jsonb_array_elements(
+        CASE 
+            WHEN ugs.internal_leased_sites IS NULL THEN '[]'::jsonb
+            WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'array' 
+                THEN ugs.internal_leased_sites::jsonb
+            WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'string' 
+                 AND jsonb_typeof((ugs.internal_leased_sites::jsonb #>> '{}')::jsonb) = 'array' 
+                THEN (ugs.internal_leased_sites::jsonb #>> '{}')::jsonb
+            ELSE '[]'::jsonb 
+        END
+    ) l
+    JOIN sites s ON s.siteid = l->>'siteId'
+    JOIN users u_tenant ON (
+        l->>'tenant' = u_tenant.username
+        OR l->>'tenant' = (SELECT companycode FROM company_data WHERE userdataid = u_tenant.userdataid)
+        OR l->>'tenant' = u_tenant.username || ' (' || (SELECT companycode FROM company_data WHERE userdataid = u_tenant.userdataid) || ')'
+    )
+    WHERE u_tenant.username = ANY($1::text[])
+)
 SELECT 
-    u.username,
-    s.addressplanetid as planetid,
+    ast.username,
+    ast.addressplanetid as planetid,
     p.naturalid as planetnaturalid,
     p.name as planetname,
     pl.siteid,
@@ -38,12 +77,10 @@ SELECT
         WHERE po.productionlineid = pl.productionlineid
     ) AS production_orders
 FROM site_production_lines pl
-INNER JOIN sites s ON s.siteid = pl.siteid
-INNER JOIN users u ON u.userdataid = s.userid
-LEFT JOIN planets p ON p.planetid = s.addressplanetid
-LEFT JOIN systems sys ON sys.systemid = s.addresssystemid
-WHERE u.username = ANY($1::text[])
-  AND ($2::text IS NULL OR (
+INNER JOIN AllowedSites ast ON ast.siteid = pl.siteid
+LEFT JOIN planets p ON p.planetid = ast.addressplanetid
+LEFT JOIN systems sys ON sys.systemid = ast.addresssystemid
+WHERE ($2::text IS NULL OR (
       p.name ILIKE $2 OR 
       p.naturalid ILIKE $2 OR
       sys.name ILIKE $2 OR
@@ -100,7 +137,33 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
 
     # 1. Fetch Lines and Orders
     rows = await conn.fetch(SQL_GET_LINES_AND_QUEUES, usernames_list, p_location)
-    if not rows:
+
+    # Fetch Workforce Consumption if burn=True
+    workforce_needs_rows = []
+    if burn:
+        SQL_GET_WORKFORCE_CONSUMPTION = """
+        SELECT 
+            u.username,
+            p.naturalid as planetnaturalid,
+            p.name as planetname,
+            m.ticker,
+            SUM(wn.unitsperinterval) as workforce_consumption
+        FROM workforces w
+        JOIN workforce_needs wn ON wn.workforceid = w.workforceid
+        JOIN users u ON u.userdataid = w.userid
+        JOIN sites s ON s.siteid = w.siteid
+        LEFT JOIN planets p ON p.planetid = s.addressplanetid
+        JOIN materials m ON m.materialid = wn.materialid
+        WHERE u.username = ANY($1::text[])
+          AND ($2::text IS NULL OR (
+              p.name ILIKE $2 OR 
+              p.naturalid ILIKE $2
+          ))
+        GROUP BY u.username, p.naturalid, p.name, m.ticker;
+        """
+        workforce_needs_rows = await conn.fetch(SQL_GET_WORKFORCE_CONSUMPTION, usernames_list, p_location)
+
+    if not rows and not workforce_needs_rows:
         return "[]"
 
     raw_lines = []
@@ -154,6 +217,20 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
 
     # 4. Stitch & Group by User
     grouped_data = {}
+
+    if burn:
+        for row in workforce_needs_rows:
+            username = row["username"]
+            planet_id = row["planetname"] or row["planetnaturalid"]
+            ticker = row["ticker"]
+            cons = float(row["workforce_consumption"] or 0)
+            if cons > 0:
+                if username not in grouped_data:
+                    grouped_data[username] = {
+                        "BurnData": defaultdict(lambda: defaultdict(lambda: {"production": 0.0, "consumption": 0.0})),
+                        "Lines": []
+                    }
+                grouped_data[username]["BurnData"][planet_id][ticker]["consumption"] += cons
 
     for pl in raw_lines:
         username = pl["username"]
