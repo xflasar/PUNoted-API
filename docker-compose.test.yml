@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  test_db:
+    image: postgres:15.12-alpine
+    container_name: punoted_test_db
+    environment:
+      POSTGRES_USER: punoted
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: punoted_test
+    ports:
+      - "127.0.0.1:5446:5432"
+
+  test_redis:
+    image: redis:alpine
+    container_name: punoted_redis_test
+    ports:
+      - "127.0.0.1:6380:6379"

@@ -2,6 +2,45 @@ from __future__ import annotations
 
 import typing
 from types import SimpleNamespace
+import unittest.mock
+
+class MockRedis:
+    def __init__(self, *args, **kwargs):
+        self.store = {}
+
+    async def get(self, key):
+        return self.store.get(key)
+
+    async def set(self, key, value, ex=None, px=None, nx=False, xx=False):
+        self.store[key] = str(value)
+        return True
+
+    async def delete(self, *keys):
+        count = 0
+        for key in keys:
+            if key in self.store:
+                del self.store[key]
+                count += 1
+        return count
+
+    async def flushdb(self):
+        self.store.clear()
+        return True
+
+    async def exists(self, *keys):
+        count = 0
+        for key in keys:
+            if key in self.store:
+                count += 1
+        return count
+
+    @classmethod
+    def from_url(cls, *args, **kwargs):
+        return cls()
+
+mock_redis_async = MockRedis()
+unittest.mock.patch("redis.asyncio.from_url", return_value=mock_redis_async).start()
+unittest.mock.patch("app.core.redis_client.redis_client", mock_redis_async).start()
 
 import asyncpg
 import fastapi.testclient
@@ -29,19 +68,17 @@ def db_setup(client: fastapi.testclient.TestClient) -> typing.Iterator[tuple[asy
         client.portal.call(cleanup_test_db, connection, transaction)
 
 async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.Transaction]:
-    import redis
-    r = redis.Redis(host="127.0.0.1", port=6379, db=0)
-    try:
-        r.flushdb()
-    except Exception:
-        pass
-    finally:
-        r.close()
+    import os
+    await mock_redis_async.flushdb()
 
-    dsn = config.XATA_DATABASE_URL or "postgresql://punoted:pass@127.0.0.1:5445/punoted"
+    dsn = os.getenv("TEST_DATABASE_URL") or "postgresql://punoted:pass@127.0.0.1:5446/punoted_test"
     if dsn and "localhost" in dsn:
         dsn = dsn.replace("localhost", "127.0.0.1")
     connection: asyncpg.Connection = await asyncpg.connect(dsn)
+
+    # Recreate the public schema to ensure each test run starts with an empty DB
+    if "test" in dsn or "5446" in dsn:
+        await connection.execute("DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;")
 
     # Register JSON and JSONB codecs like production db.py does
     import json
@@ -119,6 +156,11 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
             code text NOT NULL
         ) ON COMMIT DROP;
 
+        CREATE TEMP TABLE material_prices (
+            ticker text PRIMARY KEY,
+            price double precision NOT NULL
+        ) ON COMMIT DROP;
+
         INSERT INTO users (accountid, username, userdataid, xata_id)
         VALUES ('acct1', 'testuser', 'userid1', 'fakexataid');
 
@@ -136,6 +178,9 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
 
         INSERT INTO corporation_shareholders (companyid, corporationid, userid, companycode, companyname)
         VALUES ('company1', 'corp1', 'userid1', 'FAKE', 'fake co');
+
+        INSERT INTO material_prices (ticker, price)
+        VALUES ('SF', 123.45);
         """
     )
 
@@ -187,8 +232,6 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
         })]
 
     # 2. Contracts
-    if "c.userid = any($1::text[])" in q and "contract_conditions" in q:
-        return [_MockRecord({"id": "c1"})]
     if "c.extensiondeadline" in q:
         return [_MockRecord({
             "id": "c1", "localid": "l1", "date": datetime(2000, 1, 1, tzinfo=timezone.utc),
@@ -197,7 +240,9 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
             "name": "Contract 1", "preamble": "", "party": "CUSTOMER", "status": "FULFILLED",
             "partnerid": "p1", "partnername": "Partner", "partnercode": "PTN", "userid": "userid1"
         })]
-    if "type in ('comex_purchase_pickup', 'delivery')" in q:
+    if "select c.id from contracts" in q or "contracts c" in q:
+        return [_MockRecord({"id": "c1"})]
+    if "contract_conditions" in q or "contract_materials" in q or "contract_loan_installments" in q:
         return [_MockRecord({"contractid": "c1", "conditions_json": []})]
     if "loan_stats" in q:
         return []
@@ -318,6 +363,8 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
         return [_MockRecord({"id": "preset1", "name": "Preset1", "price": 100.0, "price_corp": 90.0, "parts": "[]", "is_admin_preset": False, "created_by": "user1", "created_at": datetime(2000,1,1)})]
     if "corp_ship_orders" in q:
         return [_MockRecord({"id": 1, "corporation_code": "COSM", "customer_username": "testuser", "customer_company_code": "FAKE", "ship_config": "{}", "price": 100.0, "wait_time_days": 1, "status": "QUEUED", "notes": "", "completed_at": None, "created_at": datetime(2000,1,1), "owner_id": "acct1"})]
+    if "corporation_subsidiaries" in q:
+        return [_MockRecord({"id": "corp1", "name": "fake corp", "code": "FC", "member_count": 1})]
     if "is_synchronized" in q:
         return [_MockRecord({
             "corporationid": "corp1",

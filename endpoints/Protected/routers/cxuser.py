@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import orjson
@@ -27,12 +27,12 @@ async def common_params(
     ticker: Optional[str] = Query(None, description="Filter by ticker. [H2O, RAT...]"),
 ):
     if not end_date:
-        end_date = datetime.utcnow()
+        end_date = datetime.now(timezone.utc)
 
     if all_time:
         start_date = None
     elif not start_date:
-        start_date = datetime.utcnow() - timedelta(days=30)
+        start_date = datetime.now(timezone.utc) - timedelta(days=30)
 
     return {
         "start_date": start_date,
