@@ -15,7 +15,54 @@ WITH AllowedSites AS (
         u.username,
         s.siteid,
         s.addressplanetid,
-        s.addresssystemid
+        s.addresssystemid,
+        COALESCE(
+            (SELECT TRUE FROM user_global_settings ugs2
+             CROSS JOIN jsonb_array_elements(
+                 CASE 
+                     WHEN ugs2.internal_leased_sites IS NULL THEN '[]'::jsonb
+                     WHEN jsonb_typeof(ugs2.internal_leased_sites::jsonb) = 'array' 
+                         THEN ugs2.internal_leased_sites::jsonb
+                     ELSE '[]'::jsonb 
+                 END
+             ) l2
+             WHERE ugs2.userid = u.accountid::text
+               AND l2->>'siteId' = s.siteid
+               AND l2->>'tenant' IS NOT NULL
+               LIMIT 1
+            ), FALSE
+        ) as is_leased,
+        COALESCE(
+            (SELECT 'Outbound'::text FROM user_global_settings ugs2
+             CROSS JOIN jsonb_array_elements(
+                 CASE 
+                     WHEN ugs2.internal_leased_sites IS NULL THEN '[]'::jsonb
+                     WHEN jsonb_typeof(ugs2.internal_leased_sites::jsonb) = 'array' 
+                         THEN ugs2.internal_leased_sites::jsonb
+                     ELSE '[]'::jsonb 
+                 END
+             ) l2
+             WHERE ugs2.userid = u.accountid::text
+               AND l2->>'siteId' = s.siteid
+               AND l2->>'tenant' IS NOT NULL
+               LIMIT 1
+            ), 'owned'::text
+        ) as lease_type,
+        (SELECT l2->>'tenant'::text FROM user_global_settings ugs2
+         CROSS JOIN jsonb_array_elements(
+             CASE 
+                 WHEN ugs2.internal_leased_sites IS NULL THEN '[]'::jsonb
+                 WHEN jsonb_typeof(ugs2.internal_leased_sites::jsonb) = 'array' 
+                     THEN ugs2.internal_leased_sites::jsonb
+                 ELSE '[]'::jsonb 
+             END
+         ) l2
+         WHERE ugs2.userid = u.accountid::text
+           AND l2->>'siteId' = s.siteid
+           AND l2->>'tenant' IS NOT NULL
+           LIMIT 1
+        ) as leased_to,
+        NULL::text as leased_from
     FROM sites s
     JOIN users u ON u.userdataid = s.userid
     WHERE u.username = ANY($1::text[])
@@ -27,7 +74,15 @@ WITH AllowedSites AS (
         u_tenant.username,
         l->>'siteId' as siteid,
         s.addressplanetid,
-        s.addresssystemid
+        s.addresssystemid,
+        TRUE as is_leased,
+        'Inbound'::text as lease_type,
+        NULL::text as leased_to,
+        (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
+         FROM users u2 
+         LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
+         LEFT JOIN company_data cd2 ON cd2.userdataid = u2.userdataid 
+         WHERE u2.accountid::text = ugs.userid) as leased_from
     FROM user_global_settings ugs
     CROSS JOIN jsonb_array_elements(
         CASE 
@@ -61,6 +116,10 @@ SELECT
     pl.efficiency,
     pl.condition,
     pl.xata_updatedat,
+    ast.is_leased,
+    ast.lease_type,
+    ast.leased_to,
+    ast.leased_from,
     (
         SELECT COALESCE(jsonb_agg(jsonb_build_object(
             'OrderId', po.orderid,
@@ -142,24 +201,76 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
     workforce_needs_rows = []
     if burn:
         SQL_GET_WORKFORCE_CONSUMPTION = """
+        WITH AllowedSites AS (
+            -- 1. Sites owned by the users
+            SELECT 
+                u.username,
+                s.siteid,
+                s.addressplanetid,
+                FALSE as is_leased,
+                'owned'::text as lease_type,
+                NULL::text as leased_to,
+                NULL::text as leased_from
+            FROM sites s
+            JOIN users u ON u.userdataid = s.userid
+            WHERE u.username = ANY($1::text[])
+
+            UNION DISTINCT
+
+            -- 2. Sites leased by the users as tenants (configured in landlord's settings)
+            SELECT 
+                u_tenant.username,
+                l->>'siteId' as siteid,
+                s.addressplanetid,
+                TRUE as is_leased,
+                'Inbound'::text as lease_type,
+                NULL::text as leased_to,
+                (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
+                 FROM users u2 
+                 LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
+                 LEFT JOIN company_data cd2 ON cd2.userdataid = u2.userdataid 
+                 WHERE u2.accountid::text = ugs.userid) as leased_from
+            FROM user_global_settings ugs
+            CROSS JOIN jsonb_array_elements(
+                CASE 
+                    WHEN ugs.internal_leased_sites IS NULL THEN '[]'::jsonb
+                    WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'array' 
+                        THEN ugs.internal_leased_sites::jsonb
+                    WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'string' 
+                         AND jsonb_typeof((ugs.internal_leased_sites::jsonb #>> '{}')::jsonb) = 'array' 
+                        THEN (ugs.internal_leased_sites::jsonb #>> '{}')::jsonb
+                    ELSE '[]'::jsonb 
+                END
+            ) l
+            JOIN sites s ON s.siteid = l->>'siteId'
+            JOIN users u_tenant ON (
+                l->>'tenant' = u_tenant.username
+                OR l->>'tenant' = (SELECT companycode FROM company_data WHERE userdataid = u_tenant.userdataid)
+                OR l->>'tenant' = u_tenant.username || ' (' || (SELECT companycode FROM company_data WHERE userdataid = u_tenant.userdataid) || ')'
+            )
+            WHERE u_tenant.username = ANY($1::text[])
+        )
         SELECT 
-            u.username,
+            ast.username,
+            ast.siteid,
             p.naturalid as planetnaturalid,
             p.name as planetname,
+            ast.is_leased,
+            ast.lease_type,
+            ast.leased_to,
+            ast.leased_from,
             m.ticker,
             SUM(wn.unitsperinterval) as workforce_consumption
         FROM workforces w
         JOIN workforce_needs wn ON wn.workforceid = w.workforceid
-        JOIN users u ON u.userdataid = w.userid
-        JOIN sites s ON s.siteid = w.siteid
-        LEFT JOIN planets p ON p.planetid = s.addressplanetid
+        JOIN AllowedSites ast ON ast.siteid = w.siteid
+        LEFT JOIN planets p ON p.planetid = ast.addressplanetid
         JOIN materials m ON m.materialid = wn.materialid
-        WHERE u.username = ANY($1::text[])
-          AND ($2::text IS NULL OR (
+        WHERE ($2::text IS NULL OR (
               p.name ILIKE $2 OR 
               p.naturalid ILIKE $2
           ))
-        GROUP BY u.username, p.naturalid, p.name, m.ticker;
+        GROUP BY ast.username, ast.siteid, p.naturalid, p.name, ast.is_leased, ast.lease_type, ast.leased_to, ast.leased_from, m.ticker;
         """
         workforce_needs_rows = await conn.fetch(SQL_GET_WORKFORCE_CONSUMPTION, usernames_list, p_location)
 
@@ -173,6 +284,10 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
     for row in rows:
         pl = dict(row)
         pl["orders"] = json.loads(pl["production_orders"]) if isinstance(pl["production_orders"], str) else pl["production_orders"]
+        pl["is_leased"] = row["is_leased"]
+        pl["lease_type"] = row["lease_type"]
+        pl["leased_to"] = row["leased_to"]
+        pl["leased_from"] = row["leased_from"]
         raw_lines.append(pl)
 
         for order in pl["orders"]:
@@ -222,6 +337,11 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
         for row in workforce_needs_rows:
             username = row["username"]
             planet_id = row["planetname"] or row["planetnaturalid"]
+            site_id = row["siteid"]
+            is_leased = row["is_leased"]
+            lease_type = row["lease_type"]
+            leased_to = row["leased_to"]
+            leased_from = row["leased_from"]
             ticker = row["ticker"]
             cons = float(row["workforce_consumption"] or 0)
             if cons > 0:
@@ -230,7 +350,8 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
                         "BurnData": defaultdict(lambda: defaultdict(lambda: {"production": 0.0, "consumption": 0.0})),
                         "Lines": []
                     }
-                grouped_data[username]["BurnData"][planet_id][ticker]["consumption"] += cons
+                key = (planet_id, site_id, is_leased, lease_type, leased_to, leased_from)
+                grouped_data[username]["BurnData"][key][ticker]["consumption"] += cons
 
     for pl in raw_lines:
         username = pl["username"]
@@ -251,7 +372,13 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
 
             if total_ms > 0:
                 daily_cycles = (pl.get("capacity", 0) * MS_PER_DAY) / total_ms
-                planet_id = pl.get("planetname", "planetnaturalid")
+                planet_id = pl.get("planetname") or pl.get("planetnaturalid")
+                site_id = pl["siteid"]
+                is_leased = pl.get("is_leased", False)
+                lease_type = pl.get("lease_type", "owned")
+                leased_to = pl.get("leased_to")
+                leased_from = pl.get("leased_from")
+                key = (planet_id, site_id, is_leased, lease_type, leased_to, leased_from)
 
                 for order in active_orders:
                     r_id = order.get("RecipeId")
@@ -265,11 +392,11 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
 
                     for inp in recipe_data["Inputs"]:
                         factor = inp["MaterialAmount"] * duration_multiplier
-                        grouped_data[username]["BurnData"][planet_id][inp["MaterialTicker"]]["consumption"] += (factor * daily_cycles)
+                        grouped_data[username]["BurnData"][key][inp["MaterialTicker"]]["consumption"] += (factor * daily_cycles)
 
                     for out in recipe_data["Outputs"]:
                         factor = out["MaterialAmount"] * duration_multiplier
-                        grouped_data[username]["BurnData"][planet_id][out["MaterialTicker"]]["production"] += (factor * daily_cycles)
+                        grouped_data[username]["BurnData"][key][out["MaterialTicker"]]["production"] += (factor * daily_cycles)
 
         # --- STANDARD DATA LOGIC ---
         else:
@@ -344,6 +471,10 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
                 "Condition": pl["condition"],
                 "UserNameSubmitted": username,
                 "Timestamp": pl["xata_updatedat"].isoformat() if pl["xata_updatedat"] else None,
+                "IsLeased": pl.get("is_leased", False),
+                "LeaseType": pl.get("lease_type", "owned"),
+                "LeasedTo": pl.get("leased_to"),
+                "LeasedFrom": pl.get("leased_from"),
                 "Orders": processed_orders,
             })
 
@@ -351,7 +482,8 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
         simple_burn_data = defaultdict(lambda: defaultdict(float))
 
         for username_key, data in grouped_data.items():
-            for planet_id, tickers in data["BurnData"].items():
+            for key_tuple, tickers in data["BurnData"].items():
+                planet_id = key_tuple[0]
                 for ticker, flows in tickers.items():
                     cons = flows["consumption"]
                     if cons > 0:
@@ -370,8 +502,17 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
     for u, data in grouped_data.items():
         if burn:
             formatted_burn = {}
-            for planet_id, tickers in data["BurnData"].items():
-                formatted_burn[planet_id] = []
+            for key_tuple, tickers in data["BurnData"].items():
+                planet_id = key_tuple[0]
+                site_id = key_tuple[1]
+                is_leased = key_tuple[2]
+                lease_type = key_tuple[3]
+                leased_to = key_tuple[4]
+                leased_from = key_tuple[5]
+
+                if planet_id not in formatted_burn:
+                    formatted_burn[planet_id] = []
+
                 for ticker, flows in tickers.items():
                     prod = flows["production"]
                     cons = flows["consumption"]
@@ -379,7 +520,12 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
                         "MaterialTicker": ticker,
                         "Production": round(prod, 2),
                         "Consumption": round(cons, 2),
-                        "Net": round(prod - cons, 2)
+                        "Net": round(prod - cons, 2),
+                        "SiteId": site_id,
+                        "IsLeased": is_leased,
+                        "LeaseType": lease_type,
+                        "LeasedTo": leased_to,
+                        "LeasedFrom": leased_from
                     })
 
             final_output.append({"Username": u, "BurnRates": formatted_burn})

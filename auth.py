@@ -488,7 +488,7 @@ class RequireAuth:
             requested_users_str = q_params.get("usernames") or q_params.get("username")
             requested_users = [u.strip() for u in requested_users_str.split(",") if u.strip()] if requested_users_str else None
             
-            me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+            me_username = await conn.fetchval("SELECT username FROM users WHERE accountid::text = $1", user_id)
             
             if requested_users:
                 sql_targets = """
@@ -496,13 +496,13 @@ class RequireAuth:
                     FROM users u
                     WHERE u.username = ANY($3::text[])
                       AND (
-                          u.accountid = $1
+                          u.accountid::text = $1
                           OR EXISTS (
                               SELECT 1
                               FROM data_group_members gm_target
                               INNER JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
-                              WHERE gm_target.user_id = u.accountid
-                                AND gm_requester.user_id = $1
+                              WHERE gm_target.user_id::text = u.accountid::text
+                                AND gm_requester.user_id::text = $1
                                 AND gm_requester.status = 'ACCEPTED'
                                 AND gm_target.status = 'ACCEPTED'
                                 AND gm_requester.can_read_data = TRUE
@@ -524,12 +524,12 @@ class RequireAuth:
                         SELECT DISTINCT u.username 
                         FROM users u
                         WHERE (
-                            u.accountid = $1 
+                            u.accountid::text = $1 
                             OR EXISTS (
                                 SELECT 1 FROM data_group_members gm_target
                                 JOIN data_group_members gm_requester ON gm_requester.group_id = gm_target.group_id
-                                WHERE gm_target.user_id = u.accountid 
-                                AND gm_requester.user_id = $1
+                                WHERE gm_target.user_id::text = u.accountid::text 
+                                AND gm_requester.user_id::text = $1
                                 AND gm_requester.status = 'ACCEPTED' 
                                 AND gm_requester.can_read_data = TRUE
                                 AND gm_target.status = 'ACCEPTED' 

@@ -27,12 +27,16 @@ async def common_params(
     ticker: Optional[str] = Query(None, description="Filter by ticker. [H2O, RAT...]"),
 ):
     if not end_date:
-        end_date = datetime.now(timezone.utc)
+        end_date = datetime.now(timezone.utc).replace(tzinfo=None)
+    else:
+        end_date = end_date.replace(tzinfo=None)
 
     if all_time:
         start_date = None
     elif not start_date:
-        start_date = datetime.now(timezone.utc) - timedelta(days=30)
+        start_date = (datetime.now(timezone.utc) - timedelta(days=30)).replace(tzinfo=None)
+    else:
+        start_date = start_date.replace(tzinfo=None)
 
     return {
         "start_date": start_date,

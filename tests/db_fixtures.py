@@ -41,6 +41,8 @@ class MockRedis:
 mock_redis_async = MockRedis()
 unittest.mock.patch("redis.asyncio.from_url", return_value=mock_redis_async).start()
 unittest.mock.patch("app.core.redis_client.redis_client", mock_redis_async).start()
+unittest.mock.patch("db.Database.create_pool").start()
+unittest.mock.patch("db.Database.close_pool").start()
 
 import asyncpg
 import fastapi.testclient
@@ -70,6 +72,14 @@ def db_setup(client: fastapi.testclient.TestClient) -> typing.Iterator[tuple[asy
 async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.Transaction]:
     import os
     await mock_redis_async.flushdb()
+
+    # Mount internal routes to v1_app for testing purposes to avoid cross-loop issues
+    from routers.internal.production import production_router
+    from routers.internal.storage import storage_router
+    # Check if the prefix /internal/production is already mounted
+    if not any(hasattr(r, "path") and r.path.startswith("/internal/production") for r in app.routes):
+        app.include_router(production_router, prefix="/internal/production")
+        app.include_router(storage_router, prefix="/internal/storage")
 
     dsn = os.getenv("TEST_DATABASE_URL") or "postgresql://punoted:pass@127.0.0.1:5446/punoted_test"
     if dsn and "localhost" in dsn:
@@ -186,7 +196,9 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
     )
 
     mock_conn = _MockConnection(connection)
-    app.state.db = _MockDatabase(mock_conn)
+    mock_db = _MockDatabase(mock_conn)
+    app.state.db = mock_db
+    main.app.state.db = mock_db
     return connection, transaction
 
 async def cleanup_test_db(connection: asyncpg.Connection, transaction: asyncpg.transaction.Transaction) -> None:
@@ -302,6 +314,28 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
         })]
 
     # 8. Storages
+    if "targetstorages" in q:
+        return [_MockRecord({
+            "storageid": "st1",
+            "storage_name": "Hortus Storage",
+            "planet_name": "Hortus",
+            "planet_id": "p1",
+            "planet_naturalid": "HRT",
+            "station_name": None,
+            "station_id": None,
+            "addressableid": "site1",
+            "username": "testuser",
+            "type": "WAREHOUSE",
+            "volumecapacity": 1000.0,
+            "volumeload": 100.0,
+            "weightcapacity": 1000.0,
+            "weightload": 100.0,
+            "xata_updatedat": datetime(2000, 1, 1, tzinfo=timezone.utc),
+            "ticker": "RAT",
+            "quantity": 10.0,
+            "currencyamount": None
+        })]
+
     if "storage_items" in q:
         if "csv" in q or "stream" in q or "st.stationid" in q:
             return [_MockRecord({
