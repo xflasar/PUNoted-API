@@ -66,6 +66,15 @@ async def handle_site_available_reserve_population_data_message(db: Any, raw_pay
             f"SELECT addressplanetid FROM sites WHERE siteid = '{population_data_records.get('siteid')}'"
         )
 
+        if not planetid or not planetid.get("addressplanetid"):
+            logger.warning(
+                f"Skipping reserve population update: site {population_data_records.get('siteid')} not found in database."
+            )
+            return {
+                "success": False,
+                "message": f"Site {population_data_records.get('siteid')} not found in database.",
+            }
+
         population_data_records["planetid"] = planetid["addressplanetid"]
 
         unique_columns = ["planetid", "siteid"]
