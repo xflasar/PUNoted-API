@@ -25,50 +25,34 @@ async def handle_user_data_message(conn, payload: Dict[str, Any]) -> Dict[str, A
         return {"success": False, "message": "User ID is missing from payload."}
 
     try:
-        existing_record = await conn.fetch_rows(f"SELECT userid FROM {TABLE_NAME} WHERE userid = $1;", record_id)
+        # Atomic UPSERT to avoid concurrency race conditions (UniqueViolationError)
+        keys = list(user_data.keys())
+        keys_str = ", ".join(keys)
+        values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys))])
+        set_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in keys if k != "userid"])
 
-        if existing_record:
-            # Filter the incoming data (rework data_converter does this)
-            update_data = {
-                "subscriptionlevel": user_data.get("subscriptionlevel"),
-                "subscriptionexpiry": user_data.get("subscriptionexpiry"),
-                "preferredlocale": user_data.get("preferredlocale"),
-                "highesttier": user_data.get("highesttier"),
-                "ispayinguser": user_data.get("ispayinguser"),
-                "ismuted": user_data.get("ismuted"),
-            }
-            # Remove any keys that are None to avoid updating with null values.
-            update_data = {k: v for k, v in update_data.items() if v is not None}
+        upsert_query = f"""
+            INSERT INTO {TABLE_NAME} ({keys_str})
+            VALUES ({values_placeholders})
+            ON CONFLICT (userid) DO UPDATE SET
+                {set_clause}
+            RETURNING userid;
+        """
 
-            # Construct the update query dynamically from the filtered dictionary.
-            update_fields = ", ".join([f"{key} = ${i + 2}" for i, key in enumerate(update_data.keys())])
-            update_query = f"UPDATE {TABLE_NAME} SET {update_fields} WHERE userid = $1;"
+        inserted_userid = await conn.fetch_one(upsert_query, *user_data.values())
 
-            await conn.execute(update_query, record_id, *update_data.values())
+        if not inserted_userid:
+            raise Exception("Upsert operation returned no ID.")
 
-            logger.debug(f"Updated record '{record_id}' in '{TABLE_NAME}'.")
-            return {"success": True, "message": f"Record '{record_id}' updated."}
-        else:
-            # Record does not exist, so insert a new one.
-            # Use the original `user_data` for the insert.
-            keys = ", ".join(user_data.keys())
-            values_placeholders = ", ".join([f"${i + 1}" for i in range(len(user_data))])
-            insert_query = f"INSERT INTO {TABLE_NAME} ({keys}) VALUES ({values_placeholders}) RETURNING userid;"
+        logger.debug(f"Upserted record '{inserted_userid['userid']}' into '{TABLE_NAME}'.")
 
-            inserted_userid = await conn.fetch_one(insert_query, *user_data.values())
+        # Step 3: Update the 'users' table with the new userdataid
+        main_user_id = payload["userId"]
+        update_user_query = "UPDATE users SET userdataid = $1, is_synchronized = TRUE WHERE accountid = $2;"
+        await conn.execute(update_user_query, inserted_userid["userid"], main_user_id)
 
-            if not inserted_userid:
-                raise Exception("Insert operation returned no ID.")
-
-            logger.debug(f"Inserted new record '{inserted_userid}' into '{TABLE_NAME}'.")
-
-            # Step 3: Update the 'users' table with the new userdataid
-            main_user_id = payload["userId"]
-            update_user_query = "UPDATE users SET userdataid = $1, is_synchronized = TRUE WHERE accountid = $2;"
-            await conn.execute(update_user_query, inserted_userid["userid"], main_user_id)
-
-            logger.debug(f"Updated user '{main_user_id}' with userdataid '{inserted_userid}'.")
-            return {"success": True, "message": f"Record '{inserted_userid}' inserted."}
+        logger.debug(f"Updated user '{main_user_id}' with userdataid '{inserted_userid['userid']}'.")
+        return {"success": True, "message": f"Record '{inserted_userid['userid']}' upserted."}
 
     except Exception as e:
         logger.error(f"Error processing 'USER_DATA' message: {e}")

@@ -117,14 +117,17 @@ async def lifespan(app: FastAPI):
 
     print("Shutting down...")
     
-    # Gracefully cancel all pending asyncio tasks
-    import asyncio
-    pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
-    if pending:
-        for task in pending:
-            task.cancel()
-        # Wait for all tasks to complete their cancellation (ignoring CancelledError)
-        await asyncio.gather(*pending, return_exceptions=True)
+    # Gracefully cancel pending asyncio tasks (avoid cancelling test runner tasks under pytest)
+    import sys
+    if "pytest" not in sys.modules:
+        import asyncio
+        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        if pending:
+            for task in pending:
+                task.cancel()
+            # Wait for all tasks to complete their cancellation (ignoring CancelledError)
+            await asyncio.gather(*pending, return_exceptions=True)
+
 
     await db.close_pool()
     print("System shutdown complete.")

@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from cachetools import TTLCache
 
-import data_converter
+import converters as data_converter
 import db_message_handlers.accounting_currency_balance_data
 import db_message_handlers.accounting_data
 import db_message_handlers.commodity_exchanges

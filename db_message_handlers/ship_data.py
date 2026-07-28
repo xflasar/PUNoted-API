@@ -39,10 +39,10 @@ async def fetch_updated_ships_batch(conn: asyncpg.Connection, updated_ships_ids:
                         'segments', (
                             SELECT COALESCE(json_agg(row_to_json(seg) ORDER BY seg.segment_index ASC), '[]'::json)
                             FROM ship_flight_segments seg
-                            WHERE seg.flightid = f.id
+                            WHERE seg.flight_id = f.id
                         )
                     )
-                    FROM flights f 
+                    FROM ship_flights f 
                     WHERE f.id = s.flightid
                 )
                 ELSE NULL 

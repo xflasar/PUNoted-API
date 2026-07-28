@@ -89,9 +89,8 @@ async def process_all_site_data(con, raw_payload: Dict[str, Any]) -> Dict[str, A
 
     # --- STEP 3: BULK FETCH existing data (N+1 fix) ---
     existing_records = await con.fetch_rows(
-        "SELECT * FROM sites WHERE siteid = ANY($1::text[]) AND userid = $2;",
+        "SELECT * FROM sites WHERE siteid = ANY($1::text[]);",
         site_ids_in_payload,
-        userid,
     )
     existing_data_map = {r["siteid"]: dict(r) for r in existing_records}
 
@@ -101,7 +100,12 @@ async def process_all_site_data(con, raw_payload: Dict[str, Any]) -> Dict[str, A
 
         if existing_data:
             # UPDATE Scenario
-            changed_fields = get_changed_fields(new_data, existing_data)
+            # Preserve original owner userid to protect leased base mapping
+            record_to_update = new_data.copy()
+            if existing_data.get("userid") != userid:
+                record_to_update["userid"] = existing_data["userid"]
+
+            changed_fields = get_changed_fields(record_to_update, existing_data)
             if changed_fields:
                 sites_to_update.append({"id": site_id, "changes": changed_fields})
                 overall_results.append({"siteid": site_id, "status": "pending_update"})

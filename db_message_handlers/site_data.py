@@ -81,16 +81,22 @@ async def process_all_site_data(con, raw_payload: Dict[str, Any]) -> Dict[str, A
 
     # --- STEP 4: Check existing record ---
     existing_record = await con.fetch_one(
-        "SELECT * FROM sites WHERE siteid = $1 AND userid = $2;",
+        "SELECT * FROM sites WHERE siteid = $1;",
         site_id,
-        userid,
     )
 
     results = {}
 
     if existing_record:
         existing_dict = dict(existing_record)
-        changed_fields = get_changed_fields(record_to_process, existing_dict)
+        
+        # If the site exists under a different user (e.g. landlord),
+        # do not overwrite the original owner mapping in the sites table.
+        record_to_update = record_to_process.copy()
+        if existing_dict.get("userid") != userid:
+            record_to_update["userid"] = existing_dict["userid"]
+
+        changed_fields = get_changed_fields(record_to_update, existing_dict)
 
         if changed_fields:
             update_fields = ", ".join([f"{key} = ${i + 2}" for i, key in enumerate(changed_fields.keys())])

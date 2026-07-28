@@ -34,6 +34,13 @@ async def handle_production_line_order_update_message(db, raw_payload: Dict[str,
     try:
         async with db.pool.acquire() as con:
             async with con.transaction():
+                # Ensure parent production line exists (avoid race condition ForeignKeyViolationError)
+                if order_data_to_upsert.get("productionlineid"):
+                    await con.execute(
+                        "INSERT INTO site_production_lines (productionlineid) VALUES ($1) ON CONFLICT (productionlineid) DO NOTHING;",
+                        order_data_to_upsert["productionlineid"]
+                    )
+
                 # --- A. UPSERT Main Order Record ---
 
                 order_keys = list(order_data_to_upsert.keys())

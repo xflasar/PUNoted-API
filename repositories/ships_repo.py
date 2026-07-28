@@ -147,10 +147,10 @@ async def repo_get_owner_ships(conn: Connection, user_id: str) -> List[Record]:
                         'segments', (
                             SELECT COALESCE(json_agg(row_to_json(seg) ORDER BY seg.segment_index ASC), '[]'::json)
                             FROM ship_flight_segments seg
-                            WHERE seg.flightid = f.id
+                            WHERE seg.flight_id = f.id
                         )
                     )
-                    FROM flights f 
+                    FROM ship_flights f 
                     WHERE f.id = s.flightid
                 )
                 ELSE NULL 
