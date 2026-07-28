@@ -20,16 +20,9 @@ RUN pip install gunicorn uvicorn
 # Copy project
 COPY . .
 
-# Expose the port Gunicorn will run on
-EXPOSE 8000
-
-# Run Gunicorn
-# -w: Number of workers (adjust based on CPU)
-# -k uvicorn.workers.UvicornWorker: Use Uvicorn class
-# -b: Address to bind to
 CMD ["gunicorn", "main:app", \
-     "-w", "6", \
-     "-k", "uvicorn.workers.UvicornWorker", \
-     "-b", "0.0.0.0:9901", \
+     "--bind", "0.0.0.0:9901", \
+     "--worker-class", "uvicorn.workers.UvicornWorker", \
+     "--workers", "3", \
      "--timeout", "300", \
      "--keep-alive", "5"]
