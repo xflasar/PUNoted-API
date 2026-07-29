@@ -47,7 +47,7 @@ async def handle_ship_flights_data_message(db: Database, converted_data: Dict[st
 
         async with db.pool.acquire() as con:
             async with con.transaction():
-                await _upsert_records(con, "ship_flights", records_to_process, ["id", "userid", "shipid"])
+                await _upsert_records(con, "ship_flights", records_to_process, ["id"])
                 await _upsert_records(
                     con,
                     "ship_flight_segments",
