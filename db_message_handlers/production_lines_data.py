@@ -8,105 +8,105 @@ logger = logging.getLogger(__name__)
 
 async def handle_production_lines_data_message(db, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     start_time = time.perf_counter()
-    logger.debug("Starting processing production lines data.")
-    converted_data = raw_payload["data"]
+    converted_data = raw_payload.get("data", {})
 
-    site_id = converted_data["siteid"]
-    production_lines = converted_data["production_lines"]
+    site_id = converted_data.get("siteid")
+    production_lines = converted_data.get("production_lines", [])
 
-    # It's valid for a site to have 0 production lines.
-    # The check `if not production_lines` would prevent clearing all lines.
+    if not site_id:
+        logger.warning("Received production lines message without siteid.")
+        return {"success": False, "message": "Missing siteid"}
 
     try:
         async with db.pool.acquire() as con:
             async with con.transaction():
-                # 1. Fetch all existing production lines for the site
-                query = "SELECT productionlineid FROM site_production_lines WHERE siteid=$1;"
-                query_response = await con.fetch(query, site_id)
-                existing_production_lines_ids = {record["productionlineid"] for record in query_response}
+                # 1. LOCK THE SITE ROW to prevent concurrent message collisions for the same site
+                await con.execute("SELECT siteid FROM sites WHERE siteid = $1 FOR UPDATE;", site_id)
 
-                # 2. Get all incoming production line IDs from the payload
-                incoming_production_line_ids = {
-                    record.get("productionlineid") for record in production_lines if record.get("productionlineid")
+                # 2. Fetch existing production lines for THIS site only
+                query = "SELECT productionlineid FROM site_production_lines WHERE siteid = $1;"
+                query_response = await con.fetch(query, site_id)
+                existing_ids = {record["productionlineid"] for record in query_response}
+
+                incoming_ids = {
+                    record["productionlineid"] 
+                    for record in production_lines 
+                    if record.get("productionlineid")
                 }
 
-                # 3. Determine which existing lines are NOT in the payload and delete them
-                lines_to_delete = existing_production_lines_ids - incoming_production_line_ids
+                # 3. Clean up stale lines removed by the user in-game
+                lines_to_delete = existing_ids - incoming_ids
                 if lines_to_delete:
-                    logger.debug(f"Deleting {len(lines_to_delete)} stale production lines for site {site_id}.")
-                    # Assuming ON DELETE CASCADE is set for foreign keys in related tables
-                    # (e.g., site_production_line_orders). If not, manual deletion is needed.
-                    delete_query = (
-                        "DELETE FROM site_production_lines WHERE siteid = $1 AND productionlineid = ANY($2::text[]);"
+                    # Clean child orders first to avoid FK constraint errors
+                    await con.execute(
+                        "DELETE FROM site_production_line_orders WHERE productionlineid = ANY($1::text[]);",
+                        list(lines_to_delete)
                     )
-                    await con.execute(delete_query, site_id, list(lines_to_delete))
+                    await con.execute(
+                        "DELETE FROM site_production_lines WHERE siteid = $1 AND productionlineid = ANY($2::text[]);",
+                        site_id, list(lines_to_delete)
+                    )
 
-                # If there are no production lines in the payload, we're done.
                 if not production_lines:
-                    return {
-                        "success": True,
-                        "message": "No production lines in payload. Stale lines (if any) deleted.",
-                    }
+                    return {"success": True, "message": f"Cleared all lines for site {site_id}."}
 
-                # 4. Separate incoming lines into records to insert vs. update
+                # 4. Separate inserts vs updates
                 records_to_insert = []
                 records_to_update = []
-
                 orders = []
                 production_templates = []
-                efficiency_factors = []
-                workforces = []
 
                 for record in production_lines:
-                    production_line_id = record.get("productionlineid")
-                    if not production_line_id:
+                    p_id = record.get("productionlineid")
+                    if not p_id:
                         continue
 
-                    orders.extend(record.get("orders", []))
-                    production_templates.extend(record.get("production_templates", []))
-                    efficiency_factors.extend(record.get("efficiency_factors", []))
-                    workforces.extend(record.get("workforces", []))
+                    orders.extend(record.get("orders", []) or [])
+                    production_templates.extend(record.get("production_templates", []) or [])
 
-                    temp_record = record.copy()
-                    temp_record.pop("orders", None)
-                    temp_record.pop("production_templates", None)
-                    temp_record.pop("efficiency_factors", None)
-                    temp_record.pop("workforces", None)
+                    clean_rec = {
+                        k: v for k, v in record.items() 
+                        if k not in ["orders", "production_templates", "efficiency_factors", "workforces"]
+                    }
 
-                    if production_line_id not in existing_production_lines_ids:
-                        records_to_insert.append(temp_record)
+                    if p_id not in existing_ids:
+                        records_to_insert.append(clean_rec)
                     else:
-                        records_to_update.append(temp_record)
+                        records_to_update.append(clean_rec)
 
-                # 5. Perform inserts and updates
+                # 5. Bulk Inserts (Guaranteed Column Alignment)
                 if records_to_insert:
-                    logger.debug(f"Found {len(records_to_insert)} new production lines. Performing bulk insert.")
-                    keys = ", ".join(records_to_insert[0].keys())
-                    values_placeholders = ", ".join([f"${i + 1}" for i in range(len(records_to_insert[0]))])
-                    insert_query = f"INSERT INTO site_production_lines ({keys}) VALUES ({values_placeholders}) ON CONFLICT (productionlineid) DO NOTHING;"
-                    await con.executemany(insert_query, [list(rec.values()) for rec in records_to_insert])
+                    all_keys = list(records_to_insert[0].keys())
+                    cols = ", ".join(all_keys)
+                    placeholders = ", ".join([f"${i + 1}" for i in range(len(all_keys))])
+                    
+                    insert_sql = f"""
+                        INSERT INTO site_production_lines ({cols}) 
+                        VALUES ({placeholders}) 
+                        ON CONFLICT (productionlineid) DO NOTHING;
+                    """
+                    tuples_to_insert = [tuple(r.get(k) for k in all_keys) for r in records_to_insert]
+                    await con.executemany(insert_sql, tuples_to_insert)
 
+                # 6. Bulk Updates
                 if records_to_update:
-                    logger.debug(f"Found {len(records_to_update)} existing production lines. Performing bulk update.")
-                    for record_to_update in records_to_update:
-                        update_data = record_to_update.copy()
-                        record_id = update_data.pop("productionlineid")
-                        update_fields = ", ".join([f"{key} = ${i + 2}" for i, key in enumerate(update_data.keys())])
-                        update_query = f"UPDATE site_production_lines SET {update_fields} WHERE productionlineid = $1;"
-                        await con.execute(update_query, record_id, *update_data.values())
+                    for rec in records_to_update:
+                        r_id = rec.pop("productionlineid")
+                        if not rec:
+                            continue
+                        set_clause = ", ".join([f"{k} = ${i + 2}" for i, k in enumerate(rec.keys())])
+                        update_sql = f"UPDATE site_production_lines SET {set_clause} WHERE productionlineid = $1;"
+                        await con.execute(update_sql, r_id, *rec.values())
 
-                # 6. Process nested data for the upserted lines
-                await process_orders(con, orders, incoming_production_line_ids)
+                # 7. Process orders strictly for incoming lines in this specific site message
+                await process_orders(con, orders, incoming_ids)
                 await process_production_templates(con, production_templates)
-                # Placeholder for other nested data processing
-                # await process_effficiency_factors(efficiency_factors)
-                # await process_workforce(workforces)
 
-        end_time = time.perf_counter()
-        logger.debug(f"Finished processing production lines data in {end_time - start_time:.2f} seconds.")
-        return {"success": True, "message": "Processed production lines data."}
+        logger.debug(f"Processed site {site_id} ({len(production_lines)} lines) in {time.perf_counter() - start_time:.2f}s")
+        return {"success": True, "message": f"Processed site {site_id}"}
+
     except Exception as e:
-        logger.error(f"Error processing production line data: {e}", exc_info=True)
+        logger.error(f"Error handling site {site_id}: {e}", exc_info=True)
         raise
 
 
