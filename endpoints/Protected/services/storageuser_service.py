@@ -1,7 +1,7 @@
 from typing import AsyncGenerator, Optional
 
 # --- JSON FETCH (Grouped by User) ---
-async def fetch_storages_as_json(db, usernames_list: list, location_filter: Optional[str] = None) -> str:
+async def fetch_storages_as_json(db, usernames_list: list, location_filter: Optional[str] = None) -> list[dict]:
     async with db.pool.acquire() as conn:
         params = [usernames_list]
         loc_filter_clause = ""
@@ -57,7 +57,7 @@ async def fetch_storages_as_json(db, usernames_list: list, location_filter: Opti
                 FROM valid_storages vs GROUP BY username
             ) usd;
         """
-        return await conn.fetchval(query, *params) or "[]"
+        return await conn.fetchval(query, *params)
 
 
 # --- CSV STREAM (Flattened & Multi-User) ---
