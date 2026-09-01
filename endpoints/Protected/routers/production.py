@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import logging
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -8,8 +10,10 @@ from fastapi.responses import JSONResponse as DefaultJSONResponse
 from app.core.limiter import get_auth_key, limiter
 from auth import RequireAuth
 from endpoints.Protected.repositories.production_repo import search_production_lines
-from endpoints.Protected.schemas.production import UserProduction, ProductionLine, BurnRateMaterial
-from typing import List, Dict
+from endpoints.Protected.schemas.production import BurnRateMaterial, ProductionLine, UserProduction
+
+if TYPE_CHECKING:
+    import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +112,8 @@ async def search_burn_production_user(
     location: Optional[str] = Query(None, description="Filter by Planet/Natural ID"),
     user_id: str = Depends(RequireAuth(["production:read"])),
 ):
-    pool = request.app.state.db.pool
+    pool: asyncpg.Pool = request.app.state.db.pool
     valid_targets = getattr(request.state, "valid_target_users", [])
-
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
@@ -123,13 +126,13 @@ async def search_burn_production_user(
             data_list = orjson.loads(json_str)
             target_record = None
             if not username:
-                me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
-                for record in data_list:
-                    if record.get("Username") == me_username:
-                        target_record = record
-                        break
-            if not target_record and data_list:
-                target_record = data_list[0]
+                username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+            for record in data_list:
+                if record.get("Username") == username:
+                    target_record = record
+                    break
+            else:
+                raise HTTPException(status_code=404, detail="User not found or access denied")
 
             if target_record and "BurnRates" in target_record:
                 return target_record["BurnRates"]
