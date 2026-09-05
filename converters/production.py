@@ -219,13 +219,16 @@ def convert_production_line_updated(raw_record: Dict[str, Any]) -> Dict[str, Any
     return order
 
 def convert_production_line_removed(raw_record: Dict[str, Any]) -> Dict[str, Any]:
-    converted_record = {}
+    payload = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
 
-    record = raw_record["payload"]
+    order_id = payload.get("orderId") or payload.get("orderid") or payload.get("id")
+    production_line_id = (
+        payload.get("productionLineId") or payload.get("productionlineid") or payload.get("lineId")
+    )
 
-    converted_record = {
-        "orderid": record.get("orderId"),
-        "productionlineid": record.get("productionLineId"),
+    return {
+        "orderid": order_id,
+        "productionlineid": production_line_id,
     }
-
-    return converted_record

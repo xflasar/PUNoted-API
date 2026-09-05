@@ -11,12 +11,20 @@ class VendorDetails(BaseModel):
     activity: str
     cx: str
 
+class VendorLocation(BaseModel):
+    id: str
+    location_name: str
+    location_code: str
+    available: float
+
 class VendorOrder(BaseModel):
-    orderid: str
+    orderid: Optional[str] = None
     materialticker: str
-    price: Dict[str, Any]
     ordertype: str
-    locations: List[Dict[str, Any]]
+    fixedprice: float = 0.0
+    location: List[VendorLocation] = Field(default_factory=list)
+    price: Dict[str, float] = Field(default_factory=dict)
+    available: float = 0.0
 
 class VendorEntry(BaseModel):
     vendor: VendorDetails

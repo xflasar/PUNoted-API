@@ -62,9 +62,11 @@ SELECT
     cs.location_name,
     cs.is_accurate,
     pl.productionlineid,
+    pl.type as building_ticker,
     pl.capacity,
     pl.condition,
     po.orderid,
+    po.recurring,
     po.created,
     po.completion,
     po.duration as order_duration,
@@ -79,45 +81,33 @@ WHERE (po.completion IS NULL OR po.completion > NOW());
 
 # 1. Core Info
 SQL_FETCH_RECIPES_CORE = """
-WITH Targets AS (
-    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
-)
-SELECT 
+SELECT DISTINCT ON (r.productiontemplateid)
     r.productiontemplateid as recipe_id, 
-    r.productionlineid as line_id,
     r.duration
 FROM production_recipes r
-JOIN Targets t ON r.productiontemplateid = t.t_id AND r.productionlineid = t.l_id
+WHERE r.productiontemplateid = ANY($1::text[]);
 """
 
 # 2. Inputs
 SQL_FETCH_RECIPE_INPUTS = """
-WITH Targets AS (
-    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
-)
 SELECT 
     i.productiontemplateid as recipe_id, 
-    i.productionlineid as line_id,
     m.ticker, 
     i.factor
 FROM production_recipe_input_factors i
-JOIN Targets t ON i.productiontemplateid = t.t_id AND i.productionlineid = t.l_id
 JOIN materials m ON m.materialid = i.materialid
+WHERE i.productiontemplateid = ANY($1::text[]);
 """
 
 # 3. Outputs
 SQL_FETCH_RECIPE_OUTPUTS = """
-WITH Targets AS (
-    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
-)
 SELECT 
     o.productiontemplateid as recipe_id, 
-    o.productionlineid as line_id,
     m.ticker, 
     o.factor
 FROM production_recipe_output_factors o
-JOIN Targets t ON o.productiontemplateid = t.t_id AND o.productionlineid = t.l_id
 JOIN materials m ON m.materialid = o.materialid
+WHERE o.productiontemplateid = ANY($1::text[]);
 """
 
 SQL_FETCH_CORP_WORKFORCE = """
@@ -177,10 +167,10 @@ async def fetch_corp_flat_orders(conn: Any, user_id: str):
     return await conn.fetch(SQL_FETCH_CORP_FLAT_ORDERS, user_id)
 
 
-async def fetch_recipe_components(conn: Any, template_ids: List[str], line_ids: List[str]):
-    core = await conn.fetch(SQL_FETCH_RECIPES_CORE, template_ids, line_ids)
-    inputs = await conn.fetch(SQL_FETCH_RECIPE_INPUTS, template_ids, line_ids)
-    outputs = await conn.fetch(SQL_FETCH_RECIPE_OUTPUTS, template_ids, line_ids)
+async def fetch_recipe_components(conn: Any, template_ids: List[str]):
+    core = await conn.fetch(SQL_FETCH_RECIPES_CORE, template_ids)
+    inputs = await conn.fetch(SQL_FETCH_RECIPE_INPUTS, template_ids)
+    outputs = await conn.fetch(SQL_FETCH_RECIPE_OUTPUTS, template_ids)
     return core, inputs, outputs
 
 

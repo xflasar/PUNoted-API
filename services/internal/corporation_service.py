@@ -1,3 +1,4 @@
+import copy
 import time
 from collections import defaultdict
 from typing import Any, Dict, List
@@ -25,14 +26,12 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
     t0 = time.perf_counter()
 
     # A. Identify the Family (Main + Subs)
-    # Returns list of dicts: [{'id': ..., 'name': ..., 'code': ..., 'member_count': ...}]
     family_metadata = await get_corp_family_metadata(conn, user_id)
 
     if not family_metadata:
         raise HTTPException(status_code=404, detail="No corporation found for this user.")
 
     # B. Fetch ALL Members for these corporations
-    # Returns Dict[corp_id, List[Member]] and Dict[corp_id, proxy_user_id]
     family_ids = [c["id"] for c in family_metadata]
     members_map, proxies_map = await get_family_members(conn, family_ids)
 
@@ -42,48 +41,35 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
     for corp in family_metadata:
         corp_id = corp["id"]
         corp_members = members_map.get(corp_id, [])
-
-        # We need a valid user_id (Proxy) within this specific corporation to fetch its production/workforce.
-        # If the requesting user is in this corp, use them. Otherwise use any synchronized member.
-        # If no synchronized members exist, we can't fetch production data.
         proxy_id = proxies_map.get(corp_id)
 
-        # If the current user belongs to this specific corp, prefer their ID (safer for RLS if applicable)
-        # (Logic handled in get_family_members to prioritize active users)
-
         summary = []
+        corp_balances = []
 
         if proxy_id:
             # --- 1. Fetch Flat Orders (For this specific Corp) ---
             flat_orders = await fetch_corp_flat_orders(conn, proxy_id)
 
             if flat_orders:
-                # --- 2. Extract Recipes ---
-                unique_pairs = set()
-                for row in flat_orders:
-                    if row["recipeid"]:
-                        unique_pairs.add((str(row["recipeid"]), str(row["productionlineid"])))
-
-                template_ids = [p[0] for p in unique_pairs]
-                line_ids = [p[1] for p in unique_pairs]
+                template_ids = list(set(str(row["recipeid"]) for row in flat_orders if row["recipeid"]))
 
                 # --- 3. Fetch Components ---
-                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, template_ids, line_ids)
+                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, template_ids)
 
                 # --- 4. Build Recipe Map ---
                 recipe_map = {}
                 for r in core_rows:
-                    recipe_map[f"{r['recipe_id']}_{r['line_id']}"] = {
+                    recipe_map[r["recipe_id"]] = {
                         "duration": r["duration"],
                         "inputs": [],
                         "outputs": [],
                     }
                 for i in input_rows:
-                    k = f"{i['recipe_id']}_{i['line_id']}"
+                    k = i["recipe_id"]
                     if k in recipe_map:
                         recipe_map[k]["inputs"].append({"ticker": i["ticker"], "factor": i["factor"]})
                 for o in output_rows:
-                    k = f"{o['recipe_id']}_{o['line_id']}"
+                    k = o["recipe_id"]
                     if k in recipe_map:
                         recipe_map[k]["outputs"].append({"ticker": o["ticker"], "factor": o["factor"]})
 
@@ -107,14 +93,20 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
                             "efficiency": row.get("efficiency", 1.0),
                         }
 
-                    r_key = f"{row['recipeid']}_{lid}"
+                    r_key = str(row["recipeid"]) if row.get("recipeid") else ""
+                    # Deep copy prevents in-place list mutation across orders and players
+                    rec_obj = copy.deepcopy(recipe_map.get(r_key, {})) if r_key in recipe_map else {}
+                    if rec_obj and row.get("building_ticker"):
+                        rec_obj["building"] = row["building_ticker"]
+
                     sites_map[sid]["lines"][lid]["production_orders"].append(
                         {
                             "order_id": row["orderid"],
+                            "recurring": row.get("recurring"),
                             "created": row["created"].isoformat() if row["created"] else None,
                             "completion": row["completion"].isoformat() if row["completion"] else None,
                             "duration": row["order_duration"],
-                            "production_recipe": recipe_map.get(r_key, {}),
+                            "production_recipe": rec_obj,
                         }
                     )
 
@@ -137,8 +129,68 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
                 # --- 8. Calculate Flow ---
                 corp_flow = process_corp_production_and_workforce(prod_raw, wf_raw)
 
-                # --- 9. Format Summary ---
-                for ticker, info in corp_flow.items():
+                # --- 9. Fetch Storage Quantities, Prices, and Balances for Corp Members ---
+                member_user_ids = [
+                    m["companyCode"] if isinstance(m, dict) else getattr(m, "companyCode", "")
+                    for m in corp_members
+                    if (m["companyCode"] if isinstance(m, dict) else getattr(m, "companyCode", ""))
+                ]
+                member_udids = await conn.fetch(
+                    "SELECT userdataid FROM users WHERE accountid::text = ANY($1) OR userdataid = ANY($1);",
+                    member_user_ids
+                )
+                ud_list = [r["userdataid"] for r in member_udids if r["userdataid"]]
+
+                storage_map = {}
+                s_rows = await conn.fetch(
+                    """
+                    SELECT m.ticker, SUM(si.quantity) as qty
+                    FROM storage_items si
+                    JOIN storages s ON si.storageid = s.storageid
+                    JOIN materials m ON si.materialid = m.materialid
+                    JOIN corporation_shareholders cs ON s.userid = cs.userid
+                    WHERE cs.corporationid = $1
+                    GROUP BY m.ticker;
+                    """,
+                    corp_id,
+                )
+                storage_map = {r["ticker"]: float(r["qty"] or 0) for r in s_rows}
+
+                cx_prices_rows = await conn.fetch(
+                    "SELECT ticker, price, askprice, bidprice FROM cx_brokers WHERE price > 0 OR askprice > 0;"
+                )
+                price_map = {}
+                for r in cx_prices_rows:
+                    t = r["ticker"]
+                    p = float(r["price"] or r["askprice"] or r["bidprice"] or 0)
+                    if t not in price_map or p > 0:
+                        price_map[t] = p
+
+                corp_balances = []
+                if ud_list:
+                    b_rows = await conn.fetch(
+                        "SELECT balancecurrencycode, SUM(balanceamount) as total_bal FROM user_currency_accounts WHERE userdataid = ANY($1) GROUP BY balancecurrencycode;",
+                        ud_list
+                    )
+                    corp_balances = [{"currency": r["balancecurrencycode"], "amount": float(r["total_bal"])} for r in b_rows]
+
+                # --- 10. Format Summary ---
+                tot_corp_prod = sum(info["prod_total"] for info in corp_flow.values())
+                all_corp_tickers = set(corp_flow.keys()) | set(storage_map.keys())
+
+                for ticker in all_corp_tickers:
+                    info = corp_flow.get(ticker, {
+                        "producers": {},
+                        "consumers": {},
+                        "prod_total": 0.0,
+                        "prod_acc": 0.0,
+                        "prod_est": 0.0,
+                        "cons_total": 0.0,
+                        "cons_acc": 0.0,
+                        "cons_est": 0.0,
+                        "user_recipes_used": {},
+                        "user_recipe_inputs": {},
+                    })
                     producers = [
                         ProducerConsumerItem(
                             loc=l,
@@ -146,6 +198,10 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
                             amount=round(v["acc"] + v["est"], 2),
                             isAccurate=(v["est"] == 0),
                             condition=0.0,
+                            batchProdActive=round(v.get("batch_active", 0.0), 2),
+                            batchProdQueued=round(v.get("batch_queued", 0.0), 2),
+                            batchConsActive=0.0,
+                            batchConsQueued=0.0,
                         )
                         for (l, p), v in info["producers"].items()
                     ]
@@ -156,52 +212,90 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
                             amount=round(v["acc"] + v["est"], 2),
                             isAccurate=(v["est"] == 0),
                             condition=0.0,
+                            batchProdActive=0.0,
+                            batchProdQueued=0.0,
+                            batchConsActive=round(v.get("batch_active", 0.0), 2),
+                            batchConsQueued=round(v.get("batch_queued", 0.0), 2),
                         )
                         for (l, p), v in info["consumers"].items()
                     ]
 
+                    prod_tot = round(info["prod_total"], 2)
+                    cons_tot = round(info["cons_total"], 2)
+                    share_pct = round((prod_tot / tot_corp_prod * 100), 1) if tot_corp_prod > 0 else 0.0
+
+                    raw_user_recipes = info.get("user_recipes_used")
+                    formatted_recipes = []
+                    if raw_user_recipes:
+                        for r_key, r_data in raw_user_recipes.items():
+                            user_list = []
+                            if "users" in r_data:
+                                for (p_name, loc_name), u_metrics in r_data["users"].items():
+                                    user_list.append({
+                                        "player": p_name,
+                                        "loc": loc_name,
+                                        "dailyOutput": round(u_metrics["daily_output"], 2),
+                                        "dailyCycles": round(u_metrics["daily_cycles"], 2),
+                                    })
+                            formatted_recipes.append({
+                                "recipeKey": r_key,
+                                "building": r_data.get("building", ""),
+                                "dailyOutput": round(r_data.get("daily_output", 0.0), 2),
+                                "dailyCycles": round(r_data.get("daily_cycles", 0.0), 2),
+                                "outputAmount": r_data.get("output_amount", 1.0),
+                                "inputs": {k: round(v, 2) for k, v in r_data.get("inputs", {}).items()},
+                                "outputs": {k: round(v, 2) for k, v in r_data.get("outputs", {}).items()},
+                                "users": user_list,
+                            })
+
                     summary.append(
                         ProductionSummaryItem(
                             ticker=ticker,
-                            productionTotal=round(info["prod_total"], 2),
+                            productionTotal=prod_tot,
                             productionAccurate=round(info["prod_acc"], 2),
                             productionEstimated=round(info["prod_est"], 2),
-                            consumptionTotal=round(info["cons_total"], 2),
+                            consumptionTotal=cons_tot,
                             consumptionAccurate=round(info["cons_acc"], 2),
                             consumptionEstimated=round(info["cons_est"], 2),
-                            net=round(info["prod_total"] - info["cons_total"], 2),
+                            net=round(prod_tot - cons_tot, 2),
+                            storageQty=round(storage_map.get(ticker, 0.0), 2),
+                            price=round(price_map.get(ticker, 0.0), 2),
+                            marketSharePct=share_pct,
+                            batchProdActive=round(info.get("batch_prod_active", 0.0), 2),
+                            batchProdQueued=round(info.get("batch_prod_queued", 0.0), 2),
+                            batchConsActive=round(info.get("batch_cons_active", 0.0), 2),
+                            batchConsQueued=round(info.get("batch_cons_queued", 0.0), 2),
                             producers=producers,
                             consumers=consumers,
+                            userRecipeInputs={k: round(v, 2) for k, v in info.get("user_recipe_inputs", {}).items()} if info.get("user_recipe_inputs") else None,
+                            userRecipesUsed=formatted_recipes if formatted_recipes else None,
                         )
                     )
 
                 summary.sort(key=lambda x: abs(x.net), reverse=True)
 
-        # Append this Corporation's Data object
         response_list.append(
             CorpOverviewResponse(
                 name=corp["name"],
                 code=corp["code"],
                 memberCount=corp["member_count"],
-                headquarters=" - ",  # Fix later
+                headquarters=" - ",
                 productionSummary=summary,
                 productionCount=len(summary),
                 consumptionCount=len(summary),
                 members=corp_members,
+                balances=corp_balances,
             )
         )
 
     return response_list
+
 
 # ==========================================
 # 1.5. FLAT BUILDER
 # ==========================================
 
 async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[str, Any]]:
-    """
-    Executes the exact same data fetch and calculation pipeline as the core builder, 
-    but formats the output into a flat array optimized for CSV export or tabular frontend display.
-    """
     family_metadata = await get_corp_family_metadata(conn, user_id)
     if not family_metadata:
         raise HTTPException(status_code=404, detail="No corporation found for this user.")
@@ -220,27 +314,21 @@ async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[s
             flat_orders = await fetch_corp_flat_orders(conn, proxy_id)
 
             if flat_orders:
-                unique_pairs = set()
-                for row in flat_orders:
-                    if row["recipeid"]:
-                        unique_pairs.add((str(row["recipeid"]), str(row["productionlineid"])))
+                template_ids = list(set(str(row["recipeid"]) for row in flat_orders if row["recipeid"]))
 
-                template_ids = [p[0] for p in unique_pairs]
-                line_ids = [p[1] for p in unique_pairs]
-
-                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, template_ids, line_ids)
+                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, template_ids)
 
                 recipe_map = {}
                 for r in core_rows:
-                    recipe_map[f"{r['recipe_id']}_{r['line_id']}"] = {
+                    recipe_map[r["recipe_id"]] = {
                         "duration": r["duration"], "inputs": [], "outputs": []
                     }
                 for i in input_rows:
-                    k = f"{i['recipe_id']}_{i['line_id']}"
+                    k = i["recipe_id"]
                     if k in recipe_map:
                         recipe_map[k]["inputs"].append({"ticker": i["ticker"], "factor": i["factor"]})
                 for o in output_rows:
-                    k = f"{o['recipe_id']}_{o['line_id']}"
+                    k = o["recipe_id"]
                     if k in recipe_map:
                         recipe_map[k]["outputs"].append({"ticker": o["ticker"], "factor": o["factor"]})
 
@@ -261,13 +349,18 @@ async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[s
                             "production_orders": [],
                             "efficiency": row.get("efficiency", 1.0),
                         }
-                    r_key = f"{row['recipeid']}_{lid}"
+                    r_key = str(row["recipeid"]) if row.get("recipeid") else ""
+                    rec_obj = copy.deepcopy(recipe_map.get(r_key, {})) if r_key in recipe_map else {}
+                    if rec_obj and row.get("building_ticker"):
+                        rec_obj["building"] = row["building_ticker"]
+
                     sites_map[sid]["lines"][lid]["production_orders"].append({
                         "order_id": row["orderid"],
+                        "recurring": row.get("recurring"),
                         "created": row["created"].isoformat() if row["created"] else None,
                         "completion": row["completion"].isoformat() if row["completion"] else None,
                         "duration": row["order_duration"],
-                        "production_recipe": recipe_map.get(r_key, {}),
+                        "production_recipe": rec_obj,
                     })
 
                 prod_raw = []
@@ -283,20 +376,15 @@ async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[s
                 wf_raw = await fetch_corp_workforce(conn, proxy_id)
                 corp_flow = process_corp_production_and_workforce(prod_raw, wf_raw)
 
-                # --- FLATTENING LOGIC ---
                 for ticker, info in corp_flow.items():
-                    # Group by (Location, Player) to unify production and consumption rows
                     loc_player_map = defaultdict(lambda: {"production": 0.0, "consumption": 0.0})
 
-                    # Aggregate Producers
                     for (loc, player), v in info["producers"].items():
                         loc_player_map[(loc, player)]["production"] += (v["acc"] + v["est"])
 
-                    # Aggregate Consumers (Includes Workforce Consumption based on process logic)
                     for (loc, player), v in info["consumers"].items():
                         loc_player_map[(loc, player)]["consumption"] += (v["acc"] + v["est"])
 
-                    # Build final flat dictionaries
                     for (loc, player), flows in loc_player_map.items():
                         flat_results.append({
                             "CorpCode": corp_code,
@@ -309,18 +397,12 @@ async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[s
 
     return flat_results
 
+
 # ==========================================
 # 2. HELPER: GET FAMILY METADATA
 # ==========================================
 
-
 async def get_corp_family_metadata(conn: Any, user_id: str) -> List[Dict[str, Any]]:
-    """
-    Finds the 'Family' of corporations linked to the user.
-    1. Finds User's Current Corp.
-    2. Checks if it is a Sub or Main via corporation_subsidiaries.
-    3. Returns list of metadata for Main + All Subs.
-    """
     FAMILY_QUERY = """
     WITH UserCorp AS (
         SELECT c.id 
@@ -330,21 +412,17 @@ async def get_corp_family_metadata(conn: Any, user_id: str) -> List[Dict[str, An
         JOIN corporations c ON cs.corporationid = c.id 
         WHERE u.accountid = $1 LIMIT 1
     ),
-    -- Identify the MainID. 
-    -- If UserCorp is a sub, get its main. If it's a main (or unlinked), use UserCorp.id
     MainID AS (
         SELECT COALESCE(
             (SELECT corporationmainid FROM corporation_subsidiaries WHERE corporationsubid = (SELECT id FROM UserCorp)),
             (SELECT id FROM UserCorp)
         ) as id
     ),
-    -- Collect all IDs (Main + Subs)
     FamilyIDs AS (
         SELECT id FROM MainID
         UNION
         SELECT corporationsubid FROM corporation_subsidiaries WHERE corporationmainid = (SELECT id FROM MainID)
     )
-    -- Fetch Metadata for all found IDs
     SELECT 
         c.id, c.name, c.code,
         (SELECT COUNT(DISTINCT companycode) FROM corporation_shareholders WHERE corporationid = c.id) as member_count
@@ -361,14 +439,7 @@ async def get_corp_family_metadata(conn: Any, user_id: str) -> List[Dict[str, An
 # 3. HELPER: GET FAMILY MEMBERS
 # ==========================================
 
-
 async def get_family_members(conn: Any, corp_ids: List[str]):
-    """
-    Fetches members for all provided corporation IDs.
-    Returns:
-      1. map: corp_id -> List[MemberDict]
-      2. map: corp_id -> proxy_user_account_id (Best candidate to fetch data)
-    """
     MEMBERS_QUERY = """
     SELECT 
         cs.corporationid,
@@ -377,7 +448,7 @@ async def get_family_members(conn: Any, corp_ids: List[str]):
         CASE WHEN ud.userid IS NOT NULL THEN TRUE ELSE FALSE END AS is_synchronized,
         u.xata_updatedat AS last_active,
         ud.xata_createdat AS joineddate,
-        u.accountid -- We need this to proxy requests for subs
+        u.accountid
     FROM corporation_shareholders cs
     LEFT JOIN users_data ud ON cs.userid = ud.userid
     LEFT JOIN users u ON ud.userid = u.userdataid
@@ -393,7 +464,6 @@ async def get_family_members(conn: Any, corp_ids: List[str]):
     for r in records:
         cid = r["corporationid"]
 
-        # Build Member Object
         member_obj = {
             "companyCode": r["companycode"],
             "companyName": r["companyname"],
@@ -403,9 +473,6 @@ async def get_family_members(conn: Any, corp_ids: List[str]):
         }
         members_map[cid].append(member_obj)
 
-        # Determine Proxy: Prefer synchronized users. Overwrite previous if current is better.
-        # Logic: If we don't have a proxy yet, and this user has an accountid, take it.
-        # You might want to prioritize the *requesting* user if they are in this list, but any valid member works for RLS usually.
         if r["accountid"] and cid not in proxies_map:
             proxies_map[cid] = r["accountid"]
 

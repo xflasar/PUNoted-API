@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from pydantic import BaseModel
 
@@ -9,6 +9,10 @@ class ProducerConsumerItem(BaseModel):
     amount: float
     isAccurate: bool
     condition: float = 0.0
+    batchProdActive: Optional[float] = 0.0
+    batchProdQueued: Optional[float] = 0.0
+    batchConsActive: Optional[float] = 0.0
+    batchConsQueued: Optional[float] = 0.0
 
 
 class ProductionSummaryItem(BaseModel):
@@ -24,8 +28,19 @@ class ProductionSummaryItem(BaseModel):
 
     net: float
 
+    storageQty: float = 0.0
+    price: float = 0.0
+    marketSharePct: float = 0.0
+
+    batchProdActive: float = 0.0
+    batchProdQueued: float = 0.0
+    batchConsActive: float = 0.0
+    batchConsQueued: float = 0.0
+
     producers: List[ProducerConsumerItem]
     consumers: List[ProducerConsumerItem]
+    userRecipeInputs: Optional[Dict[str, float]] = None
+    userRecipesUsed: Optional[List[Dict[str, Any]]] = None
 
 
 class CorpMember(BaseModel):
@@ -48,3 +63,4 @@ class CorpOverviewResponse(BaseModel):
     consumptionCount: int = 0
 
     members: List[CorpMember]
+    balances: List[dict] = []

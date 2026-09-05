@@ -222,5 +222,12 @@ async def _process_notifications(
                 except Exception as e:
                     logger.error(f"Failed to push shipment data to {account_id}: {e}")
 
+            # C. Evaluate contract & loan due-date notifications immediately for this user
+            try:
+                from services.notification_evaluator import evaluate_user_telemetry_notifications
+                await evaluate_user_telemetry_notifications(db.pool, account_id)
+            except Exception as e:
+                logger.error(f"Failed triggering contract notifications for {account_id}: {e}")
+
     except Exception as e:
         logger.error(f"Notification processing failed: {e}")

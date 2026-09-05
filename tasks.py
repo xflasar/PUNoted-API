@@ -47,6 +47,9 @@ import db_message_handlers.warehouse_data
 import db_message_handlers.workforce_data
 import db_message_handlers.world_data
 
+import converters.blueprints
+import db_message_handlers.blueprints_data
+
 logger = logging.getLogger(__name__)
 
 processed_message_ids_cache = TTLCache(maxsize=1000, ttl=60)
@@ -97,7 +100,8 @@ CONVERTER_HANDLERS = {
     "STORAGE_REMOVED": data_converter.convert_storage_removed,
     'commodityexchanges': data_converter.convert_commodity_exchanges_data,
     'users': data_converter.convert_public_user_data,
-    'LEADERBOARD_SCORES': data_converter.convert_leaderboard_scores
+    'LEADERBOARD_SCORES': data_converter.convert_leaderboard_scores,
+    "BLUEPRINT_BLUEPRINTS": converters.blueprints.convert_blueprints_data,
 }
 
 
@@ -113,6 +117,7 @@ def converter_router(argument, data):
 
 
 MESSAGE_HANDLERS = {
+    "BLUEPRINT_BLUEPRINTS": db_message_handlers.blueprints_data.handle_blueprints_data_message,
     "USER_DATA": db_message_handlers.user_data.handle_user_data_message,
     "WORLD_MATERIAL_CATEGORIES": db_message_handlers.material_categories.handle_material_categories_message,
     "PLANET_DATA": db_message_handlers.planet_data.handle_planet_data_message,
@@ -314,3 +319,11 @@ async def _process_data_batch_coroutine(items_to_process, user_id, db):
             logger.debug(f"Processing request took {db_end_time - db_start_time:.4f} seconds.")
         except Exception as e:
             logger.error(f"Error processing message ID '{message_id}': {e}", exc_info=True)
+
+    # EVENT-DRIVEN NOTIFICATION EVALUATION TRIGGER FOR THIS SPECIFIC USER
+    try:
+        from services.notification_evaluator import evaluate_user_telemetry_notifications
+        await evaluate_user_telemetry_notifications(db.pool, user_id)
+        logger.info(f"Event-driven notification evaluation completed for user {user_id}")
+    except Exception as e:
+        logger.error(f"Error executing event-driven notification evaluation for user {user_id}: {e}", exc_info=True)

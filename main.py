@@ -1,3 +1,4 @@
+import asyncio
 import gzip
 import logging
 import os
@@ -23,7 +24,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.core.event_manager import EventManager
 from app.core.limiter import limiter, rate_limit_exceeded_handler
 from app.routers.buildings import buildings_router as internal_buildings_router
-from app.routers.materials import materials_router as internal_materials_router
+from routers.internal.materials import materials_router as internal_materials_router
 from app.services.background import scrape_and_save_data, scrape_prices_and_save_data
 from auth import auth_router
 from data_handlers import BackgroundTasks, data_router
@@ -72,6 +73,7 @@ from routers.group import group_router
 from routers.internal.contracts import contracts_router
 from routers.internal.corporation import corporation_internal_router
 from routers.internal.corporation_ships import corp_ships_internal_router
+from routers.internal.company import internal_company_router
 from routers.internal.cx import cx_internal_router
 from routers.internal.data_group import group_router as internal_data_group_router
 from routers.internal.finances import finances_router
@@ -81,6 +83,10 @@ from routers.internal.storage import storage_router
 from routers.internal.users import users_router
 from routers.internal.ships import ships_router
 from routers.internal.sites import sites_router
+from routers.internal.notifications import notifications_router
+from routers.internal.notification_rules import notification_rules_router
+from routers.internal.entity_settings import entity_settings_router
+from routers.public.announcements import announcements_router
 from routers.logistics import logistics_router
 from routers.map import map_router
 from routers.planets import planets_router
@@ -111,24 +117,29 @@ async def lifespan(app: FastAPI):
     app.state.event_manager = event_manager
     v1_app.state.event_manager = event_manager  # Propagate to sub-app
 
-    print("System initialized successfully.")
+    async def periodic_notification_evaluator():
+        from managers.global_ws_manager import global_ws_manager
+        from services.notification_evaluator import evaluate_user_telemetry_notifications
+        while True:
+            try:
+                await asyncio.sleep(60)
+                connected_user_ids = list(global_ws_manager.user_sockets.keys())
+                for uid in connected_user_ids:
+                    try:
+                        await evaluate_user_telemetry_notifications(db.pool, uid)
+                    except Exception as ex:
+                        logger.error(f"Periodic evaluator error for user {uid}: {ex}")
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in periodic_notification_evaluator loop: {e}")
+
+    eval_task = asyncio.create_task(periodic_notification_evaluator())
 
     yield
 
+    eval_task.cancel()
     print("Shutting down...")
-    
-    # Gracefully cancel pending asyncio tasks (avoid cancelling test runner tasks under pytest)
-    import sys
-    if "pytest" not in sys.modules:
-        import asyncio
-        pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
-        if pending:
-            for task in pending:
-                task.cancel()
-            # Wait for all tasks to complete their cancellation (ignoring CancelledError)
-            await asyncio.gather(*pending, return_exceptions=True)
-
-
     await db.close_pool()
     print("System shutdown complete.")
 
@@ -153,6 +164,7 @@ v1_app = FastAPI(
     title="PUNoted API (v1)",
     description="Public API for PrUn data.",
     version="1.0.0",
+    lifespan=None,
     openapi_url="/openapi.json",
     docs_url="/docs",
     redoc_url=None,
@@ -319,17 +331,17 @@ app.add_middleware(SecurityLoggerMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5174", 
-        "http://127.0.0.1:5174", 
-        "https://punoted.net"
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "https://punoted.net",
     ],
-    allow_origin_regex=r"(chrome|moz)-extension://.*", 
+    allow_origin_regex=r"(chrome|moz)-extension://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=[
-        "authorization", 
-        "content-type", 
-        "x-data-token", 
+        "authorization",
+        "content-type",
+        "x-data-token",
         "content-encoding"
     ],
 )
@@ -380,9 +392,14 @@ app.include_router(internal_buildings_router, prefix="/internal/buildings", tags
 app.include_router(internal_materials_router, prefix="/internal/materials", tags=["Materials"])
 app.include_router(cx_internal_router, prefix="/internal/cx", tags=["CX"])
 app.include_router(users_router, prefix="/internal/users", tags=["Users"])
+app.include_router(notifications_router, prefix="/internal/notifications", tags=["Notifications"])
+app.include_router(notification_rules_router, prefix="/internal/notifications/settings-api", tags=["Notification Rules"])
+app.include_router(entity_settings_router, prefix="/internal/entity-settings", tags=["Entity Settings"])
+app.include_router(announcements_router, prefix="/public/announcements", tags=["Announcements"])
 app.include_router(ships_router, prefix="/internal/ships", tags=["Ships"])
 app.include_router(sites_router, prefix="/internal/sites", tags=["Sites"])
 app.include_router(vendor_router, prefix="/internal/vendor", tags=["Vendor"])
+app.include_router(internal_company_router, prefix="/internal/company", tags=["Company"])
 
 
 # Protected External API v1 (Registered to v1_app sub-app)

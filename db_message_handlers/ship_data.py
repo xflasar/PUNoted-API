@@ -324,8 +324,12 @@ async def _process_notifications(db, ws_manager, current_account_id: str, shipid
                     recipients.add(str(r["accountid"]))
 
         # 3. Broadcast to all recipients
+        from services.notification_evaluator import evaluate_user_telemetry_notifications
         for account_id in recipients:
             try:
+                # Trigger real-time notification evaluation for user
+                await evaluate_user_telemetry_notifications(db.pool, account_id)
+
                 # Fetch fresh structure specifically for this user context
                 new_shipment_state = await fetch_active_shipments_structured(db, account_id)
 

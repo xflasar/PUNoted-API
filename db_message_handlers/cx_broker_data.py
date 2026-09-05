@@ -1,3 +1,6 @@
+from helpers import logistics_analysis
+from endpoints.Public.services.cx_service import generate_json_data
+from managers.global_ws_manager import global_ws_manager
 import logging
 import time
 from datetime import datetime, timezone
@@ -63,6 +66,19 @@ async def handle_cx_broker_data_message(db: Database, raw_payload: Dict[str, Any
                     "brokermaterialid",
                     brokermaterialid,
                 )
+
+                logging.info(f"Generated partial CX data for brokermaterialid: {brokermaterialid}")
+        
+        from endpoints.Public.services.cx_service import generate_partial_cx_data
+        partial_market_data = await generate_partial_cx_data(db, brokermaterialid=brokermaterialid)
+        
+        if partial_market_data:
+            cx_data = {
+                "type": "MARKET_DATA_UPDATE",
+                "data": partial_market_data,
+            }
+            user_channel = "cx_updates"
+            await global_ws_manager.broadcast(user_channel, cx_data)
 
     except Exception as e:
         logger.error(f"Error processing cx_broker data: {e}", exc_info=True)

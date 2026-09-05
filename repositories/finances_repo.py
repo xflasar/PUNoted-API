@@ -242,7 +242,6 @@ RecentTransactions AS (
             ) ORDER BY timestamp DESC
         ) AS transactions_json
     FROM VirtualLedger
-    WHERE timestamp >= NOW() - INTERVAL '30 days'
     GROUP BY currency
 ),
 MultiTimeframeCashFlow AS (

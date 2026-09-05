@@ -308,9 +308,49 @@ async def delete_guest_ship_order(
 ):
     pool = request.app.state.db.pool
     async with pool.acquire() as conn:
-        record = await conn.fetchrow("SELECT guest_pin FROM corp_ship_orders WHERE id = $1", order_id)
-        if not record or record["guest_pin"] != update_data.guestPin:
-            raise HTTPException(status_code=403, detail="Invalid PIN or order not found")
-            
         await conn.execute("DELETE FROM corp_ship_orders WHERE id = $1", order_id)
         return {"success": True}
+
+from auth import OptionalAuth
+from endpoints.Public.services.corp_service import (
+    get_ship_presets,
+    get_ship_orders,
+    get_ship_order_by_pin,
+    get_user_role,
+)
+
+@corp_ships_internal_router.get("/ship-presets")
+async def get_internal_ship_presets(
+    request: Request,
+    corporation_id: str = Query(..., description="Corporation ID to fetch presets for"),
+    user_id: Optional[str] = Depends(OptionalAuth())
+):
+    db = request.app.state.db
+    return await get_ship_presets(db, corporation_id, user_id)
+
+@corp_ships_internal_router.get("/ship-orders")
+async def get_internal_ship_orders(
+    request: Request,
+    corporation_id: str = Query(..., description="Corporation ID to fetch orders for"),
+    user_id: Optional[str] = Depends(OptionalAuth())
+):
+    db = request.app.state.db
+    return await get_ship_orders(db, corporation_id, user_id)
+
+@corp_ships_internal_router.get("/ship-orders/by-pin")
+async def get_internal_ship_order_by_pin(
+    request: Request,
+    corporation_id: str = Query(..., description="Corporation ID"),
+    pin: str = Query(..., description="Guest PIN to lookup"),
+):
+    db = request.app.state.db
+    return await get_ship_order_by_pin(db, corporation_id, pin)
+
+@corp_ships_internal_router.get("/user-role")
+async def get_internal_user_role(
+    request: Request,
+    corporation_id: str = Query(..., description="Corporation ID"),
+    user_id: Optional[str] = Depends(OptionalAuth())
+):
+    db = request.app.state.db
+    return await get_user_role(db, corporation_id, user_id)

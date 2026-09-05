@@ -398,3 +398,35 @@ async def update_privacy_settings(payload: WebSettingsUpdate, request: Request, 
     async with request.app.state.db.pool.acquire() as conn:
         await conn.execute(query, user_id, payload.page_context, json.dumps(payload.preferences))
     return {"status": "updated", "context": payload.page_context}
+
+# --- USER CUSTOM PRICE SHEET ---
+class CustomPriceItem(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=32)
+    price: float = Field(..., ge=0)
+
+class CustomPricesBatchUpdate(BaseModel):
+    prices: List[CustomPriceItem]
+
+@user_settings_router.get("/custom-prices")
+async def get_custom_prices(request: Request, user_id: str = Depends(get_current_user_id)):
+    query = "SELECT ticker, price FROM user_custom_prices WHERE accountid = $1"
+    async with request.app.state.db.pool.acquire() as conn:
+        rows = await conn.fetch(query, user_id)
+    return {row["ticker"].upper(): float(row["price"]) for row in rows}
+
+@user_settings_router.post("/custom-prices")
+async def save_custom_prices(payload: CustomPricesBatchUpdate, request: Request, user_id: str = Depends(get_current_user_id)):
+    upsert_query = """
+        INSERT INTO user_custom_prices (accountid, ticker, price, updated_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (accountid, ticker)
+        DO UPDATE SET price = EXCLUDED.price, updated_at = NOW()
+    """
+    async with request.app.state.db.pool.acquire() as conn:
+        async with conn.transaction():
+            for item in payload.prices:
+                clean_ticker = item.ticker.strip().upper()
+                if clean_ticker and item.price >= 0:
+                    await conn.execute(upsert_query, user_id, clean_ticker, item.price)
+    return {"status": "success", "count": len(payload.prices)}
+

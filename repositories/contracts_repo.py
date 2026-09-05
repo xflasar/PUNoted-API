@@ -219,8 +219,44 @@ class ContractsRepository:
 
             rows = await conn.fetch(sql, username, status_val, search_val)
 
+            items = [dict(row) for row in rows]
+            if items:
+                loan_ids = [str(item["id"]) for item in items]
+                cond_rows = await conn.fetch(
+                    """
+                    SELECT cc.id::text, cc.contractid::text, cc.type, cc.status, cc.party, cc.index, cc.deadline, 
+                           cc.amountmoney, cc.currencymoney,
+                           cli.repaymentamount, cli.interestamount, cli.totalamount, cli.currency
+                    FROM contract_conditions cc
+                    JOIN contracts c ON c.id = cc.contractid
+                    JOIN users u ON u.userdataid = c.userid
+                    LEFT JOIN contract_loan_installments cli ON cli.conditionid = cc.id AND cc.contractparty = cli.contractparty
+                    WHERE cc.contractid::text = ANY($1::text[]) AND u.username = $2
+                    ORDER BY cc.contractid, cc.index ASC;
+                    """,
+                    loan_ids, username
+                )
+
+                conds_by_contract: Dict[str, List[Dict[str, Any]]] = {}
+                seen_cond_ids: set = set()
+                for c in cond_rows:
+                    cond_id = str(c["id"])
+                    if cond_id in seen_cond_ids:
+                        continue
+                    seen_cond_ids.add(cond_id)
+
+                    cid = str(c["contractid"])
+                    if cid not in conds_by_contract:
+                        conds_by_contract[cid] = []
+                    clean_cond = {k: v for k, v in dict(c).items() if v is not None}
+                    conds_by_contract[cid].append(clean_cond)
+
+                for item in items:
+                    cid = str(item["id"])
+                    item["conditions"] = conds_by_contract.get(cid, [])
+
             return {
-                "items": [dict(row) for row in rows],
+                "items": items,
                 "total": total_count
             }
 

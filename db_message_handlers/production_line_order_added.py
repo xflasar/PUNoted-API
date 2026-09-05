@@ -3,6 +3,8 @@ import time
 from typing import Any, Dict
 
 from helpers.corrupted_data_cleaner import clean_corrupted_record
+from managers.global_ws_manager import global_ws_manager
+from services.internal.corp_site_delta_service import compute_and_broadcast_site_delta
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,21 @@ async def handle_production_line_order_add_message(db, raw_payload: Dict[str, An
             exc_info=True,
         )
         raise
+
+    # --- Trigger Real-Time Site Production WebSocket Update ---
+    user_id = raw_payload.get("userId") or raw_payload.get("data", {}).get("userid")
+    production_line_id = order_data_to_upsert.get("productionlineid")
+    if user_id and production_line_id:
+        try:
+            async with db.pool.acquire() as conn:
+                site_row = await conn.fetchrow(
+                    "SELECT siteid::text FROM site_production_lines WHERE productionlineid = $1;",
+                    production_line_id
+                )
+                if site_row and site_row["siteid"]:
+                    await compute_and_broadcast_site_delta(db, global_ws_manager, site_row["siteid"], user_id)
+        except Exception as ws_err:
+            logger.error(f"Failed to send site production delta on order added: {ws_err}")
 
     end_time = time.perf_counter()
     elapsed_time = (end_time - start_time) * 1000

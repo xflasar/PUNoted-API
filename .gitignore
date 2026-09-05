@@ -15,6 +15,7 @@ static_data
 .xatarc
 .conda
 .venv
+venv
 .vscode
 .xata
 .ruff_cache
@@ -22,3 +23,4 @@ static_data
 
 msgApiPU
 handlers
+scratch

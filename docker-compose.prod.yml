@@ -1,5 +1,7 @@
 version: "3.8"
 
+name: punoted-backend
+
 services:
   # ==============================================================================
   # 1. CORE INFRASTRUCTURE (Main App)

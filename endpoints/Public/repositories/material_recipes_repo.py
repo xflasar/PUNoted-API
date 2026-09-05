@@ -21,13 +21,14 @@ recipe_outputs AS (
 ),
 recipe_objects AS (
     SELECT jsonb_build_object(
-        'BuildingTicker', r.reactor_id,
+        'BuildingTicker', COALESCE(b.ticker, r.reactor_id),
         'RecipeName', COALESCE(i.input_str, '') || ' = ' || COALESCE(o.output_str, ''),
         'Inputs', COALESCE(i.inputs, '[]'::jsonb),
         'Outputs', COALESCE(o.outputs, '[]'::jsonb),
         'TimeMs', r.duration_ms
     ) AS r_json
     FROM material_recipes r
+    LEFT JOIN buildings b ON r.reactor_id = b.buildingid OR r.reactor_id = b.xata_id
     LEFT JOIN recipe_inputs i ON r.id = i.recipe_id
     LEFT JOIN recipe_outputs o ON r.id = o.recipe_id
 )

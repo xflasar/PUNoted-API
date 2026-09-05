@@ -1,3 +1,4 @@
+from app.core import event_manager
 import json
 import logging
 from datetime import date, datetime
@@ -138,6 +139,8 @@ async def user_dashboard_websocket_endpoint(websocket: WebSocket, user_id: str):
         corp_id = await fetch_user_corp_id(db.pool, user_id)
         if corp_id:
             await manager.subscribe(websocket, f"map:corp:{corp_id}")
+
+        await manager.subscribe(websocket, "cx_updates")
 
         # Send Initial Data
         initial_ship_data = await fetch_initial_ship_data(db, user_id)

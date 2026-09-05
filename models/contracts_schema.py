@@ -19,6 +19,8 @@ class ContractCondition(BaseModel):
     totalamount: Optional[float] = None
     implied_interest_rate: Optional[float] = None
     material_summary: Optional[str] = None
+    fulfilled_timestamp: Optional[datetime] = None
+    fulfilled_at: Optional[datetime] = None
     addresssystemid: Optional[str] = None
     addressplanetid: Optional[str] = None
     addressstationid: Optional[str] = None
@@ -54,6 +56,7 @@ class ContractListItem(BaseModel):
     total_amount: float = 0.0
     currency: str = "ICA"
     operation_type: str = "UNKNOWN"
+    conditions: List[ContractCondition] = []
 
 class ContractDetail(ContractListItem):
     preamble: Optional[str] = None

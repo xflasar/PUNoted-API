@@ -1,14 +1,224 @@
-
 import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 
 from app.core.security import require_internal_origin
+from app.db.dependencies import get_db
 from auth import get_current_user_id
 
 sites_router = APIRouter(dependencies=[Depends(require_internal_origin)])
 logger = logging.getLogger(__name__)
+
+@sites_router.get("/all_user_sites")
+async def get_all_user_sites(request: Request, user_id: str = Depends(get_current_user_id)):
+    db = get_db(request)
+    try:
+        async with db.pool.acquire() as conn:
+            query = """
+            WITH Me AS (
+                SELECT u.accountid::text as my_account_id, ud.displayname as username, cd.companycode
+                FROM users u
+                LEFT JOIN users_data ud ON u.userdataid = ud.userid
+                LEFT JOIN company_data cd ON u.userdataid = cd.userdataid
+                WHERE u.accountid = $1::uuid
+            ),
+            MyOwnedSites AS (
+                SELECT s.siteid::text as siteid
+                FROM sites s
+                JOIN users u ON u.userdataid = s.userid
+                WHERE u.accountid = $1::uuid
+            ),
+            AllLeaseElements AS (
+                SELECT 
+                    ugs.userid::uuid as setting_owner_account_id,
+                    l->>'siteId' as siteid,
+                    l->>'tenant' as tenant
+                FROM (
+                    SELECT 
+                        userid, 
+                        NULLIF(TRIM(internal_leased_sites::text), '') AS leased_text 
+                    FROM user_global_settings
+                ) ugs
+                CROSS JOIN LATERAL jsonb_array_elements(
+                    CASE 
+                        WHEN ugs.leased_text IS NULL THEN '[]'::jsonb
+                        WHEN jsonb_typeof(ugs.leased_text::jsonb) = 'array' THEN ugs.leased_text::jsonb
+                        WHEN jsonb_typeof(ugs.leased_text::jsonb) = 'string' THEN
+                            CASE 
+                                WHEN TRIM(ugs.leased_text::jsonb #>> '{}') LIKE '[%' 
+                                    THEN (ugs.leased_text::jsonb #>> '{}')::jsonb
+                                ELSE '[]'::jsonb
+                            END
+                        ELSE '[]'::jsonb 
+                    END
+                ) l
+            ),
+            MyOutboundLeases AS (
+                SELECT ale.siteid, ale.tenant, 'Outbound' as lease_type
+                FROM AllLeaseElements ale
+                JOIN MyOwnedSites os ON ale.siteid = os.siteid
+                CROSS JOIN Me
+                WHERE ale.setting_owner_account_id = $1::uuid
+                  AND ale.tenant IS NOT NULL
+                  AND ale.tenant != Me.username
+                  AND ale.tenant != Me.companycode
+                  AND ale.tenant != Me.username || ' (' || Me.companycode || ')'
+            ),
+            MyInboundLeases AS (
+                SELECT ale.siteid, 
+                       (SELECT COALESCE(ud2.displayname, cd2.companyname, 'Unknown') 
+                        FROM users u2 
+                        LEFT JOIN users_data ud2 ON ud2.userid = u2.userdataid 
+                        LEFT JOIN company_data cd2 ON cd2.userdataid = u2.userdataid 
+                        WHERE u2.accountid = ale.setting_owner_account_id) as landlord,
+                       'Inbound' as lease_type
+                FROM AllLeaseElements ale
+                CROSS JOIN Me
+                LEFT JOIN MyOwnedSites os ON ale.siteid = os.siteid
+                WHERE ale.setting_owner_account_id != $1::uuid
+                  AND os.siteid IS NULL
+                  AND (
+                      ale.tenant = Me.username 
+                      OR ale.tenant = Me.companycode 
+                      OR ale.tenant = Me.username || ' (' || Me.companycode || ')'
+                  )
+            ),
+            AccessibleSites AS (
+                SELECT o.siteid, TRUE as am_owner, outbound.tenant as leased_to, NULL::text as leased_from, COALESCE(outbound.lease_type, 'owned') as lease_type
+                FROM MyOwnedSites o
+                LEFT JOIN MyOutboundLeases outbound ON outbound.siteid = o.siteid
+                UNION ALL
+                SELECT inbound.siteid, FALSE as am_owner, NULL::text as leased_to, inbound.landlord as leased_from, inbound.lease_type as lease_type
+                FROM MyInboundLeases inbound
+            ),
+            SiteBuildingBOM AS (
+                SELECT 
+                    sp.siteid,
+                    m.ticker,
+                    SUM(COALESCE(pm.amount, bbm.amount, 0)) as amount
+                FROM site_platforms sp
+                LEFT JOIN platform_materials pm ON pm.platformid = sp.platformid AND (pm.materialtype = 'build' OR pm.materialtype = 'construction')
+                LEFT JOIN building_build_materials bbm ON bbm.buildingid = sp.buildingid
+                JOIN materials m ON m.materialid = COALESCE(pm.materialid, bbm.materialid)
+                GROUP BY sp.siteid, m.ticker
+            ),
+            SiteBuildingDetails AS (
+                SELECT 
+                    sp.siteid,
+                    b.ticker,
+                    COALESCE(b.area, 0) as area
+                FROM site_platforms sp
+                JOIN buildings b ON b.buildingid = sp.buildingid
+            )
+            SELECT 
+                s.siteid,
+                p.naturalid AS planet_name,
+                p.planetid,
+                CASE 
+                    WHEN COALESCE(phys.surface, p.surface) IS NULL THEN ''
+                    WHEN COALESCE(phys.surface, p.surface)::text = 'true' THEN 'ROCKY'
+                    WHEN COALESCE(phys.surface, p.surface)::text = 'false' THEN 'GASEOUS'
+                    ELSE COALESCE(phys.surface, p.surface)::text 
+                END AS planet_surface,
+                COALESCE(phys.pressure, 1.0) AS planet_pressure,
+                COALESCE(phys.gravity, 1.0) AS planet_gravity,
+                COALESCE(phys.temperature, p.temperature, 20.0) AS planet_temperature,
+                COALESCE(ud.displayname, cd.companycode, 'Unknown') AS owner_name,
+                cd.companycode AS owner_company_code,
+                acc.am_owner,
+                acc.lease_type,
+                acc.leased_to,
+                acc.leased_from,
+                (acc.lease_type = 'Outbound' OR acc.lease_type = 'Inbound') AS is_leased,
+                COALESCE(
+                    (SELECT ARRAY_AGG(b.ticker ORDER BY b.ticker)
+                     FROM site_platforms sp2
+                     JOIN buildings b ON b.buildingid = sp2.buildingid
+                     WHERE sp2.siteid = s.siteid),
+                    '{}'
+                ) AS site_building_tickers,
+                COALESCE(
+                    (SELECT jsonb_object_agg(bom.ticker, bom.amount)
+                     FROM SiteBuildingBOM bom
+                     WHERE bom.siteid = s.siteid),
+                    '{}'::jsonb
+                ) AS site_building_materials,
+                COALESCE(
+                    (SELECT jsonb_agg(jsonb_build_object('ticker', bd.ticker, 'area', bd.area))
+                     FROM SiteBuildingDetails bd
+                     WHERE bd.siteid = s.siteid),
+                    '[]'::jsonb
+                ) AS site_building_details
+            FROM AccessibleSites acc
+            JOIN sites s ON s.siteid::text = acc.siteid
+            JOIN planets p ON p.planetid = s.addressplanetid
+            LEFT JOIN planet_physical_data phys ON phys.planetid = p.planetid
+            JOIN users u ON u.userdataid = s.userid
+            LEFT JOIN users_data ud ON ud.userid = u.userdataid
+            LEFT JOIN company_data cd ON cd.userdataid = u.userdataid
+            GROUP BY s.siteid, p.naturalid, p.planetid, phys.surface, p.surface, phys.pressure, phys.gravity, phys.temperature, p.temperature, ud.displayname, cd.companycode, acc.am_owner, acc.lease_type, acc.leased_to, acc.leased_from;
+            """
+            rows = await conn.fetch(query, user_id)
+            sites = []
+            for r in rows:
+                raw_mats = r["site_building_materials"]
+                base_mats = dict(raw_mats) if isinstance(raw_mats, dict) else {}
+
+                raw_details = r["site_building_details"]
+                building_details = list(raw_details) if isinstance(raw_details, list) else []
+
+                surface = str(r["planet_surface"] or "").upper()
+                pressure = float(r["planet_pressure"]) if r["planet_pressure"] is not None else 1.0
+                gravity = float(r["planet_gravity"]) if r["planet_gravity"] is not None else 1.0
+                temperature = float(r["planet_temperature"]) if r["planet_temperature"] is not None else 20.0
+
+                for b in building_details:
+                    area = int(b.get("area") or 0)
+
+                    # Surface
+                    if surface == "ROCKY" and area > 0:
+                        base_mats["MCG"] = base_mats.get("MCG", 0) + (area * 4)
+                    elif surface == "GASEOUS" and area > 0:
+                        import math
+                        base_mats["AEF"] = base_mats.get("AEF", 0) + math.ceil(area / 3.0)
+
+                    # Atmospheric Pressure
+                    if pressure < 0.25 and area > 0:
+                        base_mats["SEA"] = base_mats.get("SEA", 0) + (area * 1)
+                    elif pressure > 2.0:
+                        base_mats["HSE"] = base_mats.get("HSE", 0) + 1
+
+                    # Gravity
+                    if gravity < 0.25:
+                        base_mats["MGC"] = base_mats.get("MGC", 0) + 1
+                    elif gravity > 2.5:
+                        base_mats["BL"] = base_mats.get("BL", 0) + 1
+
+                    # Temperature
+                    if temperature < -25 and area > 0:
+                        base_mats["INS"] = base_mats.get("INS", 0) + (area * 10)
+                    elif temperature > 75:
+                        base_mats["TSH"] = base_mats.get("TSH", 0) + 1
+
+                sites.append({
+                    "site_id": r["siteid"],
+                    "planet_name": r["planet_name"],
+                    "planet_id": r["planetid"],
+                    "owner_name": r["owner_name"],
+                    "owner_company_code": r["owner_company_code"],
+                    "am_owner": r["am_owner"],
+                    "lease_type": r["lease_type"],
+                    "leased_to": r["leased_to"],
+                    "leased_from": r["leased_from"],
+                    "is_leased": r["is_leased"],
+                    "site_building_tickers": list(r["site_building_tickers"] or []),
+                    "site_building_materials": base_mats
+                })
+            return {"sites": sites}
+    except Exception as e:
+        logger.error(f"Error fetching all_user_sites: {e}", exc_info=True)
+        return {"sites": []}
 
 @sites_router.get(
     "/user_site_platforms/{site_id}",

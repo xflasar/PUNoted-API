@@ -3,6 +3,8 @@ import logging
 import time
 from itertools import chain
 from typing import Any, Dict, List
+from managers.global_ws_manager import global_ws_manager
+from services.internal.corp_site_delta_service import compute_and_broadcast_site_delta
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +55,11 @@ async def handle_production_lines_data_message(db, raw_payload: Dict[str, Any]) 
                         f"production line records were missing 'productionlineid' in payload!"
                     )
 
-                # 4. Handle stale line deletions
+                # 4. Handle stale line deletions (e.g. demolished buildings or line changes)
                 lines_to_delete = existing_production_lines_ids - incoming_production_line_ids
                 if lines_to_delete:
-                    logger.warning(
-                        f"[WARNING] Site {site_id}: Wiping {len(lines_to_delete)} stale lines from DB -> {lines_to_delete}"
+                    logger.info(
+                        f"[INFO] Site {site_id}: Cleaning {len(lines_to_delete)} stale/demolished lines from DB -> {lines_to_delete}"
                     )
                     # Clean child orders first to prevent FK constraint failures
                     await con.execute(
@@ -70,18 +72,10 @@ async def handle_production_lines_data_message(db, raw_payload: Dict[str, Any]) 
                         list(lines_to_delete),
                     )
 
-                # DEBUG / WARNING: Empty production lines check
                 if not production_lines:
-                    if existing_production_lines_ids:
-                        logger.warning(
-                            f"[WARNING] Site {site_id} payload contains ZERO production lines! All {len(existing_production_lines_ids)} existing DB lines were wiped."
-                        )
-                    else:
-                        logger.debug(f"[SILENT DETECT] Site {site_id} sent empty production lines array (idle/empty site).")
-                    
                     return {
                         "success": True,
-                        "message": "No production lines in payload. Stale lines (if any) deleted.",
+                        "message": "No production lines in payload. Cleaned up any stale lines.",
                     }
 
                 # 5. Categorize inserts vs updates & extract child structures
@@ -117,37 +111,24 @@ async def handle_production_lines_data_message(db, raw_payload: Dict[str, Any]) 
                     else:
                         records_to_update.append(temp_record)
 
-                # 6. Perform Inserts
-                if records_to_insert:
-                    all_keys = list(records_to_insert[0].keys())
+                # 6. Perform Upsert for Production Lines
+                if records_to_insert or records_to_update:
+                    all_records = records_to_insert + records_to_update
+                    all_keys = list(all_records[0].keys())
                     keys = ", ".join(all_keys)
                     placeholders = ", ".join([f"${i + 1}" for i in range(len(all_keys))])
-                    insert_query = f"INSERT INTO site_production_lines ({keys}) VALUES ({placeholders}) ON CONFLICT (productionlineid) DO NOTHING;"
+                    update_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in all_keys if k != "productionlineid"])
                     
-                    insert_tuples = [tuple(rec.get(k) for k in all_keys) for rec in records_to_insert]
-                    res = await con.executemany(insert_query, insert_tuples)
-
-                    # DEBUG: Detect silent conflict drops
-                    logger.debug(f"[SILENT DETECT] Site {site_id}: Bulk inserted {len(records_to_insert)} lines -> Result: {res}")
-
-                # 7. Perform Updates
-                if records_to_update:
-                    for record_to_update in records_to_update:
-                        update_data = record_to_update.copy()
-                        record_id = update_data.pop("productionlineid", None)
-                        if not record_id or not update_data:
-                            logger.warning(f"[WARNING] Site {site_id}: Attempted UPDATE on empty record for line {record_id}")
-                            continue
-                        
-                        update_fields = ", ".join([f"{key} = ${i + 2}" for i, key in enumerate(update_data.keys())])
-                        update_query = f"UPDATE site_production_lines SET {update_fields} WHERE productionlineid = $1;"
-                        res = await con.execute(update_query, record_id, *update_data.values())
-
-                        # DEBUG: Catch silent UPDATE failures where 0 rows were updated
-                        if "UPDATE 0" in res:
-                            logger.debug(
-                                f"[SILENT DETECT] Site {site_id}: UPDATE query succeeded but modified 0 rows for line {record_id}!"
-                            )
+                    upsert_query = f"""
+                        INSERT INTO site_production_lines ({keys}) 
+                        VALUES ({placeholders}) 
+                        ON CONFLICT (productionlineid) DO UPDATE 
+                        SET {update_clause};
+                    """
+                    
+                    upsert_tuples = [tuple(rec.get(k) for k in all_keys) for rec in all_records]
+                    res = await con.executemany(upsert_query, upsert_tuples)
+                    logger.debug(f"[SUCCESS] Site {site_id}: Bulk upserted {len(all_records)} production lines -> Result: {res}")
 
                 # 8. Process nested orders & templates
                 await process_orders(con, site_id, orders, incoming_production_line_ids)
@@ -156,6 +137,15 @@ async def handle_production_lines_data_message(db, raw_payload: Dict[str, Any]) 
         elapsed = time.perf_counter() - start_time
         if elapsed > 1.5:
             logger.warning(f"[WARNING] Slow transaction! Site {site_id} took {elapsed:.2f}s to process.")
+
+        # --- Broadcast real-time WebSocket event ---
+        user_id = raw_payload.get("userId") or raw_payload.get("data", {}).get("userid")
+        if user_id and site_id:
+            try:
+                await global_ws_manager.send_personal_message(user_id, {"type": "REFRESH_DASHBOARD", "siteid": site_id})
+                await compute_and_broadcast_site_delta(db, global_ws_manager, site_id, user_id)
+            except Exception as ws_err:
+                logger.error(f"[WEBSOCKET ERROR] Failed to send production delta update: {ws_err}")
 
         return {"success": True, "message": "Processed production lines data."}
 

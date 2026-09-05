@@ -2,6 +2,7 @@ import json
 import logging
 from collections import defaultdict
 from datetime import datetime
+from typing import Optional, Dict, List, Any
 
 from fastapi import APIRouter, Depends, Request
 
@@ -194,7 +195,7 @@ SELECT
         ) ORDER BY po.created ASC), '[]'::jsonb)
         FROM site_production_line_orders po
         WHERE po.productionlineid = pl.productionlineid
-        AND po.completion IS NULL
+        AND (po.completion IS NULL OR po.completion > NOW() OR po.completed IS NOT TRUE)
     ) AS production_orders
 FROM site_production_lines pl
 WHERE pl.siteid::text = ANY($1::text[]);
@@ -415,6 +416,7 @@ async def get_user_production(
                                 "outputs": [],
                             }
 
+                    line["queue"] = line["production_orders"]
                     hydrated_lines.append(line)
 
                     line_unscaled_flow = defaultdict(float)
@@ -423,17 +425,64 @@ async def get_user_production(
                     if not orders:
                         continue
 
-                    orders.sort(
+                    # 1. Non-recurring orders (One-time manual craft jobs)
+                    batch_active_orders = [o for o in orders if not o.get("recurring") and o.get("completion")]
+                    batch_queued_orders = [o for o in orders if not o.get("recurring") and not o.get("completion")]
+
+                    line["line_batch_orders"] = {
+                        "active": defaultdict(float),
+                        "queued": defaultdict(float),
+                    }
+
+                    for batch_order, is_active in [(o, True) for o in batch_active_orders] + [(o, False) for o in batch_queued_orders]:
+                        b_recipe = batch_order.get("production_recipe") or {}
+                        b_order_dur = float(batch_order.get("duration") or 0)
+                        b_recipe_dur = float(b_recipe.get("duration") or 0)
+                        b_multiplier = (b_order_dur / b_recipe_dur) if b_recipe_dur > 0 else 1.0
+
+                        for inp_factor in (b_recipe.get("inputs") or []):
+                            inp_ticker = inp_factor.get("ticker")
+                            if inp_ticker:
+                                qty = float(inp_factor.get("factor", 0)) * b_multiplier
+                                if inp_ticker not in daily_flow:
+                                    daily_flow[inp_ticker] = {"flow": 0.0, "currentAmount": 0.0, "batchProdActive": 0.0, "batchProdQueued": 0.0, "batchConsActive": 0.0, "batchConsQueued": 0.0}
+                                if is_active:
+                                    daily_flow[inp_ticker]["batchConsActive"] += qty
+                                else:
+                                    daily_flow[inp_ticker]["batchConsQueued"] += qty
+
+                        for out_factor in (b_recipe.get("outputs") or []):
+                            out_ticker = out_factor.get("ticker")
+                            if out_ticker:
+                                qty = float(out_factor.get("factor", 0)) * b_multiplier
+                                target_bucket = "active" if is_active else "queued"
+                                line["line_batch_orders"][target_bucket][out_ticker] += qty
+                                if out_ticker not in daily_flow:
+                                    daily_flow[out_ticker] = {"flow": 0.0, "currentAmount": 0.0, "batchProdActive": 0.0, "batchProdQueued": 0.0, "batchConsActive": 0.0, "batchConsQueued": 0.0}
+                                if is_active:
+                                    daily_flow[out_ticker]["batchProdActive"] += qty
+                                else:
+                                    daily_flow[out_ticker]["batchProdQueued"] += qty
+
+                    # 2. Recurring orders (Continuous Daily Flow)
+                    recurring_template_orders = [o for o in orders if o.get("recurring") and not o.get("completion")]
+                    recurring_active_orders = [o for o in orders if o.get("recurring") and o.get("completion")]
+                    flow_orders = recurring_template_orders if recurring_template_orders else recurring_active_orders
+
+                    if not flow_orders:
+                        continue
+
+                    flow_orders.sort(
                         key=lambda o: datetime.fromisoformat(o["created"]) if o.get("created") else datetime.max
                     )
-                    total_ms = sum((float(o.get("duration") or 0)) for o in orders)
+                    total_ms = sum((float(o.get("duration") or 0)) for o in flow_orders)
 
                     if total_ms <= 0:
                         continue
 
                     daily_cycles = (line.get("capacity", 0) * MS_PER_DAY) / total_ms
 
-                    for active_order in orders:
+                    for active_order in flow_orders:
                         recipe = active_order.get("production_recipe") or {}
                         order_duration = float(active_order.get("duration") or 0)
                         recipe_duration = float(recipe.get("duration") or 0)
@@ -463,7 +512,7 @@ async def get_user_production(
                     for ticker, unscaled_flow in line_unscaled_flow.items():
                         r_flow = unscaled_flow * daily_cycles
                         if ticker not in daily_flow:
-                            daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0}
+                            daily_flow[ticker] = {"flow": 0.0, "currentAmount": 0.0, "batchProdActive": 0.0, "batchProdQueued": 0.0, "batchConsActive": 0.0, "batchConsQueued": 0.0}
                         daily_flow[ticker]["flow"] += r_flow
                         line["line_daily_flow"][ticker] = r_flow
 
@@ -489,3 +538,113 @@ async def get_user_production(
     except Exception as e:
         logger.error(f"Error fetching production data: {e}", exc_info=True)
         return {"success": False, "message": f"An error occurred: {str(e)}"}
+
+@production_router.post("/get_ship_production")
+async def get_ship_production(request: Request, payload: Optional[dict] = None):
+    try:
+        pool = request.app.state.db.pool
+        async with pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT orderid, orderwaittime, price, shiptype, username, position FROM ship_production ORDER BY orderid ASC"
+            )
+            ship_orders = [dict(record) for record in records]
+
+            storage_records = await conn.fetch("""SELECT
+                                                    mt.ticker,
+                                                    si.quantity
+                                                FROM
+                                                    storages AS s
+                                                INNER JOIN
+                                                    warehouses AS w ON w.warehouseid = s.addressableid
+                                                INNER JOIN
+                                                    storage_items AS si ON si.storageid = s.storageid
+                                                INNER JOIN
+                                                    materials AS mt ON mt.materialid = si.materialid
+                                                INNER JOIN
+                                                    systems AS sys ON w.addresssystem = sys.systemid
+                                                INNER JOIN
+                                                    users_data AS ud ON ud.userid = s.userid
+                                                INNER JOIN
+                                                    stations AS st ON st.warehouseid = w.warehouseid
+                                                WHERE
+                                                    sys.name = 'Hortus'
+                                                    AND ud.displayname = 'Filefolders'
+                                                    AND st.name != 'Hortus'
+                                                    AND mt.ticker IN ('MSL', 'FFC', 'LHP', 'CQL', 'QCR', 'WCB', 'LFL', 'HCB', 'BR1', 'SFE', 'MFE', 'SSC', 'LFE', 'FSE', 'CQM', 'LCB', 'VCB', 'CQS', 'BRS', 'SSL');
+                                                """)
+            storage_items = [dict(record) for record in storage_records]
+        data = {"shiporders": ship_orders, "storageitems": storage_items}
+        return {"success": True, "data": data}
+
+    except Exception as e:
+        logger.error(f"Failed to fetch ship production data: {e}", exc_info=True)
+        return {"success": False, "message": f"Failed to retrieve ship production data: {e}"}
+
+SQL_FETCH_USER_WORKFORCE_INTERNAL = """
+    SELECT
+        wf.siteid::text AS siteid,
+        wf.level,
+        wf.population,
+        wf.reserve,
+        wf.capacity,
+        wf.required,
+        wf.satisfaction,
+        needs_data.needs
+    FROM
+        workforces wf
+    INNER JOIN LATERAL (
+        SELECT
+            jsonb_agg(
+                jsonb_build_object(
+                    'ticker', m.ticker,
+                    'category', wfn.category,
+                    'essential', wfn.essential,
+                    'satisfaction', wfn.satisfaction,
+                    'unitsperinterval', wfn.unitsperinterval,
+                    'unitsper100', wfn.unitsper100,
+                    'currentamount', COALESCE(si.quantity, 0) 
+                )
+            ) AS needs
+        FROM
+            workforce_needs wfn
+        INNER JOIN
+            materials m ON m.materialid = wfn.materialid
+        LEFT JOIN
+            storages st ON st.addressableid = wf.siteid
+        LEFT JOIN
+            storage_items si ON si.storageid = st.storageid AND si.materialid = wfn.materialid
+        WHERE
+            wfn.workforceid = wf.workforceid
+    ) needs_data ON TRUE
+    WHERE
+        wf.siteid::text = ANY($1::text[]);
+"""
+
+@production_router.get("/user_workforce_with_needs")
+async def get_user_workforce_with_needs(request: Request, user_id: str = Depends(get_current_user_id)):
+    try:
+        pool = request.app.state.db.pool
+        async with pool.acquire() as conn:
+            allowed_sites_records = await conn.fetch(SQL_GET_ALLOWED_SITES, user_id)
+            if not allowed_sites_records:
+                return {"success": True, "data": {}}
+
+            target_site_ids = list(set([r["siteid"] for r in allowed_sites_records]))
+            records = await conn.fetch(SQL_FETCH_USER_WORKFORCE_INTERNAL, target_site_ids)
+
+        workforce_by_site: dict = {}
+        for record in records:
+            mutable_record = dict(record)
+            site_id = str(mutable_record.pop("siteid"))
+            needs_data = mutable_record.get("needs")
+            if isinstance(needs_data, str):
+                mutable_record["needs"] = json.loads(needs_data)
+
+            if site_id not in workforce_by_site:
+                workforce_by_site[site_id] = []
+            workforce_by_site[site_id].append(mutable_record)
+
+        return {"success": True, "data": workforce_by_site}
+    except Exception as e:
+        logger.error(f"Failed to fetch user workforce with needs: {e}", exc_info=True)
+        return {"success": False, "message": f"Failed to retrieve workforce data: {e}"}

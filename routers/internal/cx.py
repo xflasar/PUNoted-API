@@ -1,3 +1,4 @@
+from typing import Optional
 import json
 import logging
 from decimal import Decimal
@@ -13,76 +14,229 @@ logger = logging.getLogger(__name__)
 
 cx_internal_router = APIRouter(dependencies=[Depends(require_internal_origin)])
 
+from endpoints.Public.services.cx_service import generate_json_data
+from endpoints.Public.repositories.cx_history_repo import fetch_historical_stability_map
+
+@cx_internal_router.get("/stability-matrix", description="Get historical stability matrix data. Internal access.")
+async def get_cx_stability_matrix_internal(request: Request, days: int = 7):
+    try:
+        db = get_db(request)
+        data = await fetch_historical_stability_map(db, days=days)
+        return JSONResponse(content=data)
+    except Exception as e:
+        logger.error(f"Error fetching internal CX stability matrix: {e}")
+        return JSONResponse(content={})
+
 @cx_internal_router.get("/prices", description="Get CX market data in JSON format. Internal access only.")
 async def get_cx_prices_json_internal(request: Request):
     try:
-        cache_key = "internal_cx_prices_ic1"
-        
-        # 1. Check Redis Cache First
-        cached_data = await redis_client.get(cache_key)
-        if cached_data:
-            # Return cached data immediately, skipping the DB entirely
-            return JSONResponse(content=json.loads(cached_data))
-
-        db = get_db(request)
-
-        # 2. Execute the heavy aggregation query
-        query = """
-        WITH HistoryAverages AS (
-            SELECT 
-                ticker,
-                AVG(askprice) FILTER (WHERE snapshot_at >= CURRENT_DATE - INTERVAL '7 days') AS askprice_7d_avg,
-                AVG(bidprice) FILTER (WHERE snapshot_at >= CURRENT_DATE - INTERVAL '7 days') AS bidprice_7d_avg,
-                AVG(supply) FILTER (WHERE snapshot_at >= CURRENT_DATE - INTERVAL '7 days') AS supply_7d_avg,
-                AVG(askprice) FILTER (WHERE snapshot_at >= CURRENT_DATE - INTERVAL '30 days') AS askprice_30d_avg,
-                AVG(bidprice) FILTER (WHERE snapshot_at >= CURRENT_DATE - INTERVAL '30 days') AS bidprice_30d_avg,
-                AVG(supply) FILTER (WHERE snapshot_at >= CURRENT_DATE - INTERVAL '30 days') AS supply_30d_avg
-            FROM cx_brokers_history
-            WHERE snapshot_at >= CURRENT_DATE - INTERVAL '30 days'
-              AND SPLIT_PART(ticker, '.', 2) = 'IC1'
-            GROUP BY ticker
-        )
-        SELECT 
-            cxb.ticker,
-            cxb.askprice,
-            cxb.bidprice, 
-            cxb.supply,
-            h.askprice_7d_avg,
-            h.bidprice_7d_avg,
-            h.supply_7d_avg,
-            h.askprice_30d_avg,
-            h.bidprice_30d_avg,
-            h.supply_30d_avg
-        FROM cx_brokers cxb
-        LEFT JOIN HistoryAverages h ON cxb.ticker = h.ticker
-        WHERE SPLIT_PART(cxb.ticker, '.', 2) = 'IC1';
-        """
-
-        async with db.pool.acquire() as conn:
-            rows = await conn.fetch(query)
-
-        # 3. Safely parse Decimals to Floats so the React frontend can do math
-        parsed_data = []
-        for row in rows:
-            row_dict = dict(row)
-            for key, val in row_dict.items():
-                if isinstance(val, Decimal):
-                    row_dict[key] = float(val)
-                elif val is None:
-                    row_dict[key] = 0.0 # Fallback for NULL values
-            parsed_data.append(row_dict)
-
-        # 4. Wrap the response in the format expected by our React useShipPrices hook
-        response_payload = parsed_data
-
-        # 5. Cache the result in Redis (e.g., for 30 minutes / 1800 seconds)
-        await redis_client.set(cache_key, json.dumps(response_payload), ex=1800)
-
-        return JSONResponse(content=response_payload)
-
+        db = request.app.state.db
+        json_data = await generate_json_data(db)
+        return JSONResponse(content=json_data)
     except Exception as e:
         logger.error(f"Failed to fetch internal CX prices: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
-            content={"success": False, "error": "Internal server error"}
+            content={"success": False, "message": "Failed to fetch internal CX prices"},
         )
+
+
+@cx_internal_router.get("/history/{ticker}", description="Get historical CX price records. Internal access.")
+async def get_cx_ticker_history_internal(
+    request: Request,
+    ticker: str,
+    exchange: str = "IC1",
+    days: int = 7,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    db = get_db(request)
+    clean_ticker = ticker.upper()
+    clean_exchange = exchange.upper()
+    full_ticker = f"{clean_ticker}.{clean_exchange}"
+
+    query = """
+        SELECT 
+            snapshot_at AS timestamp,
+            COALESCE(askprice, 0) AS askprice,
+            COALESCE(bidprice, 0) AS bidprice,
+            COALESCE(supply, 0) AS supply
+        FROM cx_brokers_history
+        WHERE (ticker = $1 OR SPLIT_PART(ticker, '.', 1) = $2)
+          AND snapshot_at >= CURRENT_TIMESTAMP - ($3 || ' days')::INTERVAL
+        ORDER BY snapshot_at ASC;
+    """
+
+    try:
+        async with db.pool.acquire() as conn:
+            rows = await conn.fetch(query, full_ticker, clean_ticker, str(days if days > 0 else 30))
+            result = [
+                {
+                    "timestamp": r["timestamp"].isoformat() if r["timestamp"] else "",
+                    "askprice": float(r["askprice"]) if r["askprice"] is not None else 0.0,
+                    "bidprice": float(r["bidprice"]) if r["bidprice"] is not None else 0.0,
+                    "supply": int(r["supply"]) if r["supply"] is not None else 0,
+                }
+                for r in rows
+            ]
+            return JSONResponse(content=result)
+    except Exception as e:
+        logger.error(f"Error fetching internal CX history for {full_ticker}: {e}")
+        return JSONResponse(content=[])
+
+
+@cx_internal_router.get("/detail/{ticker}", description="Get current CX detail and orderbook. Internal access.")
+async def get_cx_ticker_detail_internal(
+    request: Request,
+    ticker: str,
+    exchange: str = "IC1",
+):
+    db = get_db(request)
+    clean_ticker = ticker.upper()
+    clean_exchange = exchange.upper()
+    full_ticker = f"{clean_ticker}.{clean_exchange}"
+
+    try:
+        async with db.pool.acquire() as conn:
+            broker_row = await conn.fetchrow(
+                """
+                SELECT 
+                    ticker,
+                    priceaverage,
+                    askprice,
+                    askamount,
+                    bidprice,
+                    bidamount,
+                    supply,
+                    demand,
+                    traded,
+                    volume,
+                    brokermaterialid,
+                    xata_updatedat AS last_update
+                FROM cx_brokers
+                WHERE ticker = $1 OR brokermaterialid = $2
+                LIMIT 1;
+                """,
+                full_ticker, clean_ticker
+            )
+
+            if not broker_row:
+                return JSONResponse(content={
+                    "found": False,
+                    "ticker": clean_ticker,
+                    "exchange": clean_exchange,
+                    "full_ticker": full_ticker,
+                    "priceaverage": 0,
+                    "askprice": 0,
+                    "askamount": 0,
+                    "bidprice": 0,
+                    "bidamount": 0,
+                    "high": 0,
+                    "low": 0,
+                    "volume": 0,
+                    "traded": 0,
+                    "alltimehigh": 0,
+                    "alltimelow": 0,
+                    "last_update": None,
+                    "bids": [],
+                    "asks": []
+                })
+
+            broker_id = broker_row["brokermaterialid"]
+
+            stats_row = await conn.fetchrow(
+                """
+                SELECT 
+                    COALESCE(MAX(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS high,
+                    COALESCE(MIN(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS low,
+                    COALESCE(MAX(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS alltimehigh,
+                    COALESCE(MIN(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS alltimelow
+                FROM cx_brokers_history
+                WHERE ticker = $1;
+                """,
+                full_ticker
+            )
+
+            bids = []
+            asks = []
+
+            if broker_id:
+                bid_rows = await conn.fetch(
+                    """
+                    SELECT priceamount AS price, amount AS amount, tradername AS trader
+                    FROM cx_brokers_buy_orders
+                    WHERE brokermaterialid = $1
+                    ORDER BY priceamount DESC LIMIT 50;
+                    """,
+                    broker_id
+                )
+                bids = [
+                    {
+                        "price": float(r["price"] or 0),
+                        "amount": int(r["amount"] or 0),
+                        "trader": r["trader"] or "Anonymous"
+                    }
+                    for r in bid_rows
+                ]
+
+                ask_rows = await conn.fetch(
+                    """
+                    SELECT priceamount AS price, amount AS amount, tradername AS trader
+                    FROM cx_brokers_sell_orders
+                    WHERE brokermaterialid = $1
+                    ORDER BY priceamount ASC LIMIT 50;
+                    """,
+                    broker_id
+                )
+                asks = [
+                    {
+                        "price": float(r["price"] or 0),
+                        "amount": int(r["amount"] or 0),
+                        "trader": r["trader"] or "Anonymous"
+                    }
+                    for r in ask_rows
+                ]
+
+            return JSONResponse(content={
+                "found": True,
+                "ticker": clean_ticker,
+                "exchange": clean_exchange,
+                "full_ticker": full_ticker,
+                "priceaverage": float(broker_row["priceaverage"] or 0),
+                "askprice": float(broker_row["askprice"] or 0),
+                "askamount": int(broker_row["askamount"] or 0),
+                "bidprice": float(broker_row["bidprice"] or 0),
+                "bidamount": int(broker_row["bidamount"] or 0),
+                "high": float(stats_row["high"] or 0) if stats_row else 0,
+                "low": float(stats_row["low"] or 0) if stats_row else 0,
+                "volume": float(broker_row["volume"] or 0),
+                "traded": int(broker_row["traded"] or 0),
+                "alltimehigh": float(stats_row["alltimehigh"] or 0) if stats_row else 0,
+                "alltimelow": float(stats_row["alltimelow"] or 0) if stats_row else 0,
+                "last_update": broker_row["last_update"].isoformat() if broker_row["last_update"] else None,
+                "bids": bids,
+                "asks": asks
+            })
+
+    except Exception as e:
+        logger.error(f"Error fetching internal CX detail for {full_ticker}: {e}")
+        return JSONResponse(content={
+            "found": False,
+            "ticker": clean_ticker,
+            "exchange": clean_exchange,
+            "full_ticker": full_ticker,
+            "priceaverage": 0,
+            "askprice": 0,
+            "askamount": 0,
+            "bidprice": 0,
+            "bidamount": 0,
+            "high": 0,
+            "low": 0,
+            "volume": 0,
+            "traded": 0,
+            "alltimehigh": 0,
+            "alltimelow": 0,
+            "last_update": None,
+            "bids": [],
+            "asks": []
+        })

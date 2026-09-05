@@ -31,7 +31,6 @@ async def corp_production(
             debug=debug,
         )
 
-
 # FIXME: Rework this endpoint to use the internal service and repo and add corp pricing tables
 @corporation_internal_router.get(
     "/prices",
