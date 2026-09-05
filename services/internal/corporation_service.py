@@ -296,6 +296,10 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
 # ==========================================
 
 async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[str, Any]]:
+    """
+    Executes the exact same data fetch and calculation pipeline as the core builder, 
+    but formats the output into a flat array optimized for CSV export or tabular frontend display.
+    """
     family_metadata = await get_corp_family_metadata(conn, user_id)
     if not family_metadata:
         raise HTTPException(status_code=404, detail="No corporation found for this user.")
@@ -403,6 +407,12 @@ async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[s
 # ==========================================
 
 async def get_corp_family_metadata(conn: Any, user_id: str) -> List[Dict[str, Any]]:
+    """
+    Finds the 'Family' of corporations linked to the user.
+    1. Finds User's Current Corp.
+    2. Checks if it is a Sub or Main via corporation_subsidiaries.
+    3. Returns list of metadata for Main + All Subs.
+    """
     FAMILY_QUERY = """
     WITH UserCorp AS (
         SELECT c.id 
@@ -440,6 +450,12 @@ async def get_corp_family_metadata(conn: Any, user_id: str) -> List[Dict[str, An
 # ==========================================
 
 async def get_family_members(conn: Any, corp_ids: List[str]):
+    """
+    Fetches members for all provided corporation IDs.
+    Returns:
+      1. map: corp_id -> List[MemberDict]
+      2. map: corp_id -> proxy_user_account_id (Best candidate to fetch data)
+    """
     MEMBERS_QUERY = """
     SELECT 
         cs.corporationid,

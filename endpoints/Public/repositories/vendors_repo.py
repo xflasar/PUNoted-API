@@ -73,8 +73,8 @@ async def fetch_public_vendors(
             parsed_orders = []
 
             for r in vendors_data:
-                r_dict = dict(r)
-                raw_loc = r_dict["locations"]
+                r_dict = {k.lower(): v for k, v in dict(r).items()}
+                raw_loc = r_dict.get("locations", "[]")
                 loc_list = []
 
                 if raw_loc:
@@ -143,25 +143,25 @@ async def fetch_public_vendors(
                 """
                 inv_rows = await con.fetch(inventory_query)
                 inventory_map = {
-                    (r["displayname"], r["ticker"], r["location_id"]): float(r["quantity"]) for r in inv_rows
+                    (r["displayname"], r["ticker"], r["location_id"]): float(r["quantity"] or 0) for r in inv_rows
                 }
 
             # Step 5: Construct vendor dictionary
             vendors_dict = {}
 
             for r in parsed_orders:
-                vendor_id = r["vendorid"]
+                vendor_id = r.get("vendorid") or r.get("vendor_id") or r.get("VENDORID", "")
                 if vendor_id not in vendors_dict:
                     vendors_dict[vendor_id] = {
                         "vendor": {
-                            "vendorid": r["vendorid"],
-                            "companycode": r["companycode"],
-                            "companyname": r["companyname"],
-                            "corpname": r["corpname"],
-                            "gamename": r["gamename"],
-                            "isactive": r["isactive"],
-                            "activity": r["activity_label"],
-                            "cx": r["cx"],
+                            "vendorid": vendor_id,
+                            "companycode": r.get("companycode", ""),
+                            "companyname": r.get("companyname", ""),
+                            "corpname": r.get("corpname", ""),
+                            "gamename": r.get("gamename", ""),
+                            "isactive": r.get("isactive", False),
+                            "activity": r.get("activity_label", ""),
+                            "cx": r.get("cx", ""),
                         },
                         "orders": [],
                     }
@@ -197,15 +197,15 @@ async def fetch_public_vendors(
                     continue
 
                 order_data = {
-                    "orderid": str(r["orderid"]) if r["orderid"] else None,
-                    "materialticker": r["materialticker"],
-                    "ordertype": r["ordertype"],
-                    "fixedprice": float(r["fixedprice"]) if r["fixedprice"] else 0.0,
+                    "orderid": str(r.get("orderid")) if r.get("orderid") else None,
+                    "materialticker": r.get("materialticker", ""),
+                    "ordertype": r.get("ordertype", ""),
+                    "fixedprice": float(r.get("fixedprice", 0.0) or 0.0),
                     "location": final_locations,
                     "price": {
-                        "fixedprice": float(r["fixedprice"]) if r["fixedprice"] else 0.0,
-                        "corpprice": float(r["corpprice"]) if r["corpprice"] else 0.0,
-                        "cxprice": float(r["cxprice"]) if r["cxprice"] else 0.0,
+                        "fixedprice": float(r.get("fixedprice", 0.0) or 0.0),
+                        "corpprice": float(r.get("corpprice", 0.0) or 0.0),
+                        "cxprice": float(r.get("cxprice", 0.0) or 0.0),
                     },
                     "available": total_available,
                 }

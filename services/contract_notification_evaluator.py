@@ -9,11 +9,6 @@ logger = logging.getLogger(__name__)
 class ContractNotificationEvaluator:
     """
     Evaluates contract state transitions, payment deadlines, and loan condition triggers.
-
-    Leverages PostgreSQL predicate pushdown and indexed interval arithmetic
-    (CURRENT_TIMESTAMP +/- INTERVAL window filtering) to evaluate contract status 
-    candidates directly at the database engine layer, avoiding memory-intensive row 
-    hydration and client-side iterative filtering.
     """
 
     def __init__(self, conn, create_notif_fn):
