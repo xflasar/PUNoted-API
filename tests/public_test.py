@@ -90,3 +90,15 @@ def test_get_buildings(client: fastapi.testclient.TestClient, db_savepoint: None
     response = client.get("/buildings/")
     assert response.status_code == 200
     assert response.json() == [{"BuildingTicker": "RIG"}]
+
+# ----------------- Governance -----------------
+def test_get_governance_terms(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    response = client.get("/governance/terms")
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+
+def test_get_governance_motions(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    response = client.get("/governance/motions?full=true")
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+

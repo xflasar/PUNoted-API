@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_synchronized BOOLEAN DEFAULT false NOT NULL,
     dataapikeys TEXT[],
     displayname TEXT,
+    messages_sent_count BIGINT DEFAULT 0 NOT NULL,
     PRIMARY KEY (accountid)
 );
 

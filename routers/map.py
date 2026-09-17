@@ -17,10 +17,59 @@ class System(BaseModel):
     name: str
 
 
+class GovernanceCandidate(BaseModel):
+    candidate_id: Optional[str] = None
+    userid: Optional[str] = None
+    username: Optional[str] = None
+    corporation_name: Optional[str] = None
+    corporation_code: Optional[str] = None
+    country_code: Optional[str] = None
+    votes: Optional[int] = None
+    votes_percentage: Optional[float] = None
+    is_winner: Optional[bool] = None
+    start_of_run: Optional[str] = None
+
+
+class GovernanceTerm(BaseModel):
+    termid: str
+    admincenterid: str
+    term_start: Optional[str] = None
+    term_end: Optional[str] = None
+    election_start: Optional[str] = None
+    election_end: Optional[str] = None
+    parliament_size: Optional[int] = None
+    election_ongoing: Optional[bool] = None
+    candidates: List[GovernanceCandidate] = []
+
+
+class GovernanceMotion(BaseModel):
+    motionid: str
+    admincenterid: Optional[str] = None
+    naturalid: Optional[str] = None
+    motion_name: Optional[str] = None
+    status: Optional[str] = None
+    creator_id: Optional[str] = None
+    creator_username: Optional[str] = None
+    created_at: Optional[str] = None
+    voting_start: Optional[str] = None
+    voting_end: Optional[str] = None
+    votes: List[Dict[str, Any]] = []
+    components: List[Dict[str, Any]] = []
+
+
+class PlanetGovernanceResponse(BaseModel):
+    planetid: str
+    name: str
+    naturalid: Optional[str] = None
+    admincenterid: Optional[str] = None
+    terms: List[GovernanceTerm] = []
+    motions: List[GovernanceMotion] = []
+
+
 class Planet(BaseModel):
     planetid: str
     name: str
-    naturalid: Optional[str]
+    naturalid: Optional[str] = None
 
 
 class PlanetSystemSearchResponse(System):
@@ -29,6 +78,7 @@ class PlanetSystemSearchResponse(System):
 
 class PlanetSearchResponse(Planet):
     system: PlanetSystemSearchResponse
+    governance: Optional[Dict[str, Any]] = None
 
 
 map_router = APIRouter(dependencies=[Depends(require_internal_origin)])
@@ -128,21 +178,12 @@ async def search_planets(
         description="The name or natural ID of the planet to search for.",
     ),
 ):
-    """
-    Searches for planets whose name or natural ID partially matches the provided query.
-
-    This function performs a single, optimized database query to retrieve the Planet,
-    its containing System, and the containing Sector simultaneously.
-
-    Returns a list of matching planets.
-    """
-
     if not hasattr(request.state, "db") or not hasattr(request.app.state.db, "pool"):
         raise HTTPException(status_code=500, detail="Database connection pool not found.")
 
     SQL_QUERY = """
     SELECT
-        p.planetid, p.name AS planet_name, p.naturalid,
+        p.planetid, p.name AS planet_name, p.naturalid, p.admincenterid,
         s.systemid, s.name AS system_name,
         r.externalsectorid, r.name AS sector_name
     FROM planets p
@@ -163,9 +204,8 @@ async def search_planets(
         print(f"Database error during planet search: {e}")
         raise HTTPException(status_code=500, detail="Internal server error while searching.")
 
-    results: List[Planet] = []
+    results: List[PlanetSearchResponse] = []
     for record in records:
-        print(record)
         planet_data: Dict[str, Any] = {
             "planetid": record["planetid"],
             "name": record["planet_name"],
@@ -178,7 +218,60 @@ async def search_planets(
                     "name": record["sector_name"],
                 },
             },
+            "governance": {
+                "admincenterid": record["admincenterid"],
+                "has_admincenter": record["admincenterid"] is not None
+            }
         }
         results.append(PlanetSearchResponse.model_validate(planet_data))
 
     return results
+
+
+# --- 4. GET PLANET GOVERNANCE DETAILS FOR MAP ---
+@map_router.get(
+    "/planets/governance",
+    response_model=List[PlanetGovernanceResponse],
+    summary="Get Planet Government Terms (Members) & Motions for Map",
+)
+async def get_planet_governance(
+    request: Request,
+    planet: Optional[str] = Query(None, description="Planet Natural ID or Name or Admin Center ID")
+):
+    from endpoints.Public.repositories.governance_repo import fetch_planet_government_terms, fetch_planet_motions
+    db = request.app.state.db
+
+    terms_data = await fetch_planet_government_terms(db, planet=planet)
+    motions_data = await fetch_planet_motions(db, planet=planet, full=True)
+
+    # Group terms and motions by planet
+    grouped: Dict[str, Dict[str, Any]] = {}
+    
+    for t in terms_data:
+        key = t.get("planet_natural_id_code") or t.get("admincenterid") or "UNKNOWN"
+        if key not in grouped:
+            grouped[key] = {
+                "planetid": key,
+                "name": t.get("planet_name") or key,
+                "naturalid": t.get("planet_natural_id_code"),
+                "admincenterid": t.get("admincenterid"),
+                "terms": [],
+                "motions": []
+            }
+        grouped[key]["terms"].append(t)
+
+    for m in motions_data:
+        key = m.get("planet_natural_id_code") or m.get("admincenterid") or m.get("naturalid") or "UNKNOWN"
+        if key not in grouped:
+            grouped[key] = {
+                "planetid": key,
+                "name": m.get("planet_name") or key,
+                "naturalid": m.get("planet_natural_id_code") or m.get("naturalid"),
+                "admincenterid": m.get("admincenterid"),
+                "terms": [],
+                "motions": []
+            }
+        grouped[key]["motions"].append(m)
+
+    return [PlanetGovernanceResponse.model_validate(val) for val in grouped.values()]
+

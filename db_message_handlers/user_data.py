@@ -25,11 +25,15 @@ async def handle_user_data_message(conn, payload: Dict[str, Any]) -> Dict[str, A
         return {"success": False, "message": "User ID is missing from payload."}
 
     try:
+        # Extract contexts before saving users_data
+        contexts_list = user_data.pop("contexts", []) if isinstance(user_data, dict) else []
+
         # Atomic UPSERT to avoid concurrency race conditions (UniqueViolationError)
-        keys = list(user_data.keys())
+        keys = [k for k in user_data.keys() if k != "contexts"]
         keys_str = ", ".join(keys)
         values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys))])
         set_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in keys if k != "userid"])
+        values = [user_data[k] for k in keys]
 
         upsert_query = f"""
             INSERT INTO {TABLE_NAME} ({keys_str})
@@ -39,12 +43,39 @@ async def handle_user_data_message(conn, payload: Dict[str, Any]) -> Dict[str, A
             RETURNING userid;
         """
 
-        inserted_userid = await conn.fetch_one(upsert_query, *user_data.values())
+        inserted_userid = await conn.fetch_one(upsert_query, *values)
 
         if not inserted_userid:
             raise Exception("Upsert operation returned no ID.")
 
         logger.debug(f"Upserted record '{inserted_userid['userid']}' into '{TABLE_NAME}'.")
+
+        # Upsert contexts into user_contexts
+        if contexts_list:
+            upsert_context_query = """
+                INSERT INTO user_contexts (userid, contextid, type, created_at, action_roles, updated_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, NOW())
+                ON CONFLICT (userid, contextid) DO UPDATE SET
+                    type = EXCLUDED.type,
+                    created_at = EXCLUDED.created_at,
+                    action_roles = EXCLUDED.action_roles,
+                    updated_at = NOW();
+            """
+            context_tuples = [
+                (
+                    ctx["userid"],
+                    ctx["contextid"],
+                    ctx["type"],
+                    ctx.get("created_at"),
+                    ctx.get("action_roles"),
+                )
+                for ctx in contexts_list
+                if ctx.get("contextid")
+            ]
+            if context_tuples:
+                async with conn.pool.acquire() as db_conn:
+                    await db_conn.executemany(upsert_context_query, context_tuples)
+                logger.debug(f"Upserted {len(context_tuples)} context records for user '{inserted_userid['userid']}'.")
 
         # Step 3: Update the 'users' table with the new userdataid
         main_user_id = payload["userId"]
@@ -52,7 +83,7 @@ async def handle_user_data_message(conn, payload: Dict[str, Any]) -> Dict[str, A
         await conn.execute(update_user_query, inserted_userid["userid"], main_user_id)
 
         logger.debug(f"Updated user '{main_user_id}' with userdataid '{inserted_userid['userid']}'.")
-        return {"success": True, "message": f"Record '{inserted_userid['userid']}' upserted."}
+        return {"success": True, "message": f"Record '{inserted_userid['userid']}' upserted with {len(contexts_list)} contexts."}
 
     except Exception as e:
         logger.error(f"Error processing 'USER_DATA' message: {e}")

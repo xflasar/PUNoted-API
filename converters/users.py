@@ -38,9 +38,25 @@ def convert_users_data_table(raw_records: Dict[str, Any]) -> List[Dict[str, Any]
     else:
         created = None
 
+    user_id = get_value_or_default("id", "null")
+
+    # Extract contexts array
+    contexts_data = []
+    for ctx in payload.get("contexts", []) or []:
+        ctx_created = None
+        if ctx.get("creation") and ctx["creation"].get("timestamp"):
+            ctx_created = datetime.fromtimestamp(ctx["creation"]["timestamp"] / 1000)
+        contexts_data.append({
+            "userid": user_id,
+            "contextid": ctx.get("id"),
+            "type": ctx.get("type"),
+            "created_at": ctx_created,
+            "action_roles": json.dumps(ctx.get("actionRoles", [])),
+        })
+
     converted_records.append(
         {
-            "userid": get_value_or_default("id", "null"),
+            "userid": user_id,
             "displayname": get_value_or_default("username", "null"),
             "companyid": get_value_or_default("companyId", "null"),
             "subscriptionlevel": get_value_or_default("subscriptionLevel", "null"),
@@ -50,7 +66,7 @@ def convert_users_data_table(raw_records: Dict[str, Any]) -> List[Dict[str, Any]
             "highesttier": get_value_or_default("highestTier", "null"),
             "ispayinguser": get_value_or_default("isPayingUser", "null"),
             "ismuted": get_value_or_default("isMuted", "null"),
-            "preferredlocale": get_value_or_default("preferredLocale", "null"),
+            "contexts": contexts_data,
         }
     )
 

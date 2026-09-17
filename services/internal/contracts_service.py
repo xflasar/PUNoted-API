@@ -38,7 +38,9 @@ class ContractsService:
                 currency=row['currency'] or "ICA",
                 operation_type=op_type,
                 party=row['party'] or "UNKNOWN",
-                is_income=row['is_income'] 
+                is_income=row['is_income'],
+                motion_planet_name=row.get('motion_planet_name'),
+                motionPlanetName=row.get('motion_planet_name')
             ))
 
         return {

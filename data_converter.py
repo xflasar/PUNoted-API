@@ -1464,6 +1464,13 @@ def convert_contracts_payload(
 
     if "contracts" in working_data and isinstance(working_data["contracts"], list):
         raw_contracts = working_data["contracts"]
+    elif "motions" in working_data and isinstance(working_data["motions"], list):
+        raw_contracts = working_data["motions"]
+        admin_id = working_data.get("adminCenterId")
+        if admin_id:
+            for m in raw_contracts:
+                if isinstance(m, dict):
+                    m["adminCenterId"] = admin_id
     elif working_data.get("id"):
         raw_contracts = [working_data]
 
@@ -1471,6 +1478,57 @@ def convert_contracts_payload(
     all_condition_records: List[Dict[str, Any]] = []
     all_material_records: List[Dict[str, Any]] = []
     all_installment_records: List[Dict[str, Any]] = []
+    all_gov_link_records: List[Dict[str, Any]] = []
+    all_gov_term_records: List[Dict[str, Any]] = []
+    all_gov_candidate_records: List[Dict[str, Any]] = []
+
+    # Check if working_data is a Government Term object itself
+    if isinstance(working_data, dict) and working_data.get("adminCenterId") and (working_data.get("candidates") or working_data.get("winners")):
+        term_id = working_data.get("id")
+        admin_center_id = working_data.get("adminCenterId")
+        if term_id and admin_center_id:
+            elec_start = (working_data.get("electionStart") or {}).get("timestamp")
+            elec_end = (working_data.get("electionEnd") or {}).get("timestamp")
+            term_start = (working_data.get("start") or {}).get("timestamp")
+            term_end = (working_data.get("end") or {}).get("timestamp")
+            
+            all_gov_term_records.append({
+                "termid": term_id,
+                "admincenterid": admin_center_id,
+                "planet_natural_id": working_data.get("naturalId"),
+                "election_start": datetime.fromtimestamp(elec_start / 1000, tz=timezone.utc) if elec_start else None,
+                "election_end": datetime.fromtimestamp(elec_end / 1000, tz=timezone.utc) if elec_end else None,
+                "term_start": datetime.fromtimestamp(term_start / 1000, tz=timezone.utc) if term_start else None,
+                "term_end": datetime.fromtimestamp(term_end / 1000, tz=timezone.utc) if term_end else None,
+                "parliament_size": working_data.get("parliamentSize"),
+                "election_ongoing": working_data.get("electionOngoing", False),
+            })
+
+            winners_ids = {w.get("id") for w in working_data.get("winners", []) if isinstance(w, dict)}
+            for cand in working_data.get("candidates", []):
+                if not isinstance(cand, dict):
+                    continue
+                user = cand.get("user") or {}
+                corp = cand.get("corporation") or {}
+                country = cand.get("country") or {}
+                start_run = (cand.get("startOfRun") or {}).get("timestamp")
+
+                cand_user_id = user.get("id")
+                all_gov_candidate_records.append({
+                    "termid": term_id,
+                    "userid": cand_user_id,
+                    "username": user.get("username"),
+                    "corporation_id": corp.get("id"),
+                    "corporation_name": corp.get("name"),
+                    "corporation_code": corp.get("code"),
+                    "country_id": country.get("id"),
+                    "country_code": country.get("code"),
+                    "country_name": country.get("name"),
+                    "votes": cand.get("votes"),
+                    "votes_percentage": cand.get("votesPercentage"),
+                    "is_winner": cand_user_id in winners_ids if cand_user_id else False,
+                    "start_of_run": datetime.fromtimestamp(start_run / 1000, tz=timezone.utc) if start_run else None,
+                })
 
     for contract_record in raw_contracts:
         contract_id = contract_record.get("id")
@@ -1480,6 +1538,16 @@ def convert_contracts_payload(
 
         if not contract_id or not contract_party:
             continue
+
+        # Check for government link info (e.g. from admincenter_motions payload or conditions)
+        admin_center_id = contract_record.get("adminCenterId")
+        motion_id = contract_record.get("motionId")
+        if admin_center_id or motion_id:
+            all_gov_link_records.append({
+                "contractid": contract_id,
+                "admincenterid": admin_center_id,
+                "motionid": motion_id,
+            })
 
         # 2. CONVERT MAIN
         all_contract_records.extend(_convert_contract_main([contract_record]))
@@ -1501,6 +1569,9 @@ def convert_contracts_payload(
         "conditions": all_condition_records,
         "materials": all_material_records,
         "installments": all_installment_records,
+        "gov_links": all_gov_link_records,
+        "gov_terms": all_gov_term_records,
+        "gov_candidates": all_gov_candidate_records,
     }
 
 
@@ -3401,16 +3472,19 @@ def convert_user_currency_accounts_data(
 ) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'user_currency_accounts' table schema."""
     converted_records = []
-    for record in raw_records["payload"].get("currencyAccounts"):
+    payload = raw_records.get("payload", {})
+    currency_accounts = payload.get("currencyAccounts", []) if isinstance(payload, dict) else []
+    for record in currency_accounts:
         converted_records.append(
             {
                 "category": record.get("category"),
                 "type": record.get("type"),
                 "number": record.get("number"),
-                "bookbalanceamount": record.get("bookBalance").get("amount"),
-                "bookbalancecurrencycode": record.get("bookBalance").get("currency"),
-                "balanceamount": record.get("currencyBalance").get("amount"),
-                "balancecurrencycode": record.get("currencyBalance").get("currency"),
+                "bookbalanceamount": record.get("bookBalance", {}).get("amount") if record.get("bookBalance") else None,
+                "bookbalancecurrencycode": record.get("bookBalance", {}).get("currency") if record.get("bookBalance") else None,
+                "balanceamount": record.get("currencyBalance", {}).get("amount") if record.get("currencyBalance") else None,
+                "balancecurrencycode": record.get("currencyBalance", {}).get("currency") if record.get("currencyBalance") else None,
+                "address": record.get("address") or payload.get("address"),
             }
         )
     return converted_records
@@ -3419,15 +3493,18 @@ def convert_user_currency_accounts_data(
 def convert_accounting_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'user_currency_accounts' table schema."""
     converted_records = []
-    for record in raw_records["payload"].get("items"):
+    payload = raw_records.get("payload", {})
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+    for record in items:
         if record.get("accountCategory") == "LIQUID_ASSETS":
             converted_records.append(
                 {
                     "category": record.get("accountCategory"),
                     "type": record.get("accountType"),
                     "number": record.get("account"),
-                    "bookbalanceamount": record.get("bookBalance").get("amount"),
-                    "balanceamount": record.get("balance").get("amount"),
+                    "bookbalanceamount": record.get("bookBalance", {}).get("amount") if record.get("bookBalance") else None,
+                    "balanceamount": record.get("balance", {}).get("amount") if record.get("balance") else None,
+                    "address": record.get("address") or payload.get("address"),
                 }
             )
     return converted_records
@@ -3585,6 +3662,7 @@ CONVERSION_FUNCTIONS = {
     "workforces": convert_workforces_data,
     "workforceNeeds": convert_workforce_needs_data,
     "contracts": convert_contracts_payload,
+    "admincenter_motions": convert_contracts_payload,
     "sites": convert_sites_data,
     "site_platforms": convert_site_platforms_data,
     "platform_materials": convert_platform_materials_data,

@@ -7,7 +7,11 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
+import re
 import data_converter
+
+MOT_REGEX = re.compile(r"MOT-\d+-\d+")
+
 
 
 def convert_contracts_payload(
@@ -22,6 +26,13 @@ def convert_contracts_payload(
 
     if "contracts" in working_data and isinstance(working_data["contracts"], list):
         raw_contracts = working_data["contracts"]
+    elif "motions" in working_data and isinstance(working_data["motions"], list):
+        raw_contracts = working_data["motions"]
+        admin_id = working_data.get("adminCenterId")
+        if admin_id:
+            for m in raw_contracts:
+                if isinstance(m, dict):
+                    m["adminCenterId"] = admin_id
     elif working_data.get("id"):
         raw_contracts = [working_data]
 
@@ -88,13 +99,23 @@ def _convert_contract_main(raw_records: List[Dict[str, Any]]) -> List[Dict[str, 
         else:
             extension_deadline = None
 
+        partner_id = (
+            partner.get("id")
+            or partner.get("agentId")
+            or partner.get("_proxy_key")
+            or record.get("adminCenterId")
+            or record.get("adminCenter", {}).get("id")
+            or record.get("adminCenter", {}).get("_proxy_key")
+            or record.get("recipient", {}).get("_proxy_key")
+        )
+
         converted_records.append(
             {
                 "id": record.get("id"),
                 "localid": record.get("localId"),
                 "date": date,
                 "party": record.get("party"),
-                "partnerid": partner.get("id") or partner.get("agentId"),
+                "partnerid": partner_id,
                 "partnername": partner.get("name"),
                 "partnercode": partner.get("code"),
                 "status": record.get("status"),
@@ -152,9 +173,7 @@ def _convert_contract_conditions(
 
         new_record = {
             "contractid": contract_id,
-            # --- CHANGE HERE: Add the contractparty field ---
             "contractparty": party,
-            # ------------------------------------------------
             "deadline": deadline,
             "deadlineduration_millis": deadline_duration_data.get("millis"),
             "amountmoney": amount_money.get("amount"),
@@ -164,7 +183,6 @@ def _convert_contract_conditions(
             **destination_data,
         }
 
-        # Add simple fields (Note: this adds the condition specific 'party' as well)
         for key in CONDITION_KEYS_CAMEL:
             new_record[key.lower()] = record.get(key)
 
@@ -192,7 +210,6 @@ def _convert_contract_materials(raw_conditions: List[Dict[str, Any]], contract_p
             converted_records.append(
                 {
                     "contractconditionid": condition_id,
-                    # 🌟 IMPORTANT: Grandchild needs party to find the parent Condition
                     "contractparty": contract_party,
                     "materialid": material_data.get("id"),
                     "amount": quantity.get("amount"),

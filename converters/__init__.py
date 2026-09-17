@@ -70,6 +70,8 @@ from .accounting import (
     convert_accounting_data,
 )
 
+
+
 from .comex import (
     convert_comex_trade_orders_data,
     convert_comex_trade_order_added_data,
@@ -114,6 +116,18 @@ from .sites import (
     convert_site_platforms_data,
     convert_site_experts_data,
 )
+
+from .planet_government import (
+    convert_planet_government_term,
+    convert_planet_government_terms,
+)
+
+from .planet_motions import (
+    convert_planet_motion,
+    convert_planet_motions,
+)
+
+
 
 
 

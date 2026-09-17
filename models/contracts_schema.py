@@ -34,6 +34,12 @@ class ContractCondition(BaseModel):
     destinationsystemname: Optional[str] = None
     destinationplanetname: Optional[str] = None
     destinationstationname: Optional[str] = None
+    material_ticker: Optional[str] = None
+    materialid: Optional[str] = None
+    ticker: Optional[str] = None
+    amount: Optional[float] = None
+    quantity: Optional[float] = None
+    units: Optional[float] = None
 
 class ContractListItem(BaseModel):
     id: str
@@ -56,6 +62,8 @@ class ContractListItem(BaseModel):
     total_amount: float = 0.0
     currency: str = "ICA"
     operation_type: str = "UNKNOWN"
+    motion_planet_name: Optional[str] = None
+    motionPlanetName: Optional[str] = None
     conditions: List[ContractCondition] = []
 
 class ContractDetail(ContractListItem):

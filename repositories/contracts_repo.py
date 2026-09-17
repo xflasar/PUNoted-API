@@ -7,7 +7,11 @@ class ContractsRepository:
 
     async def get_contracts(self, user_id: str, category: str, status: str, search: str, limit: int, offset: int) -> Dict[str, Any]:
         async with self.db.pool.acquire() as conn:
-            username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+            username = await conn.fetchval(
+                "SELECT username FROM users WHERE accountid::text = $1 OR userdataid::text = $1 OR username = $1", user_id
+            )
+            if not username:
+                username = user_id
 
         # 1. Prepare Parameters
         params = [username]
@@ -28,8 +32,7 @@ class ContractsRepository:
         category_clause = "TRUE"
         if category == "TRADE":
             category_clause = """
-                EXISTS (SELECT 1 FROM contract_conditions x WHERE x.contractid = c.id AND x.type IN ('COMEX_PURCHASE_PICKUP', 'DELIVERY', 'PROVISION_SHIPMENT', 'PICKUP_SHIPMENT', 'PROVISION')) 
-                AND NOT EXISTS (SELECT 1 FROM contract_conditions x WHERE x.contractid = c.id AND x.type IN ('DELIVERY_SHIPMENT', 'EXPLORATION', 'LOAN_PAYOUT', 'LOAN_INSTALLMENT'))
+                EXISTS (SELECT 1 FROM contract_conditions x WHERE x.contractid = c.id AND x.type IN ('COMEX_PURCHASE_PICKUP', 'DELIVERY', 'PROVISION_SHIPMENT', 'PICKUP_SHIPMENT', 'PROVISION'))
             """
         elif category == "SHIPMENT":
             category_clause = "EXISTS (SELECT 1 FROM contract_conditions x WHERE x.contractid = c.id AND x.type = 'DELIVERY_SHIPMENT')"
@@ -41,8 +44,8 @@ class ContractsRepository:
             count_sql = f"""
                 SELECT COUNT(DISTINCT c.id)
                 FROM contracts c
-                INNER JOIN users u ON u.userdataid = c.userid
-                WHERE u.username = $1
+                JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
+                WHERE (u.username = $1 OR u.accountid::text = $1 OR u.userdataid::text = $1)
                   AND {status_clause}
                   AND {search_clause}
                   AND {category_clause}
@@ -59,11 +62,35 @@ class ContractsRepository:
                   c.partnername, c.partnercode, c.duedate, 
                   COALESCE(c.party, 'UNKNOWN')::text as party,
                   
+                  COALESCE(
+                      (
+                          SELECT COALESCE(p.name, p.naturalid)
+                          FROM planet_motions pm
+                          JOIN planets p ON p.admincenterid = pm.admincenterid
+                          WHERE pm.naturalid = COALESCE(substring(c.preamble from 'MOT-\\d+-\\d+'), substring(c.name from 'MOT-\\d+-\\d+'))
+                          LIMIT 1
+                      ),
+                      (
+                          SELECT COALESCE(p.name, p.naturalid)
+                          FROM contract_conditions cc_plan
+                          JOIN planets p ON (p.planetid = cc_plan.addressplanetid OR p.planetid = cc_plan.destinationplanetid)
+                          WHERE cc_plan.contractid = c.id
+                          LIMIT 1
+                      ),
+                      (
+                          SELECT COALESCE(p.name, p.naturalid)
+                          FROM planets p
+                          WHERE p.admincenterid IS NOT NULL 
+                            AND (c.partnerid = p.admincenterid OR c.partnername = p.name OR c.partnercode = p.naturalid)
+                          LIMIT 1
+                      )
+                  ) as motion_planet_name,
+                  
                   CASE
                     WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type ='LOAN_PAYOUT' AND cc.party = c.party) THEN 'LOAN_GIVEN'
                     WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type ='LOAN_PAYOUT' AND cc.party != c.party) THEN 'LOAN_TAKEN'
                     WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type = 'EXPLORATION') THEN 'EXPLORATION'
-                    WHEN (c.name ILIKE '%motion%' OR c.name ILIKE '%mot%' OR c.preamble ILIKE '%motion%' OR c.preamble ILIKE '%mot%') THEN 'MOTION'
+                    WHEN (c.preamble ~* '^Motion\\s+MOT-[0-9]+-[0-9]+' OR c.name ~* '^Motion\\s+MOT-[0-9]+-[0-9]+') THEN 'MOTION'
                     WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type = 'DELIVERY_SHIPMENT' AND cc.party != c.party) THEN 'SHIPMENT_GIVEN'
                     WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type = 'DELIVERY_SHIPMENT' AND cc.party = c.party) THEN 'SHIPMENT_TAKEN'
                     WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type IN ('PROVISION_SHIPMENT', 'DELIVERY', 'PROVISION') AND cc.party = c.party) THEN 'SELL'
@@ -91,6 +118,7 @@ class ContractsRepository:
                       SELECT SUM(cc_pay.amountmoney)
                       FROM contract_conditions cc_pay
                       WHERE cc_pay.contractid = c.id
+                        AND cc_pay.contractparty = c.party
                         AND cc_pay.type IN ('PAYMENT', 'LOAN_INSTALLMENT', 'LOAN_PAYOUT')
                   ), 0)::float as total_amount,
                   
@@ -98,12 +126,13 @@ class ContractsRepository:
                       SELECT MAX(cc_pay.currencymoney)
                       FROM contract_conditions cc_pay
                       WHERE cc_pay.contractid = c.id
+                        AND cc_pay.contractparty = c.party
                         AND cc_pay.type IN ('PAYMENT', 'LOAN_INSTALLMENT', 'LOAN_PAYOUT')
                   ), 'ICA') as currency
 
                 FROM contracts c
-                JOIN users u ON u.userdataid = c.userid
-                WHERE u.username = $1
+                JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
+                WHERE (u.username = $1 OR u.accountid::text = $1 OR u.userdataid::text = $1)
                   AND {category_clause}
                   AND {status_clause} 
                   AND {search_clause}
@@ -113,8 +142,17 @@ class ContractsRepository:
 
             rows = await conn.fetch(sql, *params)
 
+            seen_ids = set()
+            unique_items = []
+            for row in rows:
+                item = dict(row)
+                key = item.get("id") or item.get("localid")
+                if key not in seen_ids:
+                    seen_ids.add(key)
+                    unique_items.append(item)
+
         return {
-            "items": [dict(row) for row in rows],
+            "items": unique_items,
             "total": total_count
         }
 
@@ -226,6 +264,15 @@ class ContractsRepository:
                     """
                     SELECT cc.id::text, cc.contractid::text, cc.type, cc.status, cc.party, cc.index, cc.deadline, 
                            cc.amountmoney, cc.currencymoney,
+                           (SELECT COALESCE(m.ticker, cm.materialid)
+                            FROM contract_materials cm
+                            LEFT JOIN materials m ON m.materialid = cm.materialid
+                            WHERE cm.contractconditionid = cc.id
+                            LIMIT 1) as material_ticker,
+                           (SELECT cm.amount
+                            FROM contract_materials cm
+                            WHERE cm.contractconditionid = cc.id
+                            LIMIT 1) as amount,
                            cli.repaymentamount, cli.interestamount, cli.totalamount, cli.currency
                     FROM contract_conditions cc
                     JOIN contracts c ON c.id = cc.contractid
@@ -266,22 +313,46 @@ class ContractsRepository:
 
             contract = await conn.fetchrow(
                 """
-                SELECT c.*,
+                 SELECT c.*,
+                   COALESCE(
+                       (
+                           SELECT COALESCE(p.name, p.naturalid)
+                           FROM planet_motions pm
+                           JOIN planets p ON p.admincenterid = pm.admincenterid
+                           WHERE pm.naturalid = COALESCE(substring(c.preamble from 'MOT-\\d+-\\d+'), substring(c.name from 'MOT-\\d+-\\d+'))
+                           LIMIT 1
+                       ),
+                       (
+                           SELECT COALESCE(p.name, p.naturalid)
+                           FROM contract_conditions cc_plan
+                           JOIN planets p ON (p.planetid = cc_plan.addressplanetid OR p.planetid = cc_plan.destinationplanetid)
+                           WHERE cc_plan.contractid = c.id
+                           LIMIT 1
+                       ),
+                       (
+                           SELECT COALESCE(p.name, p.naturalid)
+                           FROM planets p
+                           WHERE p.admincenterid IS NOT NULL 
+                             AND (c.partnerid = p.admincenterid OR c.partnername = p.name OR c.partnercode = p.naturalid)
+                           LIMIT 1
+                       )
+                   ) as motion_planet_name,
+
                    CASE 
                      WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type ='LOAN_PAYOUT' AND cc.party = c.party) THEN 'LOAN_GIVEN'
                      WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type ='LOAN_PAYOUT' AND cc.party != c.party) THEN 'LOAN_TAKEN'
                      WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type = 'EXPLORATION') THEN 'EXPLORATION'
-                     WHEN (c.name ILIKE '%motion%' OR c.name ILIKE '%mot%' OR c.preamble ILIKE '%motion%' OR c.preamble ILIKE '%mot%') THEN 'MOTION'
+                     WHEN (c.preamble ~* 'MOT-[0-9]+-[0-9]+' OR c.name ~* 'MOT-[0-9]+-[0-9]+') THEN 'MOTION'
                      WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type = 'DELIVERY_SHIPMENT' AND cc.party != c.party) THEN 'SHIPMENT_GIVEN'
                      WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type = 'DELIVERY_SHIPMENT' AND cc.party = c.party) THEN 'SHIPMENT_TAKEN'
                      WHEN EXISTS (SELECT 1 FROM contract_conditions cc WHERE cc.contractid = c.id AND cc.type IN ('PROVISION_SHIPMENT', 'DELIVERY', 'PROVISION') AND cc.party = c.party) THEN 'SELL'
                      WHEN EXISTS (
-                       SELECT 1 FROM contract_conditions cc
-                       WHERE cc.contractid = c.id
-                         AND (
-                           (cc.type IN ('PROVISION_SHIPMENT', 'DELIVERY', 'PROVISION') AND cc.party != c.party)
-                           OR (cc.type IN ('COMEX_PURCHASE_PICKUP', 'PICKUP_SHIPMENT') AND cc.contractparty = c.party)
-                         )
+                        SELECT 1 FROM contract_conditions cc
+                        WHERE cc.contractid = c.id
+                          AND (
+                            (cc.type IN ('PROVISION_SHIPMENT', 'DELIVERY', 'PROVISION') AND cc.party != c.party)
+                            OR (cc.type IN ('COMEX_PURCHASE_PICKUP', 'PICKUP_SHIPMENT') AND cc.contractparty = c.party)
+                          )
                      ) THEN 'BUY'
                      ELSE 'OTHER'
                   END AS contracttype,
@@ -294,17 +365,37 @@ class ContractsRepository:
                         AND c.party IS NOT NULL
                         AND cc_inc.party != c.party 
                       LIMIT 1
-                  ), FALSE) AS is_income
+                  ), FALSE) AS is_income,
+
+                  COALESCE((
+                      SELECT SUM(cc_pay.amountmoney)
+                      FROM contract_conditions cc_pay
+                      WHERE cc_pay.contractid = c.id
+                        AND cc_pay.contractparty = c.party
+                        AND cc_pay.type IN ('PAYMENT', 'LOAN_INSTALLMENT', 'LOAN_PAYOUT')
+                  ), 0)::float as total_amount,
+
+                  COALESCE(
+                      (
+                          SELECT MAX(cc_pay.currencymoney)
+                          FROM contract_conditions cc_pay
+                          WHERE cc_pay.contractid = c.id
+                            AND cc_pay.currencymoney IS NOT NULL
+                      ),
+                      'ICA'
+                  ) as currency
 
                 FROM contracts c 
-                INNER JOIN users u ON u.userdataid = c.userid 
-                WHERE c.id = $1 AND u.username = $2
+                INNER JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
+                WHERE (c.id::text = $1::text OR c.localid::text = $1::text) AND u.username = $2
                 """,
-                contract_id, username
+                str(contract_id), username
             )
 
             if not contract:
                 return None
+
+            real_contract_id = contract["id"]
 
             conditions = await conn.fetch(
                 """
@@ -313,6 +404,15 @@ class ContractsRepository:
                         FROM contract_materials cm 
                         LEFT JOIN materials m ON m.materialid = cm.materialid
                         WHERE cm.contractconditionid = cc.id) as material_summary,
+                       (SELECT COALESCE(m.ticker, cm.materialid)
+                        FROM contract_materials cm
+                        LEFT JOIN materials m ON m.materialid = cm.materialid
+                        WHERE cm.contractconditionid = cc.id
+                        LIMIT 1) as material_ticker,
+                       (SELECT cm.amount
+                        FROM contract_materials cm
+                        WHERE cm.contractconditionid = cc.id
+                        LIMIT 1) as amount,
                        cli.*,
                        s1.name as addresssystemname,
                        p1.name as addressplanetname,
@@ -322,7 +422,7 @@ class ContractsRepository:
                        st2.name as destinationstationname
                 FROM contract_conditions cc
                 INNER JOIN contracts c ON c.id = cc.contractid
-                INNER JOIN users u ON u.userdataid = c.userid
+                INNER JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
                 LEFT JOIN contract_loan_installments cli ON cli.conditionid = cc.id AND cc.contractparty = cli.contractparty
                 LEFT JOIN systems s1 ON s1.systemid = cc.addresssystemid
                 LEFT JOIN planets p1 ON p1.planetid = cc.addressplanetid
@@ -330,14 +430,23 @@ class ContractsRepository:
                 LEFT JOIN systems s2 ON s2.systemid = cc.destinationsystemid
                 LEFT JOIN planets p2 ON p2.planetid = cc.destinationplanetid
                 LEFT JOIN stations st2 ON st2.stationid = cc.destinationstationid
-                WHERE c.id = $1 AND u.username = $2
+                WHERE (c.id::text = $1::text OR c.localid = $1) AND u.username = $2 AND (cc.contractparty = c.party OR cc.contractparty IS NULL OR c.party IS NULL)
                 ORDER BY cc.index ASC
                 """,
-                contract_id, username
+                str(real_contract_id), username
             )
 
             result = dict(contract)
-            result["conditions"] = [dict(c) for c in conditions]
+            seen_conds = set()
+            unique_conditions = []
+            for c in conditions:
+                c_dict = dict(c)
+                c_key = c_dict.get("id") or c_dict.get("index")
+                if c_key not in seen_conds:
+                    seen_conds.add(c_key)
+                    unique_conditions.append(c_dict)
+
+            result["conditions"] = unique_conditions
 
             total_principal = 0.0
             total_interest = 0.0

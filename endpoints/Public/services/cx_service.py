@@ -23,16 +23,15 @@ CSV_HEADERS = [
     "IC1-Average", "IC1-7dAvg", "IC1-30dAvg", "IC1-AskAmt", "IC1-AskPrice", "IC1-AskAvail", "IC1-BidAmt", "IC1-BidPrice", "IC1-BidAvail",
 ]
 
-async def generate_market_data_csv(db) -> str:
+async def generate_market_data_csv(db, cx: str) -> str:
     try:
         cache_key = "cx_prices_csv_data"
         
-        # 1. Check Redis Cache
         cached_csv = await redis_client.get(cache_key)
         if cached_csv:
             return cached_csv
 
-        records = await fetch_pivoted_market_data(db)
+        records = await fetch_pivoted_market_data(db, cx=cx)
 
         output = StringIO()
         writer = csv.writer(output)
@@ -125,9 +124,9 @@ async def generate_json_data(
 
             json_data.append(row_dict)
 
-        # 4. Store full response in Redis for 30 minutes (do not cache partial responses)
+        # 4. Store full response in Redis for 15 seconds (for fast-changing CX prices)
         if not brokermaterialid:
-            await redis_client.set(cache_key, json.dumps(json_data), ex=1800)
+            await redis_client.set(cache_key, json.dumps(json_data), ex=15)
         else:
             # Invalidate base cache key so future full queries fetch fresh data
             await redis_client.delete(base_cache_key)
@@ -230,3 +229,27 @@ async def generate_partial_cx_data(db, brokermaterialid: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to generate partial CX data for {brokermaterialid}: {e}", exc_info=True)
         return {}
+
+
+from endpoints.Public.repositories.cx_history_repo import fetch_ticker_history, fetch_ticker_detail
+
+async def get_ticker_history_service(
+    db,
+    ticker: str,
+    exchange: str = "IC1",
+    days: int = 7,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Service wrapper for fetching historical snapshot time series for a CX ticker."""
+    return await fetch_ticker_history(
+        db, ticker=ticker, exchange=exchange, days=days, start_date=start_date, end_date=end_date
+    )
+
+async def get_ticker_detail_service(
+    db,
+    ticker: str,
+    exchange: str = "IC1",
+) -> Dict[str, Any]:
+    """Service wrapper for fetching detailed current orderbook and stats for a CX ticker."""
+    return await fetch_ticker_detail(db, ticker=ticker, exchange=exchange)

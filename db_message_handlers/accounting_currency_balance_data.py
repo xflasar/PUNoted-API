@@ -5,6 +5,44 @@ from typing import Any, Dict, List, Tuple
 logger = logging.getLogger(__name__)
 
 
+async def _upsert_government_balances(db: Any, converted_data: List[Dict[str, Any]], userid: str, admincenterid: str) -> Dict[str, Any]:
+    query = """
+    INSERT INTO government_currency_accounts (
+        admincenterid, category, type, number, bookbalanceamount, bookbalancecurrencycode, balanceamount, balancecurrencycode, userid
+    ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9
+    )
+    ON CONFLICT (admincenterid, balancecurrencycode) DO UPDATE SET
+        bookbalanceamount = EXCLUDED.bookbalanceamount,
+        bookbalancecurrencycode = EXCLUDED.bookbalancecurrencycode,
+        balanceamount = EXCLUDED.balanceamount,
+        userid = EXCLUDED.userid,
+        last_updated = NOW();
+    """
+    records = []
+    for rec in converted_data:
+        currency = rec.get("balancecurrencycode") or rec.get("bookbalancecurrencycode")
+        if not currency:
+            continue
+        records.append((
+            admincenterid,
+            rec.get("category"),
+            rec.get("type"),
+            rec.get("number"),
+            rec.get("bookbalanceamount"),
+            rec.get("bookbalancecurrencycode"),
+            rec.get("balanceamount", 0.0),
+            currency,
+            userid,
+        ))
+    if records:
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                await con.executemany(query, records)
+        logger.info(f"Successfully UPSERTed {len(records)} government currency account balances for admincenterid '{admincenterid}'")
+    return {"success": True, "message": f"Processed {len(records)} government currency account records for {admincenterid}."}
+
+
 async def handle_accounting_currency_balance_data_message(db: Any, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
     start_time = time.perf_counter()
     logger.debug("Starting processing accounting currency balance data.")
@@ -37,6 +75,53 @@ async def handle_accounting_currency_balance_data_message(db: Any, raw_payload: 
     # --- Prepare Data for Bulk UPSERT ---
     # This list will hold tuples of data ready for the database operation
     records_for_upsert: List[Tuple] = []
+
+    msg_context = raw_payload.get("context")
+    user_company = await db.fetch_one(
+        "SELECT companyid FROM company_data WHERE userdataid = $1;",
+        userid,
+    )
+    user_company_id = user_company.get("companyid") if user_company else None
+
+    first_record = converted_data[0] if converted_data else {}
+    record_address = first_record.get("address")
+    entity_id = None
+    entity_type = None
+
+    if record_address and isinstance(record_address, dict):
+        lines = record_address.get("lines", [])
+        if lines:
+            first_line = lines[0] if isinstance(lines[0], dict) else {}
+            entity = first_line.get("entity", {})
+            entity_type = entity.get("type")
+            entity_id = entity.get("id")
+
+    is_gov = (
+        (msg_context and str(msg_context).upper() in ("GOVERNMENT", "ADMINCENTER")) or
+        entity_type == "GOVERNMENT" or
+        (user_company_id and entity_id and entity_id != user_company_id)
+    )
+
+    if is_gov:
+        target_admincenter = None
+        if entity_id and entity_id != user_company_id:
+            target_admincenter = entity_id
+        elif msg_context and msg_context not in ("GOVERNMENT", "ADMINCENTER", "COMPANY"):
+            target_admincenter = msg_context
+
+        if not target_admincenter:
+            gov_ctx = await db.fetch_one(
+                "SELECT contextid FROM user_contexts WHERE userid = $1 AND type = 'GOVERNMENT' LIMIT 1;",
+                userid,
+            )
+            if gov_ctx:
+                target_admincenter = gov_ctx.get("contextid")
+
+        if target_admincenter:
+            return await _upsert_government_balances(db, converted_data, userid, target_admincenter)
+        else:
+            logger.info(f"Skipping unmapped government accounting balances message for user {raw_payload.get('userId')}")
+            return {"success": True, "message": "Ignored unmapped government accounting record."}
 
     for record in converted_data:
         # Assign the resolved userid to the record if it's missing

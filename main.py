@@ -66,6 +66,9 @@ from endpoints.Public.routers.planets import planets_router as api_planets_exter
 from endpoints.Public.routers.vendors import (
     vendors_router as api_vendors_external_router,
 )
+from endpoints.Public.routers.governance import (
+    governance_router as governance_public_external_router,
+)
 from routers.cxuser import cx_router
 from routers.flights import flights_router
 from routers.governance import governance_router
@@ -334,6 +337,26 @@ app.add_middleware(
         "http://localhost:5174",
         "http://127.0.0.1:5174",
         "https://punoted.net",
+        "https://apex.prosperousuniverse.com",
+    ],
+    allow_origin_regex=r"(chrome|moz)-extension://.*",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=[
+        "authorization",
+        "content-type",
+        "x-data-token",
+        "content-encoding"
+    ],
+)
+
+v1_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "https://punoted.net",
+        "https://apex.prosperousuniverse.com",
     ],
     allow_origin_regex=r"(chrome|moz)-extension://.*",
     allow_credentials=True,
@@ -431,6 +454,7 @@ v1_app.include_router(api_planets_external_router, prefix="/planets", tags=["Pla
 v1_app.include_router(corporation_public_external_router, prefix="/corporation", tags=["Corporation Data"])
 v1_app.include_router(buildings_public_external_router, prefix="/buildings", tags=["Buildings Data"])
 v1_app.include_router(company_public_external_router, prefix="/company", tags=["Company Data"])
+v1_app.include_router(governance_public_external_router, prefix="/governance", tags=["Governance Data"])
 
 # Flights router is registered under /public/flights to the main app
 app.include_router(flights_router, prefix="/public/flights", tags=["flights"])
@@ -465,6 +489,7 @@ if DEBUG_MODE:
     app.include_router(corporation_public_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
     app.include_router(buildings_public_external_router, prefix="/v1/buildings", tags=["Buildings Data"])
     app.include_router(company_public_external_router, prefix="/v1/company", tags=["Company Data"])
+    app.include_router(governance_public_external_router, prefix="/v1/governance", tags=["Governance Data"])
 
 # Mount the v1 sub-app under /v1 prefix
 app.mount("/v1", v1_app)

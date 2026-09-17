@@ -172,6 +172,76 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
             price double precision NOT NULL
         ) ON COMMIT DROP;
 
+        CREATE TEMP TABLE planets (
+            planetid text PRIMARY KEY,
+            naturalid text,
+            name text,
+            admincenterid text
+        ) ON COMMIT DROP;
+
+        CREATE TEMP TABLE planet_government_terms (
+            termid text PRIMARY KEY,
+            admincenterid text NOT NULL,
+            planet_natural_id integer,
+            election_start timestamptz,
+            election_end timestamptz,
+            term_start timestamptz,
+            term_end timestamptz,
+            parliament_size integer,
+            election_ongoing boolean DEFAULT false
+        ) ON COMMIT DROP;
+
+        CREATE TEMP TABLE planet_government_candidates (
+            id text PRIMARY KEY,
+            termid text NOT NULL,
+            userid text,
+            username text,
+            corporation_name text,
+            corporation_code text,
+            country_code text,
+            votes integer,
+            votes_percentage double precision,
+            is_winner boolean DEFAULT false,
+            start_of_run timestamptz
+        ) ON COMMIT DROP;
+
+        CREATE TEMP TABLE planet_motions (
+            motionid text PRIMARY KEY,
+            admincenterid text,
+            naturalid text,
+            name text,
+            creator_id text,
+            creator_username text,
+            created_at timestamptz,
+            status text,
+            voting_start timestamptz,
+            voting_end timestamptz
+        ) ON COMMIT DROP;
+
+        CREATE TEMP TABLE planet_motion_votes (
+            id text PRIMARY KEY,
+            motionid text NOT NULL,
+            voter_id text,
+            voter_username text,
+            role text,
+            status text,
+            voted_at timestamptz
+        ) ON COMMIT DROP;
+
+        CREATE TEMP TABLE planet_motion_components (
+            componentid text PRIMARY KEY,
+            motionid text NOT NULL,
+            type text,
+            contributor_id text,
+            contributor_username text,
+            recipient_id text,
+            recipient_username text,
+            amount double precision,
+            currency text,
+            program text,
+            category text
+        ) ON COMMIT DROP;
+
         INSERT INTO users (accountid, username, userdataid, xata_id)
         VALUES ('acct1', 'testuser', 'userid1', 'fakexataid');
 

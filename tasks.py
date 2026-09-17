@@ -11,6 +11,8 @@ from cachetools import TTLCache
 import converters as data_converter
 import db_message_handlers.accounting_currency_balance_data
 import db_message_handlers.accounting_data
+
+
 import db_message_handlers.commodity_exchanges
 import db_message_handlers.company_data
 import db_message_handlers.contracts_data
@@ -26,6 +28,8 @@ import db_message_handlers.leaderboards_data
 import db_message_handlers.material_categories
 import db_message_handlers.material_recipes
 import db_message_handlers.planet_data
+import db_message_handlers.planet_government
+import db_message_handlers.planet_motions
 import db_message_handlers.planet_infrastructure_data
 import db_message_handlers.planet_population_data
 import db_message_handlers.production_line_order_added
@@ -75,6 +79,8 @@ CONVERTER_HANDLERS = {
     "COMEX_BROKER_DATA": data_converter.convert_comex_broker_data,
     "ACCOUNTING_CASH_BALANCES": data_converter.convert_user_currency_accounts_data,
     "ACCOUNTING_BOOKINGS": data_converter.convert_accounting_data,
+
+
     "WORLD_SECTORS": data_converter.convert_sectors_data,
     "SYSTEM_STARS_DATA": data_converter.convert_systems_data,
     "POPULATION_AVAILABLE_RESERVE_WORKFORCE": data_converter.convert_site_available_population_data,
@@ -94,13 +100,17 @@ CONVERTER_HANDLERS = {
     "SHIP_FLIGHT_FLIGHT": data_converter.convert_flight_record,
     "SHIP_FLIGHT_FLIGHT_ENDED": data_converter.convert_flight_ended_record,
     "WORKFORCE_WORKFORCES": data_converter.convert_workforces_data,
-    "CONTRACTS_CONTRACTS": data_converter.convert_contracts_payload,
-    "CONTRACTS_CONTRACT": data_converter.convert_contracts_payload,
+    "CONTRACTS_CONTRACTS": converters.contracts.convert_contracts_payload,
+    "CONTRACTS_CONTRACT": converters.contracts.convert_contracts_payload,
+    "admincenter_motion": converters.planet_motions.convert_planet_motion,
+    "admincenter_motions": converters.planet_motions.convert_planet_motions,
+    "admincenter_term": converters.planet_government.convert_planet_government_term,
+    "admincenter_terms": converters.planet_government.convert_planet_government_terms,
     "gateways": data_converter.convert_gateway_data,
     "STORAGE_REMOVED": data_converter.convert_storage_removed,
     'commodityexchanges': data_converter.convert_commodity_exchanges_data,
     'users': data_converter.convert_public_user_data,
-    'LEADERBOARD_SCORES': data_converter.convert_leaderboard_scores,
+    'LEADERBOARD_SCORES': converters.leaderboard.convert_leaderboard_scores if hasattr(converters, 'leaderboard') else data_converter.convert_leaderboard_scores,
     "BLUEPRINT_BLUEPRINTS": converters.blueprints.convert_blueprints_data,
 }
 
@@ -137,6 +147,8 @@ MESSAGE_HANDLERS = {
     "COMEX_BROKER_DATA": db_message_handlers.cx_broker_data.handle_cx_broker_data_message,
     "ACCOUNTING_CASH_BALANCES": db_message_handlers.accounting_currency_balance_data.handle_accounting_currency_balance_data_message,
     "ACCOUNTING_BOOKINGS": db_message_handlers.accounting_data.handle_accounting_data_message,
+
+
     "WORLD_SECTORS": db_message_handlers.sectors_data.handle_sectors_message,
     "SYSTEM_STARS_DATA": db_message_handlers.systems_data.handle_systems_data,
     "POPULATION_AVAILABLE_RESERVE_WORKFORCE": db_message_handlers.site_available_reserve_population_data.handle_site_available_reserve_population_data_message,
@@ -157,6 +169,10 @@ MESSAGE_HANDLERS = {
     "WORKFORCE_WORKFORCES": db_message_handlers.workforce_data.handle_workforce_data_message,
     "CONTRACTS_CONTRACTS": db_message_handlers.contracts_data.handle_contracts_data_message,
     "CONTRACTS_CONTRACT": db_message_handlers.contracts_data.handle_contracts_data_message,
+    "admincenter_motion": db_message_handlers.planet_motions.handle_planet_motion_message,
+    "admincenter_motions": db_message_handlers.planet_motions.handle_planet_motions_message,
+    "admincenter_term": db_message_handlers.planet_government.handle_planet_government_term_message,
+    "admincenter_terms": db_message_handlers.planet_government.handle_planet_government_terms_message,
     "gateways": db_message_handlers.gateway.handle_gateway_data_message,
     "STORAGE_REMOVED": db_message_handlers.storage_data.handle_storage_removed_message,
     'commodityexchanges': db_message_handlers.commodity_exchanges.handle_commodity_exchanges_message,
@@ -288,6 +304,29 @@ async def _process_data_batch_coroutine(items_to_process, user_id, db):
                     message_payload["payload"] = message_payload["payload"].get("body")
                 elif (
                     message_payload.get("payload", {}).get("path", [])
+                    and message_payload["payload"]["path"][0] == "admincenters"
+                    and len(message_payload["payload"]["path"]) in (3, 4)
+                    and message_payload["payload"]["path"][2] in ("motions", "terms")
+                ):
+                    admin_center_id = message_payload["payload"]["path"][1]
+                    sub_path = message_payload["payload"]["path"][2]
+                    path_len = len(message_payload["payload"]["path"])
+                    if sub_path == "terms":
+                        message_type = "admincenter_term" if path_len == 4 else "admincenter_terms"
+                    else:
+                        message_type = "admincenter_motion" if path_len == 4 else "admincenter_motions"
+
+                    message_payload["payload"] = message_payload["payload"].get("body")
+                    if isinstance(message_payload["payload"], dict):
+                        message_payload["payload"]["adminCenterId"] = admin_center_id
+                    elif isinstance(message_payload["payload"], list):
+                        message_payload["payload"] = {
+                            "adminCenterId": admin_center_id,
+                            "motions": message_payload["payload"] if sub_path == "motions" else [],
+                            "terms": message_payload["payload"] if sub_path == "terms" else [],
+                        }
+                elif (
+                    message_payload.get("payload", {}).get("path", [])
                     and message_payload["payload"]["path"][0] == "users"
                     and len(message_payload["payload"]["path"]) == 2
                 ):
@@ -300,11 +339,16 @@ async def _process_data_batch_coroutine(items_to_process, user_id, db):
                     continue
 
             db_start_time = time.perf_counter()
+            received_context = item.get("context") or message_payload.get("context")
+            if received_context:
+                logger.info(f"[DEBUG EXTENSION CONTEXT] User '{user_id}' sending message '{message_type}' in context: '{received_context}'")
+
             response = await handle_message_data_router(
                 db,
                 messageType=message_type,
                 payload={
                     "userId": user_id,
+                    "context": received_context,
                     "data": converter_router(message_type, message_payload),
                 },
             )
@@ -319,6 +363,21 @@ async def _process_data_batch_coroutine(items_to_process, user_id, db):
             logger.debug(f"Processing request took {db_end_time - db_start_time:.4f} seconds.")
         except Exception as e:
             logger.error(f"Error processing message ID '{message_id}': {e}", exc_info=True)
+
+    if user_id and items_to_process:
+        try:
+            await db.execute(
+                """
+                UPDATE users 
+                SET messages_sent_count = COALESCE(messages_sent_count, 0) + $1 
+                WHERE accountid::text = $2 OR userdataid = $2;
+                """,
+                len(items_to_process),
+                str(user_id),
+            )
+            logger.debug(f"Updated user '{user_id}' messages_sent_count by +{len(items_to_process)}")
+        except Exception as e:
+            logger.warning(f"Could not update user messages_sent_count for {user_id}: {e}")
 
     # EVENT-DRIVEN NOTIFICATION EVALUATION TRIGGER FOR THIS SPECIFIC USER
     try:

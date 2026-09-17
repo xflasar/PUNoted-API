@@ -32,6 +32,36 @@ async def handle_accounting_data_message(db: Database, raw_payload: Dict[str, An
         logger.error(f"Error processing accounting data: {e}", exc_info=True)
         raise
 
+    # --- Check Extension Context / Entity / Address Target ---
+    msg_context = raw_payload.get("context")
+    if msg_context and str(msg_context).upper() in ("GOVERNMENT", "ADMINCENTER"):
+        logger.info(f"Skipping government/admincenter context accounting message for user {raw_payload.get('userId')}")
+        return {"success": True, "message": "Ignored government/admincenter accounting record."}
+
+    user_company = await db.fetch_one(
+        "SELECT companyid FROM company_data WHERE userdataid = $1;",
+        userid,
+    )
+    user_company_id = user_company.get("companyid") if user_company else None
+
+    first_record = converted_data[0] if converted_data else {}
+    record_address = first_record.get("address")
+    if record_address and isinstance(record_address, dict):
+        lines = record_address.get("lines", [])
+        if lines:
+            first_line = lines[0] if isinstance(lines[0], dict) else {}
+            entity = first_line.get("entity", {})
+            entity_type = entity.get("type")
+            entity_id = entity.get("id")
+
+            if entity_type == "GOVERNMENT":
+                logger.info(f"Skipping government accounting message for user {raw_payload.get('userId')}")
+                return {"success": True, "message": "Ignored government accounting record."}
+
+            if user_company_id and entity_id and entity_id != user_company_id:
+                logger.info(f"Skipping non-user accounting message (entity {entity_id}) for user {raw_payload.get('userId')}")
+                return {"success": True, "message": "Ignored non-user accounting record."}
+
     # --- Prepare Data for Bulk UPSERT ---
     records_for_upsert: List[Tuple] = []
 

@@ -1495,6 +1495,104 @@ async def get_dashboard_map(request: Request):
                     FROM planet_resources pr
                     JOIN materials m ON m.materialid = pr.materialid
                     GROUP BY pr.planetid
+                ),
+                gov_terms_agg AS (
+                    SELECT 
+                        COALESCE(p.planetid, t.admincenterid) AS planet_key,
+                        jsonb_agg(
+                            jsonb_build_object(
+                                'TermId', t.termid,
+                                'AdminCenterId', t.admincenterid,
+                                'TermStart', t.term_start,
+                                'TermEnd', t.term_end,
+                                'ElectionStart', t.election_start,
+                                'ElectionEnd', t.election_end,
+                                'ParliamentSize', t.parliament_size,
+                                'ElectionOngoing', t.election_ongoing,
+                                'Candidates', COALESCE(cand.cand_list, '[]'::jsonb)
+                            ) ORDER BY t.term_start DESC
+                        ) AS gov_terms
+                    FROM planet_government_terms t
+                    LEFT JOIN planets p ON (p.admincenterid = t.admincenterid OR p.naturalid = t.admincenterid)
+                    LEFT JOIN (
+                        SELECT 
+                            termid,
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'CandidateId', c.id,
+                                    'UserId', c.userid,
+                                    'Username', c.username,
+                                    'CorporationName', c.corporation_name,
+                                    'CorporationCode', c.corporation_code,
+                                    'CountryCode', c.country_code,
+                                    'Votes', c.votes,
+                                    'VotesPercentage', c.votes_percentage,
+                                    'IsWinner', c.is_winner,
+                                    'StartOfRun', c.start_of_run
+                                ) ORDER BY c.votes DESC
+                            ) AS cand_list
+                        FROM planet_government_candidates c
+                        GROUP BY termid
+                    ) cand ON cand.termid = t.termid
+                    GROUP BY COALESCE(p.planetid, t.admincenterid)
+                ),
+                motions_agg AS (
+                    SELECT 
+                        COALESCE(p.planetid, m.admincenterid, m.naturalid) AS planet_key,
+                        jsonb_agg(
+                            jsonb_build_object(
+                                'MotionId', m.motionid,
+                                'AdminCenterId', m.admincenterid,
+                                'NaturalId', m.naturalid,
+                                'MotionName', m.name,
+                                'Status', m.status,
+                                'CreatorId', m.creator_id,
+                                'CreatorUsername', m.creator_username,
+                                'CreatedAt', m.created_at,
+                                'VotingStart', m.voting_start,
+                                'VotingEnd', m.voting_end,
+                                'Votes', COALESCE(mv.votes_list, '[]'::jsonb),
+                                'Components', COALESCE(mc.components_list, '[]'::jsonb)
+                            ) ORDER BY m.created_at DESC
+                        ) AS motions_list
+                    FROM planet_motions m
+                    LEFT JOIN planets p ON (p.admincenterid = m.admincenterid OR p.naturalid = m.naturalid)
+                    LEFT JOIN (
+                        SELECT 
+                            motionid,
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'VoteId', v.id,
+                                    'VoterId', v.voter_id,
+                                    'VoterUsername', v.voter_username,
+                                    'Role', v.role,
+                                    'Status', v.status,
+                                    'VotedAt', v.voted_at
+                                )
+                            ) AS votes_list
+                        FROM planet_motion_votes v
+                        GROUP BY motionid
+                    ) mv ON mv.motionid = m.motionid
+                    LEFT JOIN (
+                        SELECT 
+                            motionid,
+                            jsonb_agg(
+                                jsonb_build_object(
+                                    'ComponentId', comp.componentid,
+                                    'Type', comp.type,
+                                    'ContributorUsername', comp.contributor_username,
+                                    'RecipientId', comp.recipient_id,
+                                    'RecipientUsername', comp.recipient_username,
+                                    'Amount', comp.amount,
+                                    'Currency', comp.currency,
+                                    'Program', comp.program,
+                                    'Category', comp.category
+                                )
+                            ) AS components_list
+                        FROM planet_motion_components comp
+                        GROUP BY motionid
+                    ) mc ON mc.motionid = m.motionid
+                    GROUP BY COALESCE(p.planetid, m.admincenterid, m.naturalid)
                 )
                 SELECT 
                     p.name, p.systemid, p.planetid, p.mass, p.countryname, p.countrycode,
@@ -1513,6 +1611,8 @@ async def get_dashboard_map(request: Request):
                     TO_CHAR(lp.time, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS time, 
                     lp.simulationperiod, lp.explorersgraceenabled, lp.governmentprogramtype,
                     COALESCE(ra.resources, '[]'::json) AS resources,
+                    COALESCE(gt.gov_terms, '[]'::jsonb) AS "Government",
+                    COALESCE(mot.motions_list, '[]'::jsonb) AS "Motions",
                     COALESCE(phys.gravity, 0.0) AS gravity,
                     COALESCE(phys.pressure, 0.0) AS pressure,
                     COALESCE(phys.temperature, p.temperature, 0.0) AS temperature,
@@ -1565,6 +1665,8 @@ async def get_dashboard_map(request: Request):
                 LEFT JOIN res_agg ra ON ra.planetid = p.planetid
                 LEFT JOIN latest_pop lp ON lp.populationid = p.populationid
                 LEFT JOIN latest_phys phys ON phys.planetid = p.planetid
+                LEFT JOIN gov_terms_agg gt ON gt.planet_key = p.planetid
+                LEFT JOIN motions_agg mot ON mot.planet_key = p.planetid
             ) t;
         """
 

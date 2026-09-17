@@ -42,11 +42,111 @@ build_opts_agg AS (
     SELECT planetid, jsonb_agg(jsonb_build_object('SiteType', sitetype, 'BillOfMaterial', CASE WHEN billofmaterial IS NOT NULL THEN billofmaterial::jsonb ELSE '[]'::jsonb END)) AS build_requirements
     FROM latest_build_opts GROUP BY planetid
 ),
+gov_terms_agg AS (
+    SELECT 
+        COALESCE(p.planetid, t.admincenterid) AS planet_key,
+        jsonb_agg(
+            jsonb_build_object(
+                'TermId', t.termid,
+                'AdminCenterId', t.admincenterid,
+                'TermStart', t.term_start,
+                'TermEnd', t.term_end,
+                'ElectionStart', t.election_start,
+                'ElectionEnd', t.election_end,
+                'ParliamentSize', t.parliament_size,
+                'ElectionOngoing', t.election_ongoing,
+                'Candidates', COALESCE(cand.cand_list, '[]'::jsonb)
+            ) ORDER BY t.term_start DESC
+        ) AS gov_terms
+    FROM planet_government_terms t
+    LEFT JOIN planets p ON (p.admincenterid = t.admincenterid OR p.naturalid = t.admincenterid)
+    LEFT JOIN (
+        SELECT 
+            termid,
+            jsonb_agg(
+                jsonb_build_object(
+                    'CandidateId', c.id,
+                    'UserId', c.userid,
+                    'Username', c.username,
+                    'CorporationName', c.corporation_name,
+                    'CorporationCode', c.corporation_code,
+                    'CountryCode', c.country_code,
+                    'Votes', c.votes,
+                    'VotesPercentage', c.votes_percentage,
+                    'IsWinner', c.is_winner,
+                    'StartOfRun', c.start_of_run
+                ) ORDER BY c.votes DESC
+            ) AS cand_list
+        FROM planet_government_candidates c
+        GROUP BY termid
+    ) cand ON cand.termid = t.termid
+    GROUP BY COALESCE(p.planetid, t.admincenterid)
+),
+motions_agg AS (
+    SELECT 
+        COALESCE(p.planetid, m.admincenterid, m.naturalid) AS planet_key,
+        jsonb_agg(
+            jsonb_build_object(
+                'MotionId', m.motionid,
+                'AdminCenterId', m.admincenterid,
+                'NaturalId', m.naturalid,
+                'MotionName', m.name,
+                'Status', m.status,
+                'CreatorId', m.creator_id,
+                'CreatorUsername', m.creator_username,
+                'CreatedAt', m.created_at,
+                'VotingStart', m.voting_start,
+                'VotingEnd', m.voting_end,
+                'Votes', COALESCE(mv.votes_list, '[]'::jsonb),
+                'Components', COALESCE(mc.components_list, '[]'::jsonb)
+            ) ORDER BY m.created_at DESC
+        ) AS motions_list
+    FROM planet_motions m
+    LEFT JOIN planets p ON (p.admincenterid = m.admincenterid OR p.naturalid = m.naturalid)
+    LEFT JOIN (
+        SELECT 
+            motionid,
+            jsonb_agg(
+                jsonb_build_object(
+                    'VoteId', v.id,
+                    'VoterId', v.voter_id,
+                    'VoterUsername', v.voter_username,
+                    'Role', v.role,
+                    'Status', v.status,
+                    'VotedAt', v.voted_at
+                )
+            ) AS votes_list
+        FROM planet_motion_votes v
+        GROUP BY motionid
+    ) mv ON mv.motionid = m.motionid
+    LEFT JOIN (
+        SELECT 
+            motionid,
+            jsonb_agg(
+                jsonb_build_object(
+                    'ComponentId', comp.componentid,
+                    'Type', comp.type,
+                    'ContributorUsername', comp.contributor_username,
+                    'RecipientId', comp.recipient_id,
+                    'RecipientUsername', comp.recipient_username,
+                    'Amount', comp.amount,
+                    'Currency', comp.currency,
+                    'Program', comp.program,
+                    'Category', comp.category
+                )
+            ) AS components_list
+        FROM planet_motion_components comp
+        GROUP BY motionid
+    ) mc ON mc.motionid = m.motionid
+    GROUP BY COALESCE(p.planetid, m.admincenterid, m.naturalid)
+),
 planet_objects AS (
     SELECT p.naturalid, jsonb_build_object(
         'Resources', COALESCE(res.resources, '[]'::jsonb),
         'BuildRequirements', COALESCE(build_opts.build_requirements, '[]'::jsonb),
         'ProductionFees', COALESCE(fees.production_fees, '[]'::jsonb),
+        'Government', COALESCE(gt.gov_terms, '[]'::jsonb),
+        'Motions', COALESCE(mot.motions_list, '[]'::jsonb),
         'COGCPrograms', '[]'::jsonb,
         'COGCVotes', '[]'::jsonb,
         'COGCUpkeep', '[]'::jsonb,
@@ -100,6 +200,8 @@ planet_objects AS (
     LEFT JOIN res_agg res ON p.planetid = res.planetid
     LEFT JOIN fees_agg fees ON p.planetid = fees.planetid
     LEFT JOIN build_opts_agg build_opts ON p.planetid = build_opts.planetid
+    LEFT JOIN gov_terms_agg gt ON (gt.planet_key = p.planetid OR gt.planet_key = p.admincenterid)
+    LEFT JOIN motions_agg mot ON (mot.planet_key = p.planetid OR mot.planet_key = p.admincenterid OR mot.planet_key = p.naturalid)
 )
 """
 

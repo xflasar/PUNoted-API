@@ -39,7 +39,30 @@ SELECT
     c.canextend, c.canrequesttermination, c.terminationsent, c.terminationreceived,
     c.name, c.preamble, c.party, c.status,
     c.partnerid, c.partnername, c.partnercode,
-    c.userid
+    c.userid,
+    COALESCE(
+        (
+            SELECT COALESCE(p.name, p.naturalid)
+            FROM planet_motions pm
+            JOIN planets p ON p.admincenterid = pm.admincenterid
+            WHERE pm.naturalid = COALESCE(substring(c.preamble from 'MOT-\\d+-\\d+'), substring(c.name from 'MOT-\\d+-\\d+'))
+            LIMIT 1
+        ),
+        (
+            SELECT COALESCE(p.name, p.naturalid)
+            FROM contract_conditions cc_plan
+            JOIN planets p ON (p.planetid = cc_plan.addressplanetid OR p.planetid = cc_plan.destinationplanetid)
+            WHERE cc_plan.contractid = c.id
+            LIMIT 1
+        ),
+        (
+            SELECT COALESCE(p.name, p.naturalid)
+            FROM planets p
+            WHERE p.admincenterid IS NOT NULL 
+              AND (c.partnerid = p.admincenterid OR c.partnername = p.name OR c.partnercode = p.naturalid)
+            LIMIT 1
+        )
+    ) as motion_planet_name
 FROM contracts c
 WHERE c.id = ANY($1::text[]) AND c.userid = ANY($2::text[])
 """
@@ -313,6 +336,8 @@ async def get_filtered_contracts(
             "TerminationReceived": r['terminationreceived'],
             "Name": r['name'],
             "Preamble": r['preamble'],
+            "MotionPlanetName": r['motion_planet_name'],
+            "motion_planet_name": r['motion_planet_name'],
 
             "Conditions": details['conditions'],
 

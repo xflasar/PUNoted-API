@@ -140,6 +140,7 @@ VirtualLedger AS (
             ELSE 'CX' 
         END AS category, 
         (t.amount * t.priceamount) AS amount, 
+        t.amount AS item_quantity,
         t.tradetime AS timestamp,
         t.partnername,
         t.partnercode
@@ -174,6 +175,7 @@ VirtualLedger AS (
             ELSE 'CX' 
         END AS category, 
         -(t.amount * t.priceamount) AS amount, 
+        t.amount AS item_quantity,
         t.tradetime AS timestamp,
         t.partnername,
         t.partnercode
@@ -211,6 +213,16 @@ VirtualLedger AS (
             WHEN cc.party = c.party THEN -cc.amountmoney 
             ELSE cc.amountmoney 
         END AS amount,
+        COALESCE(
+            (
+                SELECT SUM(cm.amount)
+                FROM contract_materials cm
+                JOIN contract_conditions cc_mat ON cm.contractconditionid = cc_mat.id
+                WHERE cc_mat.contractid = c.id
+                  AND cm.amount IS NOT NULL
+            ),
+            0
+        ) AS item_quantity,
         c.date AS timestamp,
         c.partnername, 
         c.partnercode  
@@ -238,6 +250,7 @@ RecentTransactions AS (
                 'PartnerName', COALESCE(partnername, 'Unknown'),
                 'PartnerCode', COALESCE(partnercode, '???'),
                 'Amount', amount,
+                'ItemQuantity', item_quantity,
                 'Timestamp', to_char(timestamp, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
             ) ORDER BY timestamp DESC
         ) AS transactions_json

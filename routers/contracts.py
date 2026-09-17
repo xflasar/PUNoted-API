@@ -56,6 +56,29 @@ async def _fetch_contracts_data_native(con, user_id: str) -> Dict[str, Any]:
                     'extensionDeadline', c.extensiondeadline,
                     'relatedContracts', c.relatedcontracts,
                     'contractType', c.contracttype,
+                    'motionPlanetName', COALESCE(
+                        (
+                            SELECT COALESCE(p.name, p.naturalid)
+                            FROM contract_government_links cgl
+                            JOIN planets p ON p.admincenterid = cgl.admincenterid
+                            WHERE cgl.contractid = c.id
+                            LIMIT 1
+                        ),
+                        (
+                            SELECT COALESCE(p.name, p.naturalid)
+                            FROM contract_conditions cc_plan
+                            JOIN planets p ON (p.planetid = cc_plan.addressplanetid OR p.planetid = cc_plan.destinationplanetid)
+                            WHERE cc_plan.contractid = c.id
+                            LIMIT 1
+                        ),
+                        (
+                            SELECT COALESCE(p.name, p.naturalid)
+                            FROM planets p
+                            WHERE p.admincenterid IS NOT NULL 
+                              AND (c.partnerid = p.admincenterid OR c.partnername = p.name OR c.partnercode = p.naturalid)
+                            LIMIT 1
+                        )
+                    ),
                     
                     'conditions', COALESCE(
                         (
@@ -110,6 +133,7 @@ async def _fetch_contracts_data_native(con, user_id: str) -> Dict[str, Any]:
                                     
                                 FROM contract_conditions cc
                                 WHERE cc.contractid = c.id
+                                  AND cc.contractparty = c.party
                                 
                             ) AS base_condition
                         ),
@@ -124,21 +148,28 @@ async def _fetch_contracts_data_native(con, user_id: str) -> Dict[str, Any]:
 
     raw = await con.fetchval(aggregation_query, user_id)
 
-    # If asyncpg returned a str (i.e. JSON text), parse it with orjson.
+    parsed_res = None
     if isinstance(raw, str):
         try:
-            parsed = orjson.loads(raw)
+            parsed_res = orjson.loads(raw)
         except Exception:
-            # If parsing fails, log and re-raise or return empty structure
             logger.exception("Failed to parse json string returned from DB")
             raise
-        return parsed
+    elif isinstance(raw, (dict, list)):
+        parsed_res = raw
 
-    # If it's already a dict/list, return it straight away.
-    if isinstance(raw, (dict, list)):
-        return raw
+    if parsed_res and isinstance(parsed_res, dict) and "contracts" in parsed_res:
+        contracts_list = parsed_res["contracts"] or []
+        seen = set()
+        unique = []
+        for c in contracts_list:
+            cid = c.get("id") or c.get("localId")
+            if cid not in seen:
+                seen.add(cid)
+                unique.append(c)
+        parsed_res["contracts"] = unique
+        return parsed_res
 
-    # If it's None or unexpected type, return empty structure
     return {"contracts": []}
 
 

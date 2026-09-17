@@ -110,6 +110,68 @@ async def is_synchronized(
             return {"isSynchronized": True, "userdata": dict(userdata)}
 
 
+# GET complete user profile metadata
+@user_router.get("/profile")
+async def get_user_profile(
+    request: Request,
+    user_id: str = Depends(get_current_user_id),
+):
+    db = request.app.state.db
+    async with db.pool.acquire() as conn:
+        user = await conn.fetchrow(
+            "SELECT is_synchronized, userdataid FROM users WHERE accountid = $1",
+            user_id,
+        )
+        if not user or not user["userdataid"]:
+            return {"success": False, "profile": None}
+
+        profile_row = await conn.fetchrow(
+            """
+            SELECT
+                ud.userid,
+                ud.displayname,
+                ud.activedaysperweek,
+                ud.highesttier,
+                ud.subscriptionlevel,
+                ud.subscriptionexpiry,
+                ud.ispayinguser,
+                ud.owncurrencyid,
+                ud.created,
+                ud.corporationid,
+                ud.companyid,
+                curr.code as owncurrencycode,
+                curr.name as owncurrencyname,
+                corp.name as corpname,
+                corp.code as corpcode,
+                cd.companycode,
+                cd.companyname,
+                cd.startingprofile,
+                cd.headquartersid,
+                cd.startinglocationplanetid,
+                cd.startinglocationsystemid,
+                cd.countryid
+            FROM users_data ud
+            LEFT JOIN currencies curr ON curr.id = ud.owncurrencyid
+            LEFT JOIN corporations corp ON corp.id = ud.corporationid
+            LEFT JOIN company_data cd ON cd.companyid = ud.companyid
+            WHERE ud.userid = $1
+            """,
+            str(user["userdataid"]),
+        )
+
+        if not profile_row:
+            return {"success": False, "profile": None}
+
+        data = dict(profile_row)
+        # Format timestamps if necessary
+        if data.get("created"):
+            data["created"] = str(data["created"])
+        if data.get("subscriptionexpiry"):
+            data["subscriptionexpiry"] = str(data["subscriptionexpiry"])
+
+        return {"success": True, "profile": data}
+
+
 # POST synchronize (1-time only)
 @user_router.post("/synchronize")
 async def synchronize_user(user_id: str, request: Request):

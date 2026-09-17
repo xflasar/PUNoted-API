@@ -147,6 +147,32 @@ async def handle_contracts_data_message(db, data: Dict[str, Any]) -> Dict[str, A
                     INSTALLMENTS_UNIQUE_KEYS,
                 )
 
+                # Link contracts to government / admin center if context or partner is a government entity
+                msg_context = data.get("context")
+                gov_links = []
+                for c in contracts:
+                    contract_id = c.get("id")
+                    if not contract_id:
+                        continue
+                    partner_id = c.get("partnerid")
+                    target_gov = None
+                    if msg_context and len(msg_context) >= 16 and msg_context not in ("GOVERNMENT", "ADMINCENTER", "COMPANY"):
+                        target_gov = msg_context
+                    elif partner_id and len(partner_id) >= 16:
+                        target_gov = partner_id
+
+                    if target_gov:
+                        gov_links.append((contract_id, target_gov))
+
+                if gov_links:
+                    cgl_query = """
+                    INSERT INTO contract_government_links (contractid, admincenterid)
+                    VALUES ($1, $2)
+                    ON CONFLICT (contractid, admincenterid) DO UPDATE SET updated_at = NOW();
+                    """
+                    await con.executemany(cgl_query, gov_links)
+                    logger.info(f"Upserted {len(gov_links)} contract government links.")
+
         # --- NOTIFICATION LOGIC ---
         # We pass the original 'data["userId"]' (accountid) for WS targeting
         current_account_id = data["userId"]

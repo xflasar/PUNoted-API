@@ -136,6 +136,7 @@ FROM parsed_brokers pb
 LEFT JOIN history_stats hs ON pb.material_ticker = hs.material_ticker
 LEFT JOIN mm_totals mm ON pb.material_ticker = mm.material_ticker
 WHERE ($1::text[] IS NULL OR cardinality($1::text[]) = 0 OR pb.material_ticker = ANY($1::text[]))
+  AND ($3::text IS NULL OR $3::text = '' OR pb.exchange_code = UPPER($3) OR pb.material_ticker = UPPER(SPLIT_PART($3, '.', 1)))
 GROUP BY pb.material_ticker, mm.mm_buy_sum, mm.mm_sell_sum
 ORDER BY pb.material_ticker;
 """
@@ -145,6 +146,7 @@ async def fetch_pivoted_market_data(
     db,
     tickers: Optional[List[str]] = None,
     brokermaterialids: Optional[str] = None,
+    cx: Optional[str] = None,
 ) -> List[asyncpg.Record]:
     """Executes the pivoted market data query with lock timeout safety."""
     try:
@@ -153,9 +155,10 @@ async def fetch_pivoted_market_data(
 
             ticker_list = tickers if tickers else []
             brokermaterialid = brokermaterialids if brokermaterialids else ""
+            cx_code = cx if cx else ""
 
             records = await con.fetch(
-                SQL_GET_PIVOTED_MARKET_DATA, ticker_list, brokermaterialid
+                SQL_GET_PIVOTED_MARKET_DATA, ticker_list, brokermaterialid, cx_code
             )
             return records
 
@@ -163,4 +166,4 @@ async def fetch_pivoted_market_data(
         logger.error(
             f"Database error fetching pivoted market data: {e}", exc_info=True
         )
-        raise
+        raise
