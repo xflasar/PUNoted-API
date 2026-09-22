@@ -6,6 +6,8 @@ from typing import Any, Dict
 
 import data_converter
 import converters
+import converters.blueprints
+
 
 # ==============================================================================
 # SAMPLE TEST PAYLOADS
@@ -360,4 +362,110 @@ def test_convert_contracts_payload() -> None:
     res_orig = data_converter.convert_contracts_payload(CONTRACTS_PAYLOAD)
     res_ref = converters.convert_contracts_payload(CONTRACTS_PAYLOAD)
     assert len(res_orig["contracts"]) == len(res_ref["contracts"])
+
+def test_convert_flight_record_datetime_naive() -> None:
+    payload = {
+        "id": "flight123",
+        "shipId": "ship123",
+        "arrival": {"timestamp": 1785123456789},
+        "departure": {"timestamp": 1785123400000},
+    }
+    res = converters.ships.convert_flight_record(payload)
+    assert res["arrivaltimestamp"] is not None
+    assert res["arrivaltimestamp"].tzinfo is None
+    assert res["departuretimestamp"] is not None
+    assert res["departuretimestamp"].tzinfo is None
+
+def test_convert_accounting_data() -> None:
+    payload = {"payload": {"currencyAccounts": [{"category": "ASSETS", "type": "CURRENCY", "number": "101"}]}}
+    res = converters.accounting.convert_user_currency_accounts_data(payload)
+    assert len(res) == 1
+
+def test_convert_blueprints_data() -> None:
+    payload = {"payload": [{"id": "bp1", "naturalId": "BP-01", "name": "Ship BP", "billOfMaterial": {"quantities": []}, "selections": [], "performance": {}}]}
+    res = converters.blueprints.convert_blueprints_data(payload)
+    assert "ship_blueprints" in res
+    assert len(res["ship_blueprints"]) == 1
+
+def test_convert_comex_trade_orders_data() -> None:
+    payload = {
+        "payload": {
+            "orders": [
+                {
+                    "id": "ord1",
+                    "trades": [],
+                    "exchange": {"id": "ex1"},
+                    "material": {"id": "mat1"},
+                    "limit": {"amount": 100.0, "currency": "ICA"},
+                }
+            ]
+        }
+    }
+    res = converters.comex.convert_comex_trade_orders_data(payload)
+    assert len(res) == 1
+
+def test_convert_corporations_data() -> None:
+    payload = {
+        "payload": {
+            "id": "corp1",
+            "name": "COSM Corp",
+            "code": "COSM",
+            "country": {"id": "c1"},
+            "currency": {"code": "ICA"},
+        }
+    }
+    res = converters.corporation.convert_corporations_data(payload)
+    assert res["id"] == "corp1"
+
+def test_convert_gateway_data() -> None:
+    payload = {"payload": [{"id": "gw1", "name": "Gateway 1"}]}
+    res = converters.gateway.convert_gateway_data(payload)
+    assert "gateways" in res
+    assert len(res["gateways"]) == 1
+
+def test_convert_leaderboard_scores() -> None:
+    payload = {"payload": {"scores": [{"rank": 1, "username": "player1", "score": 100}]}}
+    res = converters.leaderboard.convert_leaderboard_scores(payload)
+    assert "leaderboard_scores" in res
+
+def test_convert_planet_government_terms() -> None:
+    payload = {"payload": [{"id": "term1", "planetId": "p1"}]}
+    res = converters.planet_government.convert_planet_government_terms(payload)
+    assert "gov_terms" in res
+
+def test_convert_planet_motions() -> None:
+    payload = {"payload": [{"id": "motion1", "planetId": "p1"}]}
+    res = converters.planet_motions.convert_planet_motions(payload)
+    assert "planet_motions" in res
+
+def test_convert_sites_data() -> None:
+    payload = {
+        "payload": {
+            "sites": [
+                {
+                    "siteId": "site1",
+                    "buildOptions": {"options": []},
+                    "platforms": [],
+                    "address": {
+                        "lines": [
+                            {"entity": {"id": "sys1"}},
+                            {"entity": {"id": "planet1"}},
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    res = converters.sites.convert_sites_data(payload)
+    assert len(res) == 1
+
+
+def test_convert_world_materials_data() -> None:
+    payload = {"payload": {"categories": [{"id": "FOOD", "name": "Food"}], "materials": [{"id": "RAT", "name": "Rations"}]}}
+    res = converters.world.convert_world_materials_data(payload)
+    assert "material_categories" in res
+    assert len(res["material_categories"]) == 1
+
+
+
 
