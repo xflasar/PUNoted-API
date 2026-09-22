@@ -185,13 +185,13 @@ def convert_flight_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
     arrival = None
     if arrival_ts_ms is not None:
-        arrival = datetime.fromtimestamp(arrival_ts_ms / 1000)
+        arrival = datetime.fromtimestamp(arrival_ts_ms / 1000, tz=timezone.utc).replace(tzinfo=None)
     else:
         arrival = None
 
     departure = None
     if departure_ts_ms is not None:
-        departure = datetime.fromtimestamp(departure_ts_ms / 1000)
+        departure = datetime.fromtimestamp(departure_ts_ms / 1000, tz=timezone.utc).replace(tzinfo=None)
     else:
         departure = None
 
@@ -214,9 +214,6 @@ def convert_flight_record(record: Dict[str, Any]) -> Dict[str, Any]:
     ftl_total_consumption = get_total_fuel_consumption(segments, "ftl")
     total_damage = get_total_damage(segments)
 
-    # Note: stlDistance and ftlDistance are taken from the top level,
-    # as per the structure, which likely represents the total distance.
-
     # 4. Construct the converted record with lowercase keys
     converted_record = {
         "id": record.get("id"),
@@ -236,9 +233,9 @@ def convert_flight_record(record: Dict[str, Any]) -> Dict[str, Any]:
             for index, segment in enumerate(segments)
             if convert_segment(segment, record.get("id"), index) is not None
         ],
-        # Timestamps FIX THIS ITS INVERTED!!!!
-        "departuretimestamp": arrival,
-        "arrivaltimestamp": departure,
+        # Timestamps
+        "departuretimestamp": departure,
+        "arrivaltimestamp": arrival,
         # Distance and Fuel Consumption
         "stldistance": record.get("stlDistance"),
         "ftldistance": record.get("ftlDistance"),
@@ -259,14 +256,13 @@ def convert_flight_ended_record(raw_record: Dict[str, Any]) -> Dict[str, Any]:
                 return line["entity"].get("id")
         return None
 
-    # FIX: Generating a timezone-aware UTC datetime
     return {
         "id": record.get("id"),
         "shipId": record.get("shipId"),
         "destinationSystemId": get_entity_id(record.get("destination", {}).get("lines", []), "SYSTEM"),
         "destinationPlanetId": get_entity_id(record.get("destination", {}).get("lines", []), "PLANET"),
         "destinationStationId": get_entity_id(record.get("destination", {}).get("lines", []), "STATION"),
-        "ended_at": datetime.now(timezone.utc)
+        "ended_at": datetime.now(timezone.utc).replace(tzinfo=None)
     }
 
 def convert_segment(raw_segment: Dict[str, Any], flight_id: str, segment_index: int) -> Optional[Dict[str, Any]]:

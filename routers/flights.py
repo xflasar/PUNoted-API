@@ -43,7 +43,7 @@ async def get_flights_dashboard(request: Request):
             ROUND(AVG(T1.ftltotalconsumption)::numeric, 2) AS avg_ftltotalconsumption,
             
             -- 6. Average Duration in Minutes (Rounded to 2 decimal places)
-            ROUND(AVG(EXTRACT(EPOCH FROM (T1.departuretimestamp - T1.arrivaltimestamp)) / 60)::numeric, 2) AS avg_duration_minutes
+            ROUND(AVG(EXTRACT(EPOCH FROM (T1.arrivaltimestamp - T1.departuretimestamp)) / 60)::numeric, 2) AS avg_duration_minutes
         
         FROM
             ship_flights AS T1

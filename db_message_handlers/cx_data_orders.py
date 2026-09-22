@@ -1,3 +1,4 @@
+import datetime
 import logging
 import time
 from typing import Any, Dict, List
@@ -54,7 +55,39 @@ async def handle_comex_orders_data_message(db: Database, raw_payload: Dict[str, 
             comex_orders_to_upsert.append(record)
 
         # --- Step 2: Perform all upserts in a single transaction ---
+        incoming_order_ids = [r.get("orderid") for r in comex_orders_to_upsert if r.get("orderid")]
+        just_fulfilled_ids = []
+
         async with db.pool.acquire() as con:
+            existing_rows = await con.fetch(
+                "SELECT orderid, status, amount FROM comex_trade_orders WHERE orderid = ANY($1);",
+                incoming_order_ids
+            )
+            existing_map = {r["orderid"]: r for r in existing_rows}
+
+            for r in comex_orders_to_upsert:
+                oid = r.get("orderid")
+                if not oid:
+                    continue
+                new_status = r.get("status")
+                new_amount = r.get("amount")
+                is_fulfilled = (new_status == "FULFILLED" or new_amount == 0)
+
+                if is_fulfilled:
+                    if oid in existing_map:
+                        prev = existing_map[oid]
+                        prev_status = prev.get("status")
+                        prev_amount = prev.get("amount")
+                        if prev_status != "FULFILLED" and (prev_amount is None or prev_amount > 0):
+                            just_fulfilled_ids.append(oid)
+                    else:
+                        created_ts = r.get("created")
+                        if created_ts and hasattr(created_ts, "timestamp"):
+                            now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+                            c_ts = created_ts.timestamp() if created_ts.tzinfo else created_ts.replace(tzinfo=datetime.timezone.utc).timestamp()
+                            if (now_ts - c_ts) < 900:
+                                just_fulfilled_ids.append(oid)
+
             async with con.transaction():
                 # Upsert the main comex orders table
                 await _upsert_records(con, "comex_trade_orders", comex_orders_to_upsert, ["orderid"])
@@ -82,6 +115,13 @@ async def handle_comex_orders_data_message(db: Database, raw_payload: Dict[str, 
     except Exception as e:
         # Don't fail the whole request if WS notification fails
         logger.error(f"Failed to trigger dashboard update: {e}")
+
+    # --- Step 4: Evaluate Notifications ---
+    try:
+        from services.notification_evaluator import evaluate_user_telemetry_notifications
+        await evaluate_user_telemetry_notifications(db.pool, raw_payload["userId"], target_order_ids=just_fulfilled_ids)
+    except Exception as e:
+        logger.error(f"Failed triggering notifications for comex orders batch: {e}")
 
     end_time = time.perf_counter()
     logger.debug(f"Processing comex orders records took {end_time - start_time:.4f} seconds")

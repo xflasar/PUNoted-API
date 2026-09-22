@@ -103,7 +103,12 @@ async def create_user_notification(
         return False
 
 
-async def evaluate_user_telemetry_notifications(pool, user_accountid: str, userdata_id: Optional[str] = None):
+async def evaluate_user_telemetry_notifications(
+    pool,
+    user_accountid: str,
+    userdata_id: Optional[str] = None,
+    target_order_ids: Optional[List[str]] = None,
+):
     """
     Evaluates telemetry thresholds for a specific user upon data sync or periodic loop.
     """
@@ -118,7 +123,7 @@ async def evaluate_user_telemetry_notifications(pool, user_accountid: str, userd
     today_str = datetime.date.today().isoformat()
 
     async with pool.acquire() as conn:
-        # TEST NOTIFICATION (Commented out after testing)
+        # TEST NOTIFICATION
         # minute_str = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M")
         # test_dedup = f"test_ws_heartbeat_{user_accountid}_{minute_str}"
         # await create_user_notification(
@@ -194,6 +199,58 @@ async def evaluate_user_telemetry_notifications(pool, user_accountid: str, userd
 
         # 4. Exchange Trade Orders & CX Market Watchers
         if rules.get("cx_enabled", True):
+            # Check COMEX trade orders that are 100% fulfilled
+            comex_fulfilled = []
+            if target_order_ids is not None:
+                if target_order_ids:
+                    comex_fulfilled = await conn.fetch(
+                        """
+                        SELECT c.orderid, c.type, c.amount, c.initialamount, c.limitamount, c.limitcurrency, c.status,
+                               COALESCE(m.ticker, c.materialid) as materialticker
+                        FROM comex_trade_orders c
+                        LEFT JOIN materials m ON m.materialid = c.materialid
+                        WHERE (c.userid = $1 OR c.userid = $2)
+                          AND (c.status = 'FULFILLED' OR c.amount = 0)
+                          AND c.orderid = ANY($3);
+                        """,
+                        user_accountid, userdata_id, target_order_ids
+                    )
+            else:
+                comex_fulfilled = await conn.fetch(
+                    """
+                    SELECT c.orderid, c.type, c.amount, c.initialamount, c.limitamount, c.limitcurrency, c.status,
+                           COALESCE(m.ticker, c.materialid) as materialticker
+                    FROM comex_trade_orders c
+                    LEFT JOIN materials m ON m.materialid = c.materialid
+                    WHERE (c.userid = $1 OR c.userid = $2)
+                      AND (c.status = 'FULFILLED' OR c.amount = 0)
+                      AND c.xata_updatedat >= NOW() - INTERVAL '2 minutes';
+                    """,
+                    user_accountid, userdata_id
+                )
+            for ord_row in comex_fulfilled:
+                dedup = f"comex_order_fulfilled_{ord_row['orderid']}"
+                order_type = (ord_row["type"] or "TRADE").upper()
+                ticker = ord_row["materialticker"] or "Material"
+                total_qty = ord_row["initialamount"] or 0
+                price = ord_row["limitamount"] or 0
+                currency = ord_row["limitcurrency"] or ""
+
+                await create_user_notification(
+                    conn, user_accountid, "cx", "comex_order_filled",
+                    f"COMEX {order_type} Order Filled: {total_qty} {ticker}",
+                    f"Your {order_type.lower()} order for {total_qty} {ticker} @ {price} {currency} has been 100% fulfilled.",
+                    dedup_key=dedup,
+                    data={
+                        "orderid": ord_row["orderid"],
+                        "ticker": ticker,
+                        "type": order_type,
+                        "quantity": total_qty,
+                        "price": price,
+                        "currency": currency,
+                    }
+                )
+
             sold_orders = await conn.fetch(
                 """
                 SELECT orderid, materialticker, quantity, reserved, location FROM user_vendor_orders 
@@ -291,37 +348,127 @@ async def evaluate_user_telemetry_notifications(pool, user_accountid: str, userd
                 stored_map = {r["materialid"]: r["quantity"] for r in stored_items}
 
                 if mat_targets and isinstance(mat_targets, dict):
+                    low_materials = []
                     for mat_ticker, target_days in mat_targets.items():
-                        mat_amount = stored_map.get(mat_ticker, 0)
+                        mat_amount = float(stored_map.get(mat_ticker, 0))
                         target_d = float(target_days)
-                        
-                        is_workforce = mat_ticker in WORKFORCE_TICKERS
-                        # Determine category label
-                        category_label = "Workforce & Material Supply" if is_workforce else "Input Material Supply"
-
-                        # Threshold checks: 1 day before target (warning) or below target (critical)
-                        # We proxy daily consumption estimate; if mat_amount < target_d * 10 or 0
                         if mat_amount < (target_d * 10):
-                            dedup_crit = f"site_mat_crit_{site['siteid']}_{mat_ticker}_{today_str}"
-                            await create_user_notification(
-                                conn, user_accountid, "production", "site_supply_low",
-                                f"Critical {category_label}: {mat_ticker}",
-                                f"{planet_disp}: {mat_ticker} supply reserve is below your custom target of {target_d} day(s) ({int(mat_amount):,} units remaining).",
-                                dedup_key=dedup_crit,
-                                data={"siteid": site["siteid"], "ticker": mat_ticker, "target_days": target_d, "amount": mat_amount}
-                            )
+                            days_left = round(mat_amount / 10.0, 1) if target_d > 0 else 0
+                            low_materials.append({
+                                "ticker": mat_ticker,
+                                "amount": mat_amount,
+                                "target_days": target_d,
+                                "days_left": days_left
+                            })
+
+                    if low_materials:
+                        tickers_summary = ", ".join([m["ticker"] for m in low_materials[:4]])
+                        dedup_crit = f"site_mat_crit_{site['siteid']}_{today_str}"
+                        await create_user_notification(
+                            conn, user_accountid, "production", "site_supply_low",
+                            f"Production Site Reserve Alert: {planet_disp}",
+                            f"{planet_disp}: Low reserve alerts for {len(low_materials)} material(s) ({tickers_summary}).",
+                            dedup_key=dedup_crit,
+                            data={
+                                "siteid": site["siteid"],
+                                "sitename": planet_disp,
+                                "materials": low_materials,
+                                "ticker": low_materials[0]["ticker"],
+                                "target_days": low_materials[0]["target_days"],
+                                "amount": low_materials[0]["amount"]
+                            }
+                        )
 
         # 6. Daily Financial Summary (Midnight Summary - Once per day)
-        finance_accs = await conn.fetch("SELECT balanceamount, balancecurrencycode FROM user_currency_accounts WHERE userid = $1 OR userid = $2;", user_accountid, userdata_id)
+        finance_accs = await conn.fetch("""
+            SELECT 
+                balancecurrencycode AS code, 
+                SUM(balanceamount) AS balance
+            FROM user_currency_accounts 
+            WHERE userid = $1 OR userid = $2
+            GROUP BY balancecurrencycode
+            ORDER BY SUM(balanceamount) DESC
+            LIMIT 4;
+        """, user_accountid, userdata_id)
+
         if finance_accs:
-            balances_str = ", ".join([f"{int(a['balanceamount']):,} {a['balancecurrencycode']}" for a in finance_accs[:3]])
+            currencies_data = []
+            for acc in finance_accs:
+                code = acc["code"]
+                bal = float(acc["balance"] or 0)
+
+                income_24h = 0.0
+                expense_24h = 0.0
+                try:
+                    stats_row = await conn.fetchrow("""
+                        SELECT 
+                            (
+                                COALESCE((
+                                    SELECT SUM(CASE WHEN cc.party != c.party THEN cc.amountmoney ELSE 0 END)
+                                    FROM contract_conditions cc
+                                    JOIN contracts c ON cc.contractid = c.id
+                                    WHERE (c.userid = $1 OR c.userid = $2)
+                                      AND cc.currencymoney = $3
+                                      AND cc.status = 'FULFILLED'
+                                      AND c.updated_at >= NOW() - INTERVAL '24 hours'
+                                ), 0)
+                                +
+                                COALESCE((
+                                    SELECT SUM(t.amount * t.priceamount)
+                                    FROM comex_trade_orders_trades t
+                                    JOIN comex_trade_orders o ON t.orderid = o.orderid
+                                    WHERE (o.userid = $1 OR o.userid = $2)
+                                      AND t.pricecurrency = $3
+                                      AND o.type IN ('SELL', 'SELLING')
+                                      AND t.tradetime >= NOW() - INTERVAL '24 hours'
+                                ), 0)
+                            ) AS inc,
+                            (
+                                COALESCE((
+                                    SELECT SUM(CASE WHEN cc.party = c.party THEN cc.amountmoney ELSE 0 END)
+                                    FROM contract_conditions cc
+                                    JOIN contracts c ON cc.contractid = c.id
+                                    WHERE (c.userid = $1 OR c.userid = $2)
+                                      AND cc.currencymoney = $3
+                                      AND cc.status = 'FULFILLED'
+                                      AND c.updated_at >= NOW() - INTERVAL '24 hours'
+                                ), 0)
+                                +
+                                COALESCE((
+                                    SELECT SUM(t.amount * t.priceamount)
+                                    FROM comex_trade_orders_trades t
+                                    JOIN comex_trade_orders o ON t.orderid = o.orderid
+                                    WHERE (o.userid = $1 OR o.userid = $2)
+                                      AND t.pricecurrency = $3
+                                      AND o.type IN ('BUY', 'BUYING')
+                                      AND t.tradetime >= NOW() - INTERVAL '24 hours'
+                                ), 0)
+                            ) AS exp;
+                    """, user_accountid, userdata_id, code)
+                    if stats_row:
+                        income_24h = float(stats_row["inc"] or 0)
+                        expense_24h = float(stats_row["exp"] or 0)
+                except Exception:
+                    pass
+
+                currencies_data.append({
+                    "code": code,
+                    "balance": bal,
+                    "income_24h": income_24h,
+                    "expense_24h": expense_24h
+                })
+
+            balances_str = ", ".join([f"{int(c['balance']):,} {c['code']}" for c in currencies_data[:3]])
             dedup = f"financial_daily_{user_accountid}_{today_str}"
             await create_user_notification(
                 conn, user_accountid, "financial", "financial_daily",
                 "Daily Financial Balance Summary",
-                f"Your active liquid balance summary for today: {balances_str}.",
+                f"24h Financial Summary across your active liquid accounts: {balances_str}.",
                 dedup_key=dedup,
-                data={"balances": [dict(a) for a in finance_accs]}
+                data={
+                    "balances": [dict(a) for a in finance_accs],
+                    "currencies": currencies_data
+                }
             )
 
 

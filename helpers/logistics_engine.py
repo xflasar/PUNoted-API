@@ -447,7 +447,7 @@ async def fetch_site_profiles(conn: asyncpg.Connection, user_id: str, workforce_
 
 async def fetch_fleet_status(conn: asyncpg.Connection, user_id: str) -> List[Dict]:
     query = """
-    SELECT s.shipid, COALESCE(s.name, s.registration, 'Ship-' || s.shipid) as name, s.registration, s.status, s.type, s.addresssystemid as system_id, s.flightid, s.reactorpower, st.storageid, st.weightcapacity, st.volumecapacity, st.weightload, st.volumeload, f.destinationsystemid as flight_dest_sys, f.departuretimestamp as flight_arrival, COALESCE(json_agg(json_build_object('ticker', m.ticker, 'amount', si.quantity)) FILTER (WHERE m.ticker IS NOT NULL), '[]') as inventory, CASE WHEN st.weightcapacity >= 5000 AND st.volumecapacity >= 5000 THEN 'HCB' WHEN st.weightcapacity >= 3000 AND st.volumecapacity >= 1000 THEN 'WCB' WHEN st.weightcapacity >= 1000 AND st.volumecapacity >= 3000 THEN 'VCB' WHEN st.weightcapacity >= 2000 THEN 'LCB' ELSE 'TINY' END as cargo_model, CASE WHEN s.reactorpower > 0 THEN TRUE ELSE FALSE END as is_ftl
+    SELECT s.shipid, COALESCE(s.name, s.registration, 'Ship-' || s.shipid) as name, s.registration, s.status, s.type, s.addresssystemid as system_id, s.flightid, s.reactorpower, st.storageid, st.weightcapacity, st.volumecapacity, st.weightload, st.volumeload, f.destinationsystemid as flight_dest_sys, f.arrivaltimestamp as flight_arrival, COALESCE(json_agg(json_build_object('ticker', m.ticker, 'amount', si.quantity)) FILTER (WHERE m.ticker IS NOT NULL), '[]') as inventory, CASE WHEN st.weightcapacity >= 5000 AND st.volumecapacity >= 5000 THEN 'HCB' WHEN st.weightcapacity >= 3000 AND st.volumecapacity >= 1000 THEN 'WCB' WHEN st.weightcapacity >= 1000 AND st.volumecapacity >= 3000 THEN 'VCB' WHEN st.weightcapacity >= 2000 THEN 'LCB' ELSE 'TINY' END as cargo_model, CASE WHEN s.reactorpower > 0 THEN TRUE ELSE FALSE END as is_ftl
     FROM ships s
     LEFT JOIN storages st ON s.idshipstore = st.storageid
     LEFT JOIN storage_items si ON st.storageid = si.storageid
@@ -455,7 +455,7 @@ async def fetch_fleet_status(conn: asyncpg.Connection, user_id: str) -> List[Dic
     LEFT JOIN ship_flights f ON s.flightid = f.id
     INNER JOIN users u ON s.userid = u.userdataid
     WHERE u.accountid = $1
-    GROUP BY s.shipid, s.name, s.registration, s.status, s.type, s.addresssystemid, s.flightid, s.reactorpower, st.storageid, st.weightcapacity, st.volumecapacity, st.weightload, st.volumeload, f.destinationsystemid, f.departuretimestamp
+    GROUP BY s.shipid, s.name, s.registration, s.status, s.type, s.addresssystemid, s.flightid, s.reactorpower, st.storageid, st.weightcapacity, st.volumecapacity, st.weightload, st.volumeload, f.destinationsystemid, f.arrivaltimestamp
     """
     rows = await conn.fetch(query, user_id)
     results = []
@@ -475,7 +475,7 @@ async def fetch_material_stats(conn: asyncpg.Connection) -> Dict[str, Dict]:
 
 async def fetch_flight_history_stats(conn: asyncpg.Connection) -> Tuple[Dict, Dict]:
     query = """
-    SELECT originsystemid, destinationsystemid, AVG(EXTRACT(EPOCH FROM (departuretimestamp - arrivaltimestamp)) * 1000) as avg_ms, AVG(stltotalconsumption) as avg_stl, AVG(ftltotalconsumption) as avg_ftl
+    SELECT originsystemid, destinationsystemid, AVG(EXTRACT(EPOCH FROM (arrivaltimestamp - departuretimestamp)) * 1000) as avg_ms, AVG(stltotalconsumption) as avg_stl, AVG(ftltotalconsumption) as avg_ftl
     FROM ship_flights WHERE aborted = FALSE AND arrivaltimestamp IS NOT NULL AND departuretimestamp IS NOT NULL AND originsystemid IS NOT NULL AND destinationsystemid IS NOT NULL GROUP BY originsystemid, destinationsystemid
     """
     rows = await conn.fetch(query)

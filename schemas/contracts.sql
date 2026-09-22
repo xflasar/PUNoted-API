@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS contracts (
     agentcontract BOOLEAN,
     canextend BOOLEAN,
     canrequesttermination BOOLEAN,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id, party)
 );
 

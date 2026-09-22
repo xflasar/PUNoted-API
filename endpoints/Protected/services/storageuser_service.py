@@ -32,7 +32,7 @@ async def fetch_storages_as_json(db, usernames_list: list, location_filter: Opti
                     s.type, s.volumecapacity, s.volumeload, s.weightcapacity, s.weightload, s.name, s.fixed, s.addressableid,
                     EXTRACT(EPOCH FROM s.xata_updatedat) * 1000 as timestamp_ms
                 FROM storages s
-                JOIN users tu ON tu.userdataid = s.userid
+                JOIN users tu ON (tu.userdataid = s.userid OR tu.accountid = s.userid)
                 LEFT JOIN sites site ON s.addressableid = site.siteid AND s.type = 'STORE'
                 LEFT JOIN planets pl_site ON site.addressplanetid = pl_site.planetid
                 LEFT JOIN warehouses w ON s.storageid = w.storeid AND s.type = 'WAREHOUSE_STORE'

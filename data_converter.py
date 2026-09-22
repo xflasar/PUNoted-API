@@ -396,7 +396,7 @@ def convert_storages_data(raw_records: List[Dict[str, Any]], full_refresh: bool 
         storage = {
             "storageid": record.get("id"),
             "addressableid": record.get("addressableId"),
-            "name": record.get("name") if record.get("name") is not None else "null",
+            "name": record.get("name"),
             "weightload": record.get("weightLoad"),
             "weightcapacity": record.get("weightCapacity"),
             "volumeload": record.get("volumeLoad"),
@@ -441,18 +441,18 @@ def convert_storages_data(raw_records: List[Dict[str, Any]], full_refresh: bool 
                 )
                 continue
 
-            quantity_data = item.get("quantity")
-            currency_value = quantity_data.get("value", {})
+            quantity_data = item.get("quantity") or {}
+            currency_value = (quantity_data.get("value") or {}) if isinstance(quantity_data, dict) else {}
 
             storages_items.append(
                 {
                     "storageid": record.get("id"),
-                    "materialid": item.get("id"),
-                    "quantity": quantity_data.get("amount"),
+                    "materialid": item.get("id") or item.get("materialId"),
+                    "quantity": quantity_data.get("amount") if isinstance(quantity_data, dict) else (quantity_data if isinstance(quantity_data, (int, float)) else None),
                     "totalweight": item.get("weight"),
                     "totalvolume": item.get("volume"),
-                    "currencyamount": currency_value.get("amount"),
-                    "currencytype": currency_value.get("currency"),
+                    "currencyamount": currency_value.get("amount") if isinstance(currency_value, dict) else None,
+                    "currencytype": currency_value.get("currency") if isinstance(currency_value, dict) else None,
                     "type": item.get("type"),
                 }
             )
@@ -801,13 +801,13 @@ def convert_flight_record(record: Dict[str, Any]) -> Dict[str, Any]:
 
     arrival = None
     if arrival_ts_ms is not None:
-        arrival = datetime.fromtimestamp(arrival_ts_ms / 1000)
+        arrival = datetime.fromtimestamp(arrival_ts_ms / 1000, tz=timezone.utc)
     else:
         arrival = None
 
     departure = None
     if departure_ts_ms is not None:
-        departure = datetime.fromtimestamp(departure_ts_ms / 1000)
+        departure = datetime.fromtimestamp(departure_ts_ms / 1000, tz=timezone.utc)
     else:
         departure = None
 
@@ -852,9 +852,9 @@ def convert_flight_record(record: Dict[str, Any]) -> Dict[str, Any]:
             for index, segment in enumerate(segments)
             if convert_segment(segment, record.get("id"), index) is not None
         ],
-        # Timestamps FIX THIS ITS INVERTED!!!!
-        "departuretimestamp": arrival,
-        "arrivaltimestamp": departure,
+        # Timestamps
+        "departuretimestamp": departure,
+        "arrivaltimestamp": arrival,
         # Distance and Fuel Consumption
         "stldistance": record.get("stlDistance"),
         "ftldistance": record.get("ftlDistance"),

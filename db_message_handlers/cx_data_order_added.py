@@ -52,6 +52,13 @@ async def handle_comex_order_added_message(db: Database, raw_payload: Dict[str, 
             return {"success": False, "message": "Record missing orderid."}
 
         # --- Step 2: Perform upserts ---
+        just_fulfilled_ids = []
+        if order_id:
+            new_status = record.get("status")
+            new_amount = record.get("amount")
+            if new_status == "FULFILLED" or new_amount == 0:
+                just_fulfilled_ids.append(order_id)
+
         async with db.pool.acquire() as con:
             async with con.transaction():
                 if comex_orders_to_upsert:
@@ -74,6 +81,13 @@ async def handle_comex_order_added_message(db: Database, raw_payload: Dict[str, 
         logger.debug(f"Triggered dashboard update for user {userid}")
     except Exception as e:
         logger.error(f"Failed to trigger dashboard update: {e}")
+
+    # --- Step 4: Evaluate Notifications ---
+    try:
+        from services.notification_evaluator import evaluate_user_telemetry_notifications
+        await evaluate_user_telemetry_notifications(db.pool, raw_payload["userId"], target_order_ids=just_fulfilled_ids)
+    except Exception as e:
+        logger.error(f"Failed triggering notifications for comex order added: {e}")
 
     end_time = time.perf_counter()
     logger.debug(f"Processing comex order record took {end_time - start_time:.4f} seconds")

@@ -52,7 +52,27 @@ async def handle_comex_order_updated_message(db: Database, raw_payload: Dict[str
             return {"success": False, "message": "Record missing orderid."}
 
         # --- Step 2: Perform all upserts in a single transaction ---
+        just_fulfilled_ids = []
+
         async with db.pool.acquire() as con:
+            if order_id:
+                prev_row = await con.fetchrow(
+                    "SELECT status, amount FROM comex_trade_orders WHERE orderid = $1;",
+                    order_id
+                )
+                new_status = record.get("status")
+                new_amount = record.get("amount")
+                is_fulfilled = (new_status == "FULFILLED" or new_amount == 0)
+
+                if is_fulfilled:
+                    if prev_row:
+                        prev_status = prev_row.get("status")
+                        prev_amount = prev_row.get("amount")
+                        if prev_status != "FULFILLED" and (prev_amount is None or prev_amount > 0):
+                            just_fulfilled_ids.append(order_id)
+                    else:
+                        just_fulfilled_ids.append(order_id)
+
             async with con.transaction():
                 if comex_orders_to_upsert:
                     await _upsert_records(con, "comex_trade_orders", comex_orders_to_upsert, ["orderid"])
@@ -74,6 +94,13 @@ async def handle_comex_order_updated_message(db: Database, raw_payload: Dict[str
         logger.debug(f"Triggered dashboard update for user {userid}")
     except Exception as e:
         logger.error(f"Failed to trigger dashboard update: {e}")
+
+    # --- Step 4: Evaluate Notifications ---
+    try:
+        from services.notification_evaluator import evaluate_user_telemetry_notifications
+        await evaluate_user_telemetry_notifications(db.pool, raw_payload["userId"], target_order_ids=just_fulfilled_ids)
+    except Exception as e:
+        logger.error(f"Failed triggering notifications for comex order updated: {e}")
 
     end_time = time.perf_counter()
     logger.debug(f"Processing comex order record took {end_time - start_time:.4f} seconds")

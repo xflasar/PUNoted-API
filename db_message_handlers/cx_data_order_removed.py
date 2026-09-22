@@ -55,6 +55,13 @@ async def handle_comex_order_removed_message(db: Database, raw_payload: Dict[str
     except Exception as e:
         logger.error(f"Failed to trigger dashboard update: {e}")
 
+    # --- Step 4: Evaluate Notifications ---
+    try:
+        from services.notification_evaluator import evaluate_user_telemetry_notifications
+        await evaluate_user_telemetry_notifications(db.pool, raw_payload["userId"], target_order_ids=[])
+    except Exception as e:
+        logger.error(f"Failed triggering notifications for comex order removed: {e}")
+
     end_time = time.perf_counter()
     logger.debug(f"Processing comex order record took {end_time - start_time:.4f} seconds")
 

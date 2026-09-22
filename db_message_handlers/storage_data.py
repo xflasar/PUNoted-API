@@ -121,24 +121,30 @@ async def handle_storage_data_message(db, raw_payload: Dict[str, Any]) -> Dict[s
         async with db.pool.acquire() as con:
             async with con.transaction():
                 if full_refresh:
-                    logger.debug(f"Performing full refresh for user {userid}")
-                    # Full refresh: Wipe all existing storages for this user
+                    logger.debug(f"Performing global full refresh for user {userid}")
+                    user_ids = list(set([userid, str(user_response.get("accountid"))])) if user_response else [userid]
+
                     if storage_ids:
-                        # Standard sync: Keep these, delete others
-                        delQuery = "DELETE FROM storages WHERE userid = $1 AND storageid != ALL($2::text[]);"
-                        await con.execute(delQuery, userid, storage_ids)
+                        delQuery = """
+                            DELETE FROM storages 
+                            WHERE userid = ANY($1::text[]) 
+                              AND storageid != ALL($2::text[]);
+                        """
+                        await con.execute(delQuery, user_ids, storage_ids)
                     else:
-                        # Explicit wipe: The list is intentionally empty
                         logger.debug(f"Wiping all storages for user {userid}")
-                        await con.execute("DELETE FROM storages WHERE userid = $1", userid)
+                        delQuery = """
+                            DELETE FROM storages 
+                            WHERE userid = ANY($1::text[]);
+                        """
+                        await con.execute(delQuery, user_ids)
 
-                # Step 1: sync items
-                all_incoming_items = [item for record in storage_records for item in record.get("storage_items", [])]
-
-                await sync_all_storage_items(con, all_incoming_items, storage_ids)
-
-                # Step 2: UPSERT storages
+                # Step 1: UPSERT storages first so parent records exist
                 await upsert_storage_records(con, "storages", storage_records, userid)
+
+                # Step 2: sync items for these storages
+                all_incoming_items = [item for record in storage_records for item in record.get("storage_items", [])]
+                await sync_all_storage_items(con, all_incoming_items, storage_ids)
 
                 # Fetch updated storages from the database to broadcast
                 storage_data = await fetch_user_storages_by_id(con, userid, storage_ids)
@@ -329,7 +335,16 @@ async def upsert_storage_records(con: asyncpg.Connection, table_name: str, recor
     keys = list(upsert_records[0].keys())
     keys_str = ", ".join(keys)
     values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys))])
-    set_clause = ", ".join([f"{key} = EXCLUDED.{key}" for key in keys])
+    
+    # Use COALESCE on DO UPDATE SET so partial updates (e.g. STORAGE_CHANGE) don't overwrite addressableid/type/metadata with NULL
+    set_clause = ", ".join([
+        f"{key} = COALESCE(NULLIF(EXCLUDED.{key}, 'null'), {table_name}.{key})"
+        if key in ("addressableid", "type", "name")
+        else f"{key} = COALESCE(EXCLUDED.{key}, {table_name}.{key})"
+        if key in ("volumecapacity", "weightcapacity", "volumeload", "weightload", "fixed", "tradestore", "rank", "locked")
+        else f"{key} = EXCLUDED.{key}"
+        for key in keys if key not in ("storageid", "userid")
+    ])
 
     query = f"""
     INSERT INTO {table_name} ({keys_str})

@@ -17,7 +17,7 @@ def convert_storages_data(raw_records: List[Dict[str, Any]], full_refresh: bool 
         storage = {
             "storageid": record.get("id"),
             "addressableid": record.get("addressableId"),
-            "name": record.get("name") if record.get("name") is not None else "null",
+            "name": record.get("name"),
             "weightload": record.get("weightLoad"),
             "weightcapacity": record.get("weightCapacity"),
             "volumeload": record.get("volumeLoad"),
@@ -62,18 +62,18 @@ def convert_storages_data(raw_records: List[Dict[str, Any]], full_refresh: bool 
                 )
                 continue
 
-            quantity_data = item.get("quantity")
-            currency_value = quantity_data.get("value", {})
+            quantity_data = item.get("quantity") or {}
+            currency_value = (quantity_data.get("value") or {}) if isinstance(quantity_data, dict) else {}
 
             storages_items.append(
                 {
                     "storageid": record.get("id"),
-                    "materialid": item.get("id"),
-                    "quantity": quantity_data.get("amount"),
+                    "materialid": item.get("id") or item.get("materialId"),
+                    "quantity": quantity_data.get("amount") if isinstance(quantity_data, dict) else (quantity_data if isinstance(quantity_data, (int, float)) else None),
                     "totalweight": item.get("weight"),
                     "totalvolume": item.get("volume"),
-                    "currencyamount": currency_value.get("amount"),
-                    "currencytype": currency_value.get("currency"),
+                    "currencyamount": currency_value.get("amount") if isinstance(currency_value, dict) else None,
+                    "currencytype": currency_value.get("currency") if isinstance(currency_value, dict) else None,
                     "type": item.get("type"),
                 }
             )

@@ -1,3 +1,4 @@
+from db_message_handlers.ship_flight_ended import handle_ship_flight_ended_message
 import asyncio
 import gzip
 import logging
@@ -499,6 +500,36 @@ app.mount("/v1", v1_app)
 def read_main():
     return Response("frontend: https://punoted.net\ndocs: https://api.punoted.net/v1/docs\n")
 
+@app.get("/flight_test")
+def flight_push(req: Request):
+    req_data = {
+        "id": "test",
+        "shipId": "test",
+        "destination": {
+            "lines": [
+                {
+                    "entity": {
+                        "id": "test"
+                    },
+                    "type": "SYSTEM"
+                },
+                {
+                    "entity": {
+                        "id": "test"
+                    },
+                    "type": "PLANET"
+                },
+                {
+                    "entity": {
+                        "id": "test"
+                    },
+                    "type": "STATION"
+                },
+            ]
+        }
+    }
+
+    handle_ship_flight_ended_message(req.app.db, )
 
 @app.get("/status")
 async def status_check():
