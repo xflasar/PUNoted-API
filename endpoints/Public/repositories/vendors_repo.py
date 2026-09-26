@@ -193,9 +193,6 @@ async def fetch_public_vendors(
                         }
                     )
 
-                if total_available <= 0:
-                    continue
-
                 order_data = {
                     "orderid": str(r.get("orderid")) if r.get("orderid") else None,
                     "materialticker": r.get("materialticker", ""),
