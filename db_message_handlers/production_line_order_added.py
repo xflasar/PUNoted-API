@@ -40,11 +40,20 @@ async def handle_production_line_order_add_message(db, raw_payload: Dict[str, An
     try:
         async with db.pool.acquire() as con:
             async with con.transaction():
-                # Ensure parent production line exists (avoid race condition ForeignKeyViolationError)
-                if order_data_to_upsert.get("productionlineid"):
+                # Lock parent site row to serialize with full production lines snapshot updates
+                production_line_id = order_data_to_upsert.get("productionlineid")
+                if production_line_id:
+                    site_row = await con.fetchrow(
+                        "SELECT siteid::text FROM site_production_lines WHERE productionlineid = $1;",
+                        production_line_id,
+                    )
+                    if site_row and site_row["siteid"]:
+                        await con.execute("SELECT siteid FROM sites WHERE siteid = $1 FOR UPDATE;", site_row["siteid"])
+
+                    # Ensure parent production line exists (avoid race condition ForeignKeyViolationError)
                     await con.execute(
                         "INSERT INTO site_production_lines (productionlineid) VALUES ($1) ON CONFLICT (productionlineid) DO NOTHING;",
-                        order_data_to_upsert["productionlineid"]
+                        production_line_id
                     )
 
                 # --- A. UPSERT Main Order Record ---

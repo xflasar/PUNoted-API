@@ -25,14 +25,6 @@ async def handle_ship_flight_ended_message(db: Database, converted_data: Dict[st
         else:
             return {"success": False, "message": "User not found."}
 
-        # Will need to go thru db and replace accountid with userdataid
-        if not testing:
-            async with db.pool.acquire() as con:
-                async with con.transaction():
-                    await con.execute("""
-                                      INSERT INTO notifications (accountid, type, message, created_at)
-                                      VALUES ($1, $2, $3, $4);
-                                      """, userid, "flight_ended", f"Flight {flight_ended_record.get('id')} has ended.", datetime.datetime.utcnow())
         try:
             ws_update = {
                 flight_ended_record["id"],

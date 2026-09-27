@@ -35,38 +35,57 @@ async def handle_production_line_order_remove_message(db, raw_payload: Dict[str,
 
     try:
         async with db.pool.acquire() as conn:
-            # If production_line_id is known, delete by orderid and line, or fallback to orderid alone
-            if production_line_id:
-                query = """
-                    DELETE FROM site_production_line_orders 
-                    WHERE orderid = $1 AND productionlineid = $2;
-                """
-                status = await conn.execute(query, order_id, production_line_id)
-            else:
-                query = """
-                    DELETE FROM site_production_line_orders 
-                    WHERE orderid = $1;
-                """
-                status = await conn.execute(query, order_id)
+            async with conn.transaction():
+                # Lock parent site row to serialize with full production lines snapshot updates
+                target_line_id = production_line_id
+                if not target_line_id:
+                    line_row = await conn.fetchrow(
+                        "SELECT productionlineid FROM site_production_line_orders WHERE orderid = $1;",
+                        order_id,
+                    )
+                    if line_row and line_row["productionlineid"]:
+                        target_line_id = line_row["productionlineid"]
 
-            # Extract the number of deleted rows from the status string
-            if status.startswith("DELETE"):
-                try:
-                    rows_deleted = int(status.split()[-1])
-                except ValueError:
-                    rows_deleted = 0
+                if target_line_id:
+                    site_row = await conn.fetchrow(
+                        "SELECT siteid::text FROM site_production_lines WHERE productionlineid = $1;",
+                        target_line_id,
+                    )
+                    if site_row and site_row["siteid"]:
+                        await conn.execute("SELECT siteid FROM sites WHERE siteid = $1 FOR UPDATE;", site_row["siteid"])
 
-            # Fallback: if line filter resulted in 0 deleted rows, try orderid directly
-            if rows_deleted == 0 and production_line_id:
-                fallback_status = await conn.execute(
-                    "DELETE FROM site_production_line_orders WHERE orderid = $1;",
-                    order_id,
-                )
-                if fallback_status.startswith("DELETE"):
+                # If production_line_id is known, delete by orderid and line, or fallback to orderid alone
+                if production_line_id:
+                    query = """
+                        DELETE FROM site_production_line_orders 
+                        WHERE orderid = $1 AND productionlineid = $2;
+                    """
+                    status = await conn.execute(query, order_id, production_line_id)
+                else:
+                    query = """
+                        DELETE FROM site_production_line_orders 
+                        WHERE orderid = $1;
+                    """
+                    status = await conn.execute(query, order_id)
+
+                # Extract the number of deleted rows from the status string
+                if status.startswith("DELETE"):
                     try:
-                        rows_deleted = int(fallback_status.split()[-1])
+                        rows_deleted = int(status.split()[-1])
                     except ValueError:
                         rows_deleted = 0
+
+                # Fallback: if line filter resulted in 0 deleted rows, try orderid directly
+                if rows_deleted == 0 and production_line_id:
+                    fallback_status = await conn.execute(
+                        "DELETE FROM site_production_line_orders WHERE orderid = $1;",
+                        order_id,
+                    )
+                    if fallback_status.startswith("DELETE"):
+                        try:
+                            rows_deleted = int(fallback_status.split()[-1])
+                        except ValueError:
+                            rows_deleted = 0
 
     except Exception as e:
         end_time = time.perf_counter()

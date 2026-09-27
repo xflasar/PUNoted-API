@@ -112,9 +112,10 @@ async def compute_and_broadcast_site_delta(db, global_ws_manager, site_id: str, 
 
                 in_rows = await conn.fetch(
                     """
-                    SELECT productiontemplateid::text as recipe_id, materialid as ticker, factor
-                    FROM production_recipe_input_factors
-                    WHERE productiontemplateid::text = ANY($1::text[]);
+                    SELECT i.productiontemplateid::text as recipe_id, m.ticker, i.factor
+                    FROM production_recipe_input_factors i
+                    JOIN materials m ON m.materialid = i.materialid
+                    WHERE i.productiontemplateid::text = ANY($1::text[]);
                     """,
                     recipe_ids
                 )
@@ -125,9 +126,10 @@ async def compute_and_broadcast_site_delta(db, global_ws_manager, site_id: str, 
 
                 out_rows = await conn.fetch(
                     """
-                    SELECT productiontemplateid::text as recipe_id, materialid as ticker, factor
-                    FROM production_recipe_output_factors
-                    WHERE productiontemplateid::text = ANY($1::text[]);
+                    SELECT o.productiontemplateid::text as recipe_id, m.ticker, o.factor
+                    FROM production_recipe_output_factors o
+                    JOIN materials m ON m.materialid = o.materialid
+                    WHERE o.productiontemplateid::text = ANY($1::text[]);
                     """,
                     recipe_ids
                 )
