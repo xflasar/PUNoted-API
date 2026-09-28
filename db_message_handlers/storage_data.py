@@ -120,24 +120,16 @@ async def handle_storage_data_message(db, raw_payload: Dict[str, Any]) -> Dict[s
 
         async with db.pool.acquire() as con:
             async with con.transaction():
-                if full_refresh:
+                if full_refresh and storage_ids and len(storage_ids) > 0:
                     logger.debug(f"Performing global full refresh for user {userid}")
                     user_ids = list(set([userid, str(user_response.get("accountid"))])) if user_response else [userid]
 
-                    if storage_ids:
-                        delQuery = """
-                            DELETE FROM storages 
-                            WHERE userid = ANY($1::text[]) 
-                              AND storageid != ALL($2::text[]);
-                        """
-                        await con.execute(delQuery, user_ids, storage_ids)
-                    else:
-                        logger.debug(f"Wiping all storages for user {userid}")
-                        delQuery = """
-                            DELETE FROM storages 
-                            WHERE userid = ANY($1::text[]);
-                        """
-                        await con.execute(delQuery, user_ids)
+                    delQuery = """
+                        DELETE FROM storages 
+                        WHERE userid = ANY($1::text[]) 
+                          AND storageid != ALL($2::text[]);
+                    """
+                    await con.execute(delQuery, user_ids, storage_ids)
 
                 # Step 1: UPSERT storages first so parent records exist
                 await upsert_storage_records(con, "storages", storage_records, userid)

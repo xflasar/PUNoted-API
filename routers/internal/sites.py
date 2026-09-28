@@ -98,8 +98,9 @@ async def get_all_user_sites(request: Request, user_id: str = Depends(get_curren
                     m.ticker,
                     SUM(COALESCE(pm.amount, bbm.amount, 0)) as amount
                 FROM site_platforms sp
+                JOIN buildings b ON b.buildingid = sp.buildingid
                 LEFT JOIN platform_materials pm ON pm.platformid = sp.platformid AND (pm.materialtype = 'build' OR pm.materialtype = 'construction')
-                LEFT JOIN building_build_materials bbm ON bbm.buildingid = sp.buildingid
+                LEFT JOIN building_build_materials bbm ON bbm.buildingid = b.buildingid
                 JOIN materials m ON m.materialid = COALESCE(pm.materialid, bbm.materialid)
                 GROUP BY sp.siteid, m.ticker
             ),

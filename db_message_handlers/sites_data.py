@@ -147,19 +147,21 @@ async def process_all_site_data(con, raw_payload: Dict[str, Any]) -> Dict[str, A
             raise
 
     # --- STEP 6: Delete sites missing from the payload for this user ---
-    delete_sites_query = """
-        DELETE FROM sites
-        WHERE userid = $1
-        AND siteid NOT IN (SELECT unnest($2::text[]));
-    """
+    if site_ids_in_payload and len(site_ids_in_payload) > 0:
+        delete_sites_query = """
+            DELETE FROM sites
+            WHERE userid = $1
+            AND am_owner = TRUE
+            AND siteid NOT IN (SELECT unnest($2::text[]));
+        """
 
-    try:
-        status_message = await con.execute(delete_sites_query, userid, site_ids_in_payload)
-        deleted_count = status_message.split()[-1]
-        logger.debug(f"Deleted {deleted_count} sites for user {userid} not in payload.")
-    except Exception as e:
-        logger.error(f"Database error during site deletion for user {userid}: {e}", exc_info=True)
-        raise
+        try:
+            status_message = await con.execute(delete_sites_query, userid, site_ids_in_payload)
+            deleted_count = status_message.split()[-1]
+            logger.debug(f"Deleted {deleted_count} obsolete sites for user {userid} not in payload.")
+        except Exception as e:
+            logger.error(f"Database error during site deletion for user {userid}: {e}", exc_info=True)
+            raise
 
     return {
         "success": True,

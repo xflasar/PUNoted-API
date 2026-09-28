@@ -215,7 +215,7 @@ async def _handle_all_nested_data(con, site_data: Dict[str, Any]):
     buildings_time_process_start = time.perf_counter()
 
     # --- STEP 5: DELETE REMOVED PLATFORM RECORDS (within the current site) ---
-    if site_id and platform_ids:
+    if site_id and platform_ids and len(platform_ids) > 0:
         # Deletes any platform for this site whose ID is NOT in the current platform_ids list.
         delete_platforms_query = """
             DELETE FROM site_platforms
@@ -223,7 +223,6 @@ async def _handle_all_nested_data(con, site_data: Dict[str, Any]):
             AND platformid <> ALL($2::text[]);
         """
         try:
-            # If platform_ids is empty, this correctly deletes ALL platforms for the site.
             await con.execute(delete_platforms_query, site_id, platform_ids)
             logger.debug(f"Deleted platforms from site_platforms for site {site_id} that were not in the payload.")
         except Exception as e:
