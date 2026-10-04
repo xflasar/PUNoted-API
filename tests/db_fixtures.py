@@ -139,6 +139,12 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
             token_hash text NOT NULL
         ) ON COMMIT DROP;
 
+        CREATE TABLE IF NOT EXISTS user_global_settings (
+            userid TEXT NOT NULL,
+            internal_leased_sites JSONB DEFAULT '[]'::jsonb,
+            PRIMARY KEY (userid)
+        );
+
         CREATE TEMP TABLE data_group_members (
             group_id text NOT NULL,
             user_id text NOT NULL,
@@ -245,14 +251,89 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
             category text
         ) ON COMMIT DROP;
 
+        CREATE TABLE IF NOT EXISTS materials (
+            category TEXT,
+            materialid TEXT NOT NULL,
+            name TEXT,
+            resource BOOLEAN,
+            ticker TEXT,
+            volume DOUBLE PRECISION,
+            weight DOUBLE PRECISION,
+            PRIMARY KEY (materialid)
+        );
+
+        CREATE TABLE IF NOT EXISTS stations (
+            comexid TEXT,
+            name TEXT,
+            stationid TEXT NOT NULL,
+            warehouseid TEXT,
+            PRIMARY KEY (stationid)
+        );
+
+        CREATE TABLE IF NOT EXISTS sites (
+            addressplanetid TEXT,
+            siteid TEXT NOT NULL,
+            userid TEXT,
+            PRIMARY KEY (siteid)
+        );
+
+        CREATE TABLE IF NOT EXISTS warehouses (
+            addressplanet TEXT,
+            storeid TEXT NOT NULL,
+            units INTEGER,
+            userid TEXT,
+            warehouseid TEXT NOT NULL,
+            PRIMARY KEY (warehouseid, storeid)
+        );
+
+        CREATE TABLE IF NOT EXISTS storages (
+            addressableid TEXT,
+            fixed BOOLEAN,
+            name TEXT,
+            storageid TEXT NOT NULL,
+            type TEXT,
+            userid TEXT NOT NULL,
+            volumecapacity INTEGER,
+            volumeload DOUBLE PRECISION,
+            weightcapacity INTEGER,
+            weightload DOUBLE PRECISION,
+            xata_createdat TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+            xata_id TEXT,
+            xata_updatedat TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
+            xata_version INTEGER DEFAULT 0 NOT NULL,
+            PRIMARY KEY (storageid)
+        );
+
+        CREATE TABLE IF NOT EXISTS storage_items (
+            compositekey TEXT NOT NULL,
+            currencyamount DOUBLE PRECISION,
+            currencytype TEXT,
+            materialid TEXT,
+            quantity INTEGER,
+            storageid TEXT,
+            totalvolume DOUBLE PRECISION,
+            totalweight DOUBLE PRECISION,
+            type TEXT,
+            PRIMARY KEY (compositekey)
+        );
+
+        CREATE TABLE IF NOT EXISTS ships (
+            shipid TEXT PRIMARY KEY,
+            idshipstore TEXT,
+            idstlfuelstore TEXT,
+            idftlfuelstore TEXT,
+            name TEXT,
+            registration TEXT
+        );
+
         INSERT INTO users (accountid, username, userdataid, xata_id)
-        VALUES ('acct1', 'testuser', 'userid1', 'fakexataid');
+        VALUES ('aaaaaaaa-aa04-aaaa-aaaa-aaaaaaaaaaaa', 'testuser', 'userid1', 'fakexataid');
 
         INSERT INTO users_data (userid, displayname, corporationid)
         VALUES ('userid1', 'testuser', 'corp1');
 
         INSERT INTO user_api_tokens (user_id, group_id, token_hash)
-        VALUES ('acct1', NULL, 'ptk_fake');
+        VALUES ('aaaaaaaa-aa04-aaaa-aaaa-aaaaaaaaaaaa', NULL, 'ptk_fake');
 
         INSERT INTO company_data (userdataid, companyid, companycode, companyname, xata_updatedat)
         VALUES ('userid1', 'company1', 'FAKE', 'fake co', TIMESTAMPTZ '2000-01-01 00:00:00+00');
@@ -265,6 +346,27 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
 
         INSERT INTO material_prices (ticker, price)
         VALUES ('SF', 123.45);
+
+        INSERT INTO planets (planetid, naturalid, name)
+        VALUES ('p1', 'HRT', 'Hortus');
+
+        INSERT INTO sites (siteid, addressplanetid, userid)
+        VALUES ('site1', 'p1', 'userid1');
+
+        INSERT INTO materials (materialid, name, ticker, weight, volume)
+        VALUES ('m1', 'Rations', 'RAT', 1.0, 1.0);
+
+        INSERT INTO storages (
+            storageid, addressableid, userid, type, name, fixed,
+            volumecapacity, volumeload, weightcapacity, weightload, xata_updatedat
+        ) VALUES (
+            'st1', 'site1', 'userid1', 'STORE', 'Hortus Storage', true,
+            1000, 10.0, 1000, 10.0, TIMESTAMPTZ '2000-01-01 00:00:00+00'
+        );
+
+        INSERT INTO storage_items (
+            compositekey, storageid, materialid, quantity, totalweight, totalvolume
+        ) VALUES ('st1-m1', 'st1', 'm1', 10, 10.0, 10.0);
         """
     )
 
@@ -384,38 +486,7 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
             "coalesce": [{"Username": "testuser", "Sites": [{"SiteId": "site1", "PlanetId": "p1", "PlanetIdentifier": "P1", "PlanetName": "Planet 1", "PlanetFoundedEpochMs": 946684800000, "InvestedPermits": 1, "MaximumPermits": 5, "UserNameSubmitted": "testuser", "Timestamp": datetime(2000, 1, 1, tzinfo=timezone.utc), "Buildings": []}]}]
         })]
 
-    # 8. Storages
-    if "targetstorages" in q:
-        return [_MockRecord({
-            "storageid": "st1",
-            "storage_name": "Hortus Storage",
-            "planet_name": "Hortus",
-            "planet_id": "p1",
-            "planet_naturalid": "HRT",
-            "station_name": None,
-            "station_id": None,
-            "addressableid": "site1",
-            "username": "testuser",
-            "type": "WAREHOUSE",
-            "volumecapacity": 1000.0,
-            "volumeload": 100.0,
-            "weightcapacity": 1000.0,
-            "weightload": 100.0,
-            "xata_updatedat": datetime(2000, 1, 1, tzinfo=timezone.utc),
-            "ticker": "RAT",
-            "quantity": 10.0,
-            "currencyamount": None
-        })]
-
-    if "storage_items" in q:
-        if "csv" in q or "stream" in q or "st.stationid" in q:
-            return [_MockRecord({
-                "Username": "testuser", "Location": "Hortus", "Type": "WARHOUSE", "LastUpdated": "2026-07-15T00:00:00",
-                "Ticker": "H2O", "Name": "Water", "Category": "Water", "Amount": "100", "TotalWeight": "100.0", "TotalVolume": "100.0"
-            })]
-        return [{"Username": "testuser", "Storages": [{"StorageId": "st1", "Location": "Hortus", "Type": "WARHOUSE", "LastUpdatedEpochMs": 946684800000, "StorageItems": [{"MaterialId": "m1", "MaterialTicker": "RAT", "MaterialName": "Rations", "MaterialAmount": 10, "TotalWeight": 10.0, "TotalVolume": 10.0}]}]}]
-
-    # 9. Workforce
+    # 8. Workforce
     if "workforce_needs" in q and "w.population" in q:
         if "jsonb_agg" in q:
             return [_MockRecord({
@@ -447,7 +518,7 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
             "coalesce": [{"Username": "testuser", "Workforce": [{"PlanetId": "p1", "PlanetNaturalId": "P1", "PlanetName": "Planet 1", "SiteId": "site1", "UserNameSubmitted": "testuser", "Timestamp": datetime(2000, 1, 1, tzinfo=timezone.utc), "Workforces": [{"WorkforceTypeName": "PIONEER", "Population": 100, "Reserve": 10, "Capacity": 150, "Required": 50, "Satisfaction": 1.0, "WorkforceNeeds": []}]}]}]
         })]
 
-    # 10. Public / Corporation
+    # 9 Public / Corporation
     if "cx_brokers" in q or "cx_brokers_buy_orders" in q or "fetch_pivoted_market_data" in q:
         if "csv" in q:
             return [_MockRecord({"Ticker": "H2O", "last_update": "2026-07-15"})]
@@ -464,11 +535,11 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
         return [_MockRecord({"coalesce": '[{"PlanetId": "p1"}]'})]
     
     if "c.founder" in q or "c.officers" in q:
-        return [_MockRecord({"founder": "acct1", "officers": [], "displayname": "testuser", "companycode": "FAKE"})]
+        return [_MockRecord({"founder": "aaaaaaaa-aa04-aaaa-aaaa-aaaaaaaaaaaa", "officers": [], "displayname": "testuser", "companycode": "FAKE"})]
     if "ship_build_presets" in q:
         return [_MockRecord({"id": "preset1", "name": "Preset1", "price": 100.0, "price_corp": 90.0, "parts": "[]", "is_admin_preset": False, "created_by": "user1", "created_at": datetime(2000,1,1)})]
     if "corp_ship_orders" in q:
-        return [_MockRecord({"id": 1, "corporation_code": "COSM", "customer_username": "testuser", "customer_company_code": "FAKE", "ship_config": "{}", "price": 100.0, "wait_time_days": 1, "status": "QUEUED", "notes": "", "completed_at": None, "created_at": datetime(2000,1,1), "owner_id": "acct1"})]
+        return [_MockRecord({"id": 1, "corporation_code": "COSM", "customer_username": "testuser", "customer_company_code": "FAKE", "ship_config": "{}", "price": 100.0, "wait_time_days": 1, "status": "QUEUED", "notes": "", "completed_at": None, "created_at": datetime(2000,1,1), "owner_id": "aaaaaaaa-aa04-aaaa-aaaa-aaaaaaaaaaaa"})]
     if "corporation_subsidiaries" in q:
         return [_MockRecord({"id": "corp1", "name": "fake corp", "code": "FC", "member_count": 1})]
     if "is_synchronized" in q:
@@ -479,7 +550,7 @@ def get_query_stub(query: str, args: tuple) -> typing.Any:
             "is_synchronized": True,
             "last_active": datetime(2000, 1, 1, tzinfo=timezone.utc),
             "joineddate": datetime(2000, 1, 1, tzinfo=timezone.utc),
-            "accountid": "acct1"
+            "accountid": "aaaaaaaa-aa04-aaaa-aaaa-aaaaaaaaaaaa"
         })]
     if "cs.companycode" in q or "cs.companyname" in q:
         return [_MockRecord({"name": "fake corp", "code": "FC", "companycode": "FAKE", "companyname": "fake co"})]
