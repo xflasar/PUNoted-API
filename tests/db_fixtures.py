@@ -119,7 +119,7 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
     await connection.execute(
         """
         CREATE TEMP TABLE users (
-            accountid text PRIMARY KEY,
+            accountid uuid PRIMARY KEY,
             username text NOT NULL,
             userdataid text NOT NULL,
             xata_id text
