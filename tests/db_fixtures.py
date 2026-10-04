@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import typing
-from types import SimpleNamespace
 import unittest.mock
+from types import SimpleNamespace
+
 
 class MockRedis:
     def __init__(self, *args, **kwargs):
@@ -44,12 +45,14 @@ unittest.mock.patch("app.core.redis_client.redis_client", mock_redis_async).star
 unittest.mock.patch("db.Database.create_pool").start()
 unittest.mock.patch("db.Database.close_pool").start()
 
+from datetime import datetime, timezone
+
 import asyncpg
 import fastapi.testclient
 import pytest
 
-import main
 import config
+import main
 
 if typing.TYPE_CHECKING:
     import asyncpg.transaction
@@ -295,8 +298,6 @@ async def start_test_savepoint(connection: asyncpg.Connection) -> asyncpg.transa
 
 async def rollback_test_savepoint(transaction: asyncpg.transaction.Transaction) -> None:
     await transaction.rollback()
-
-from datetime import datetime, timezone
 
 def get_query_stub(query: str, args: tuple) -> typing.Any:
     q = query.lower()

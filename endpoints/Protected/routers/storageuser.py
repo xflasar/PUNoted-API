@@ -36,19 +36,14 @@ async def get_storages_json(
     location: Optional[str] = Query(None, description="Filter by location name (e.g. 'Hortus')"),
     user_id: str = Depends(RequireAuth(["storage:read"], is_single_user_endpoint=False)),
 ):
-    try:
-        db = request.app.state.db
-        valid_targets = getattr(request.state, "valid_target_users", [])
+    db = request.app.state.db
+    valid_targets = getattr(request.state, "valid_target_users", [])
 
-        if not valid_targets:
-            return []
+    if not valid_targets:
+        return []
 
-        db_data = await fetch_storages_as_json(db, valid_targets, location)
-        return db_data if db_data else []
-
-    except Exception as e:
-        print(f"Storage API Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch storages")
+    db_data = await fetch_storages_as_json(db, valid_targets, location)
+    return db_data or []
 
 
 # ==============================================================================
@@ -68,33 +63,16 @@ async def get_storages_user(
     location: Optional[str] = Query(None, description="Filter by location name"),
     user_id: str = Depends(RequireAuth(["storage:read"], is_single_user_endpoint=True)),
 ):
-    try:
-        db = request.app.state.db
-        valid_targets = getattr(request.state, "valid_target_users", [])
+    db = request.app.state.db
+    valid_targets = getattr(request.state, "valid_target_users", [])
 
-        if not valid_targets:
-            raise HTTPException(status_code=404, detail="User not found or access denied")
+    if not valid_targets:
+        raise HTTPException(status_code=404, detail="User not found or access denied")
 
-        db_data = await fetch_storages_as_json(db, valid_targets, location)
-
-        if isinstance(db_data, list) and db_data and "Storages" in db_data[0]:
-            return db_data[0]["Storages"]
-            
-        if isinstance(db_data, str):
-            try:
-                data_list = orjson.loads(db_data)
-                if data_list and isinstance(data_list, list) and "Storages" in data_list[0]:
-                    return data_list[0]["Storages"]
-            except Exception:
-                return []
-
-        return []
-
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        print(f"Storage Single API Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch user storages")
+    db_data = await fetch_storages_as_json(db, valid_targets, location)
+    if "Storages" in db_data[0]:
+        return db_data[0]["Storages"]
+    return []
 
 
 # ==============================================================================
@@ -112,53 +90,48 @@ async def get_storages_csv(
     location: Optional[str] = Query(None, description="Filter by location"),
     user_id: str = Depends(RequireAuth(["storage:read"])),
 ):
-    try:
-        db = request.app.state.db
-        valid_targets = getattr(request.state, "valid_target_users", [])
+    db = request.app.state.db
+    valid_targets = getattr(request.state, "valid_target_users", [])
 
-        if not valid_targets:
-            return Response(content="No permission or users found", media_type="text/plain")
+    if not valid_targets:
+        return Response(content="No permission or users found", media_type="text/plain")
 
-        async def iter_csv():
-            output = io.StringIO()
-            writer = csv.writer(output)
+    async def iter_csv():
+        output = io.StringIO()
+        writer = csv.writer(output)
 
-            writer.writerow(
-                [
-                    "Username",
-                    "Location",
-                    "Type",
-                    "Last Updated",
-                    "Ticker",
-                    "Name",
-                    "Category",
-                    "Amount",
-                    "Total Weight",
-                    "Total Volume",
-                ]
-            )
-
-            batch_size = 1000
-            count = 0
-
-            async for row in stream_storages_csv(db, valid_targets, location):
-                writer.writerow(row)
-                count += 1
-                if count >= batch_size:
-                    yield output.getvalue()
-                    output.seek(0)
-                    output.truncate(0)
-                    count = 0
-
-            if count > 0:
-                yield output.getvalue()
-
-        return StreamingResponse(
-            iter_csv(),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=storages_export.csv"},
+        writer.writerow(
+            [
+                "Username",
+                "Location",
+                "Type",
+                "Last Updated",
+                "Ticker",
+                "Name",
+                "Category",
+                "Amount",
+                "Total Weight",
+                "Total Volume",
+            ]
         )
 
-    except Exception as e:
-        print(f"Storage CSV Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate CSV")
+        batch_size = 1000
+        count = 0
+
+        async for row in stream_storages_csv(db, valid_targets, location):
+            writer.writerow(row)
+            count += 1
+            if count >= batch_size:
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
+                count = 0
+
+        if count > 0:
+            yield output.getvalue()
+
+    return StreamingResponse(
+        iter_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=storages_export.csv"},
+    )

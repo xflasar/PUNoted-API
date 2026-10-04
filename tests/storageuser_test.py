@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import typing
 
-import pytest
-
 from tests.db_fixtures import client, db_savepoint, db_setup  # noqa: F401
 
 if typing.TYPE_CHECKING:
@@ -12,14 +10,22 @@ if typing.TYPE_CHECKING:
 def test_get_storages_json(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/storages", headers={"X-Data-Token": "ptk_fake"})
     assert response.status_code == 200
-    assert len(response.json()) > 0
-    assert response.json()[0]["Username"] == "testuser"
+    (user_storage,) = response.json()
+    assert user_storage["Username"] == "testuser"
+    (storage,) = user_storage["Storages"]
+    assert storage["Location"] == "Hortus"
+    (item,) = storage["StorageItems"]
+    assert item["MaterialTicker"] == "RAT"
+    assert item["MaterialAmount"] == 10
 
 def test_get_storages_user(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/storages/user", headers={"X-Data-Token": "ptk_fake"})
     assert response.status_code == 200
-    assert len(response.json()) > 0
-    assert response.json()[0]["StorageId"] == "st1"
+    (storage,) = response.json()
+    assert storage["Location"] == "Hortus"
+    (item,) = storage["StorageItems"]
+    assert item["MaterialTicker"] == "RAT"
+    assert item["MaterialAmount"] == 10
 
 def test_get_storages_csv(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/storages/csv", headers={"X-Data-Token": "ptk_fake"})

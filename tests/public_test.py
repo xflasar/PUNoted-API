@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import typing
 
-import pytest
-
 from tests.db_fixtures import client, db_savepoint, db_setup  # noqa: F401
 
 if typing.TYPE_CHECKING:
@@ -101,4 +99,3 @@ def test_get_governance_motions(client: fastapi.testclient.TestClient, db_savepo
     response = client.get("/governance/motions?full=true")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
-
