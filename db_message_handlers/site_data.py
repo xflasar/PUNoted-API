@@ -295,30 +295,24 @@ async def _upsert_records(
     columns_str = ", ".join(columns)
     unique_columns_str = ", ".join(unique_fields)
 
-    # Construct the SET clause for ON CONFLICT DO UPDATE
+    # Construct the SET clause and WHERE clause for ON CONFLICT DO UPDATE
     set_clauses = []
+    where_clauses = []
     for col in columns:
         if col not in unique_fields:
-            if col == "capacity":
-                set_clauses.append(
-                    f"capacity = EXCLUDED.capacity WHERE {table_name}.capacity IS DISTINCT FROM EXCLUDED.capacity"
-                )
-            elif col == "amount":
-                set_clauses.append(
-                    f"amount = EXCLUDED.amount WHERE {table_name}.amount IS DISTINCT FROM EXCLUDED.amount"
-                )
-            else:
-                set_clauses.append(f"{col} = EXCLUDED.{col}")
+            set_clauses.append(f"{col} = EXCLUDED.{col}")
+            if col in ("capacity", "amount"):
+                where_clauses.append(f"{table_name}.{col} IS DISTINCT FROM EXCLUDED.{col}")
 
     if "updated_at" not in columns:
         set_clauses.append("updated_at = NOW()")
 
-    set_clause_str = ",\n".join(set_clauses)
-
-    values_placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])
+    set_clause_str = ", ".join(set_clauses)
+    values_placeholders = ", ".join([f"${j + 1}" for j in range(len(columns))])
 
     if set_clause_str:
-        on_conflict_clause = f"ON CONFLICT ({unique_columns_str}) DO UPDATE SET {set_clause_str}"
+        where_str = f" WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        on_conflict_clause = f"ON CONFLICT ({unique_columns_str}) DO UPDATE SET {set_clause_str}{where_str}"
     else:
         on_conflict_clause = f"ON CONFLICT ({unique_columns_str}) DO NOTHING"
 
