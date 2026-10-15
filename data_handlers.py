@@ -606,7 +606,6 @@ async def get_shipments(request: Request, planetId: str):
         )
 
 
-
 @data_router.post("/create_vendor_store")
 async def create_vendor_store(
     payload: Dict[str, Any],
