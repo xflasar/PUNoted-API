@@ -26,8 +26,8 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def live_data() -> tuple[str, str]:
     # Run the async database lookup synchronously
-    loop = asyncio.get_event_loop()
-    return loop.run_until_complete(fetch_live_token_and_user())
+    return asyncio.run(fetch_live_token_and_user())
+
 
 async def fetch_live_token_and_user() -> tuple[str, str]:
     dsn = os.getenv("DATABASE_URL") or os.getenv("XATA_DATABASE_URL")

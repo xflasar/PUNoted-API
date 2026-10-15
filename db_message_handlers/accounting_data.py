@@ -96,7 +96,8 @@ async def handle_accounting_data_message(db: Database, raw_payload: Dict[str, An
     UPDATE user_currency_accounts
     SET
         bookbalanceamount = $3,
-        balanceamount = $4
+        balanceamount = $4,
+        updated_at = NOW()
     WHERE
         userid = $1 AND number = $2;
     """

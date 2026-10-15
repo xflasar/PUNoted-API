@@ -310,6 +310,9 @@ async def _upsert_records(
             else:
                 set_clauses.append(f"{col} = EXCLUDED.{col}")
 
+    if "updated_at" not in columns:
+        set_clauses.append("updated_at = NOW()")
+
     set_clause_str = ",\n".join(set_clauses)
 
     values_placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])

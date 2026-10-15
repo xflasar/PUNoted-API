@@ -132,14 +132,19 @@ async def search_burn_production_user(
                     target_record = record
                     break
             else:
+                # If target is valid user but has no active production lines, return empty dict
+                if username in valid_targets:
+                    return {}
                 raise HTTPException(status_code=404, detail="User not found or access denied")
 
             if target_record and "BurnRates" in target_record:
                 return target_record["BurnRates"]
 
             return {}
+        except HTTPException:
+            raise
         except Exception as e:
-            request.app.state.logger.error(f"Error unwrapping burn data: {e}")
+            logger.error(f"Error unwrapping burn data: {e}")
             return {}
 
 @production_router.get(

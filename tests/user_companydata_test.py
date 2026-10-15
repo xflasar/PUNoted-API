@@ -25,3 +25,8 @@ def test_get_company_data(client: fastapi.testclient.TestClient, db_savepoint: N
             },
         }
     ]
+
+def test_get_company_data_user(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    response = client.get("/user/companydata/user", headers={"X-Data-Token": "ptk_fake"})
+    assert response.status_code == 200
+    assert response.json()["CompanyId"] == "company1"

@@ -69,6 +69,7 @@ from endpoints.Public.routers.vendors import (
 from endpoints.Public.routers.governance import (
     governance_router as governance_public_external_router,
 )
+from endpoints.Public.routers.shipments import shipments_router as shipments_public_external_router
 from routers.cxuser import cx_router
 from routers.flights import flights_router
 from routers.governance import governance_router
@@ -193,6 +194,16 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 v1_app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+
+@app.exception_handler(Exception)
+@v1_app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled 500 server error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+        headers={"Access-Control-Allow-Origin": request.headers.get("origin") or "*"}
+    )
 
 Instrumentator().instrument(app).expose(app)
 
@@ -419,6 +430,7 @@ app.include_router(notifications_router, prefix="/internal/notifications", tags=
 app.include_router(notification_rules_router, prefix="/internal/notifications/settings-api", tags=["Notification Rules"])
 app.include_router(entity_settings_router, prefix="/internal/entity-settings", tags=["Entity Settings"])
 app.include_router(announcements_router, prefix="/public/announcements", tags=["Announcements"])
+app.include_router(shipments_public_external_router, prefix="/public/shipments", tags=["Public Shipments"])
 app.include_router(ships_router, prefix="/internal/ships", tags=["Ships"])
 app.include_router(sites_router, prefix="/internal/sites", tags=["Sites"])
 app.include_router(vendor_router, prefix="/internal/vendor", tags=["Vendor"])
@@ -455,6 +467,7 @@ v1_app.include_router(corporation_public_external_router, prefix="/corporation",
 v1_app.include_router(buildings_public_external_router, prefix="/buildings", tags=["Buildings Data"])
 v1_app.include_router(company_public_external_router, prefix="/company", tags=["Company Data"])
 v1_app.include_router(governance_public_external_router, prefix="/governance", tags=["Governance Data"])
+v1_app.include_router(shipments_public_external_router, prefix="/shipments", tags=["Shipments Data"])
 
 # Flights router is registered under /public/flights to the main app
 app.include_router(flights_router, prefix="/public/flights", tags=["flights"])
@@ -490,6 +503,7 @@ if DEBUG_MODE:
     app.include_router(buildings_public_external_router, prefix="/v1/buildings", tags=["Buildings Data"])
     app.include_router(company_public_external_router, prefix="/v1/company", tags=["Company Data"])
     app.include_router(governance_public_external_router, prefix="/v1/governance", tags=["Governance Data"])
+    app.include_router(shipments_public_external_router, prefix="/v1/shipments", tags=["Shipments Data"])
 
 # Mount the v1 sub-app under /v1 prefix
 app.mount("/v1", v1_app)
