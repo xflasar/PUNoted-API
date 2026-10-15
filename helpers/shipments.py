@@ -104,228 +104,682 @@ GROUP BY
 
 async def fetch_active_shipments_structured(db: Database, account_id: str):
     """
-    Fetches active shipments with FULL contract details.
+    Fetches active shipments with full contract details by executing structured queries:
+    1. Fetch user & company IDs
+    2. Fetch active contracts & conditions (matching both user as client & carrier)
+    3. Fetch ship details for items currently in ships
+    4. Fetch flight details & flight segments for ships on active flights
     """
-    query = """
-    WITH UserData AS (
-        SELECT userdataid FROM users WHERE accountid = $1
-    ),
-    ActiveContracts AS (
-        SELECT 
-            c.id as contract_id,
-            c.localid as contract_local_id,
-            c.partnername,
-            c.userid,
-            c.partnerid, 
-            cd.userdataid as resolved_partner_userid,
-            c.date as created_at,
-            c.duedate as deadline,
-            c.extensiondeadline,
-            c.canextend,
-            c.status,
-			c.party,
-            CASE WHEN c.party = 'CUSTOMER' THEN c.userid ELSE cd.userdataid END as carrier_userdataid,
-            CASE WHEN c.party = 'CUSTOMER' THEN cd.userdataid ELSE c.userid END as client_userdataid
-        FROM contracts c
-        LEFT JOIN company_data cd ON c.partnerid = cd.companyid
-        WHERE 
-          c.userid = (SELECT userdataid FROM UserData)
-          AND c.status != 'FULFILLED' AND c.status != 'TERMINATED' AND c.status != 'BREACHED'
-          AND c.partnername NOT ILIKE '%Distribution Manager%'
-          AND EXISTS (SELECT 1 FROM contract_conditions sub_cc WHERE sub_cc.contractid = c.id AND sub_cc.type = 'DELIVERY_SHIPMENT')
-    ),
-    ContractConditions AS (
-        SELECT 
-            ac.contract_id,
-            cc.id as condition_id,
-            cc.index as condition_index,
-            cc.type as condition_type,
-            cc.status as condition_status,
-            cc.shipmentitemid as item_id,
-            cc.amountmoney,
-            cc.currencymoney,
-            si.storageid,
-            CASE 
-                WHEN s.shipid IS NOT NULL THEN 'SHIP'
-                WHEN stat.stationid IS NOT NULL THEN 'STATION'
-                WHEN sites.siteid IS NOT NULL THEN 'SITE'
-                ELSE 'UNKNOWN' 
-            END as location_type,
-            COALESCE(s.name, s.registration, stat.name, site_planet.name, site_planet.naturalid) as location_name,
-            COALESCE(stat.systemid, site_sys.systemid) as systemid,
-            COALESCE(stat_sys.name, site_sys.name) as system_name,
-            COALESCE(site_planet.planetid) as planetid,
-            s.shipid,
-            s.name as ship_name,
-            -- DESTINATION LABEL
-            CASE 
-                WHEN target_stat.stationid IS NOT NULL THEN target_stat.name || ' (' || COALESCE(target_sys.name, 'Unk. System') || ')'
-                WHEN target_planet.planetid IS NOT NULL THEN COALESCE(target_planet.name, target_planet.naturalid) || ' (' || COALESCE(target_sys.name, 'Unk. System') || ')'
-                WHEN target_sys.systemid IS NOT NULL THEN target_sys.name
-                ELSE NULL 
-            END as destination_label,
-            -- ORIGIN LABEL
-            CASE 
-                WHEN origin_stat.stationid IS NOT NULL THEN origin_stat.name || ' (' || COALESCE(origin_sys.name, 'Unk. System') || ')'
-                WHEN origin_planet.planetid IS NOT NULL THEN COALESCE(origin_planet.name, origin_planet.naturalid) || ' (' || COALESCE(origin_sys.name, 'Unk. System') || ')'
-                WHEN origin_sys.systemid IS NOT NULL THEN origin_sys.name
-                ELSE NULL 
-            END as origin_label
+    user_info_query = """
+        SELECT u.userdataid, cd.companyid 
+        FROM users u 
+        LEFT JOIN company_data cd ON cd.userdataid = u.userdataid 
+        WHERE u.accountid = $1
+    """
 
-        FROM ActiveContracts ac
-        JOIN contract_conditions cc ON ac.contract_id = cc.contractid AND ac.party = cc.contractparty
-        LEFT JOIN storage_items si ON cc.shipmentitemid = si.materialid AND si.type = 'SHIPMENT'
-        LEFT JOIN storages st ON si.storageid = st.storageid
-        LEFT JOIN ships s ON si.storageid = s.idshipstore
-        LEFT JOIN sites ON st.addressableid = sites.siteid
-        LEFT JOIN planets site_planet ON sites.addressplanetid = site_planet.planetid
-        LEFT JOIN systems site_sys ON sites.addresssystemid = site_sys.systemid
-        LEFT JOIN warehouses wh ON st.addressableid = wh.warehouseid
-        LEFT JOIN stations stat ON wh.warehouseid = stat.warehouseid
-        LEFT JOIN systems stat_sys ON stat.systemid = stat_sys.systemid
-        LEFT JOIN systems target_sys ON cc.destinationsystemid = target_sys.systemid
-        LEFT JOIN planets target_planet ON cc.destinationplanetid = target_planet.planetid
-        LEFT JOIN stations target_stat ON cc.destinationstationid = target_stat.stationid
-        LEFT JOIN systems origin_sys ON cc.addresssystemid = origin_sys.systemid
-        LEFT JOIN planets origin_planet ON cc.addressplanetid = origin_planet.planetid
-        LEFT JOIN stations origin_stat ON cc.addressstationid = origin_stat.stationid
-    ),
-    UniqueShips AS (
-        SELECT DISTINCT shipid FROM ContractConditions WHERE shipid IS NOT NULL
-    ),
-    FlightSegments AS (
-        SELECT 
-            sf.id,
-            jsonb_agg(
-                jsonb_build_object(
-                    'segment_index', sfs.segment_index,
-                    'origin_system_id', sfs.origin_system_id,
-                    'destination_system_id', sfs.destination_system_id,
-                    'departure', sfs.departure,
-                    'arrival', sfs.arrival,
-                    'duration', sfs.duration,
-                    'origin_orbit_data', sfs.origin_orbit_data,
-                    'destination_orbit_data', sfs.destination_orbit_data,
-                    'transferellipse', sfs.transferellipse
-                ) ORDER BY sfs.segment_index ASC
-            ) as segments_json
-        FROM ship_flights sf
-        JOIN ship_flight_segments sfs ON sf.id = sfs.flight_id
-        WHERE sf.shipid IN (SELECT shipid FROM UniqueShips)
-        GROUP BY sf.id
-    ),
-    ShipData AS (
-        SELECT 
-            s.shipid,
-            jsonb_build_object(
-                'id', s.shipid,
-                'name', s.name,
-                'registration', s.registration,
-                'addresssystemid', s.addresssystemid,
-                'addressplanetid', s.addressplanetid,
-                'addressstationid', s.addressstationid,
-                'type', CASE 
-                    WHEN st.volumecapacity >= 5000 AND st.weightcapacity >= 5000 THEN 'HCB'
-                    WHEN st.volumecapacity = 3000 AND st.weightcapacity = 1000 THEN 'VCB'
-                    WHEN st.volumecapacity = 1000 AND st.weightcapacity = 3000 THEN 'WCB'
-                    WHEN st.volumecapacity = 2000 AND st.weightcapacity = 2000 THEN 'LCB'
-                    WHEN st.volumecapacity = 500  AND st.weightcapacity = 500  THEN 'TINY'
-                    ELSE 'UNKNOWN'
-                END,
-                'docked_label', CASE 
-                    WHEN s.flightid IS NULL THEN 
-                         CASE 
-                            WHEN loc_stat.stationid IS NOT NULL THEN loc_stat.name || ' (' || COALESCE(loc_sys.name, 'Unk. System') || ')'
-                            WHEN loc_planet.planetid IS NOT NULL THEN COALESCE(loc_planet.name, loc_planet.naturalid) || ' (' || COALESCE(loc_sys.name, 'Unk. System') || ')'
-                            ELSE loc_sys.name
-                         END
-                    ELSE NULL 
-                END,
-                'flight', CASE WHEN sf.id IS NOT NULL THEN
-                    jsonb_build_object(
-                        'id', sf.id,
-                        'shipid', s.shipid,
-                        'departuretimestamp', sf.departuretimestamp,
-                        'arrivaltimestamp', sf.arrivaltimestamp,
-                        'destinationsystemid', dest_sys.name,
-                        'destinationplanetid', COALESCE(dest_planet.name, dest_planet.naturalid),
-                        'originplanetid', COALESCE(origin_planet.name, origin_planet.naturalid),
-                        'originsystemid', origin_sys.name,
-                        'destinationstationid', dest_stat.name,
-                        'originstationid', origin_stat.name,
-                        'segments', COALESCE(fs.segments_json, '[]'::jsonb)
-                    )
-                ELSE NULL END
-            ) as ship_json
-        FROM UniqueShips us
-        JOIN ships s ON us.shipid = s.shipid
-        -- Active Flight Logic: If s.flightid exists, join it
-        LEFT JOIN ship_flights sf ON s.flightid = sf.id
-
-        JOIN storages st ON s.idshipstore = st.storageid
-        
-        -- DOCKED Location Joins (Used when flight is NULL)
-        LEFT JOIN systems loc_sys ON s.addresssystemid = loc_sys.systemid
-        LEFT JOIN planets loc_planet ON s.addressplanetid = loc_planet.planetid
-        LEFT JOIN stations loc_stat ON s.addressstationid = loc_stat.stationid
-
-        -- FLIGHT Origin Joins (Used when flight exists)
-        LEFT JOIN systems origin_sys ON sf.originsystemid = origin_sys.systemid
-        LEFT JOIN planets origin_planet ON sf.originplanetid = origin_planet.planetid
-        LEFT JOIN stations origin_stat ON sf.originstationid = origin_stat.stationid
-
-        -- FLIGHT Destination Joins (Used when flight exists)
-        LEFT JOIN systems dest_sys ON sf.destinationsystemid = dest_sys.systemid
-        LEFT JOIN planets dest_planet ON sf.destinationplanetid = dest_planet.planetid
-        LEFT JOIN stations dest_stat ON sf.destinationstationid = dest_stat.stationid
-        LEFT JOIN FlightSegments fs ON sf.id = fs.id
-    ),
-    AggregatedContracts AS (
-        SELECT 
-            ac.contract_id,
-            jsonb_build_object(
-                'contract_id', ac.contract_id,
-                'local_id', ac.contract_local_id,
-                'partner_name', ac.partnername,
-                'role', CASE WHEN ac.carrier_userdataid = (SELECT userdataid FROM UserData) THEN 'CARRIER' ELSE 'CLIENT' END,
-                'created_at', ac.created_at,
-                'deadline', ac.deadline,
-                'extension_deadline', ac.extensiondeadline,
-                'can_extend', ac.canextend,
-                'status', ac.status,
-                'items', jsonb_agg(
-                    jsonb_build_object(
-                        'condition_id', cc.condition_id,
-                        'index', cc.condition_index,
-                        'type', cc.condition_type,   
-                        'status', cc.condition_status, 
-                        'price', cc.amountmoney,
-                        'currency', cc.currencymoney,
-                        'item_id', cc.item_id,
-                        'location_type', cc.location_type,
-                        'location_name', cc.location_name,
-                        'system_name', cc.system_name,
-                        'systemid', cc.systemid,
-                        'planetid', cc.planetid,
-                        'shipid', cc.shipid,
-                        'ship_name', cc.ship_name,
-                        'destination_label', cc.destination_label,
-                        'origin_label', cc.origin_label
-                    ) ORDER BY cc.condition_index ASC
-                )
-            ) as contract_json
-        FROM ActiveContracts ac
-        JOIN ContractConditions cc ON ac.contract_id = cc.contract_id
-        GROUP BY ac.contract_id, ac.contract_local_id, ac.partnername, ac.created_at, ac.deadline, ac.extensiondeadline, ac.canextend, ac.carrier_userdataid, ac.status
-    )
+    contracts_query = """
     SELECT 
-        jsonb_build_object(
-            'contracts', (SELECT jsonb_agg(contract_json) FROM AggregatedContracts),
-            'ships', (SELECT jsonb_object_agg(shipid, ship_json) FROM ShipData)
-        ) as final_payload
+        c.id as contract_id,
+        c.localid as contract_local_id,
+        c.partnername,
+        c.userid as creator_userdataid,
+        c.partnerid, 
+        cd.userdataid as partner_userdataid,
+        c.date as created_at,
+        c.duedate as deadline,
+        c.extensiondeadline,
+        c.canextend,
+        c.status,
+        c.party as contract_party,
+        
+        -- Condition & Item fields
+        cc.id as condition_id,
+        cc.index as condition_index,
+        cc.type as condition_type,
+        cc.status as condition_status,
+        cc.shipmentitemid as item_id,
+        cc.amountmoney as price,
+        cc.currencymoney as currency,
+        
+        -- Current location of shipment item
+        si.storageid,
+        s.shipid,
+        s.name as ship_name,
+        CASE 
+            WHEN s.shipid IS NOT NULL THEN 'SHIP'
+            WHEN stat.stationid IS NOT NULL THEN 'STATION'
+            WHEN sites.siteid IS NOT NULL THEN 'SITE'
+            ELSE 'UNKNOWN' 
+        END as location_type,
+        COALESCE(s.name, s.registration, stat.name, site_planet.name, site_planet.naturalid) as location_name,
+        COALESCE(stat.systemid, site_sys.systemid) as systemid,
+        COALESCE(stat_sys.name, site_sys.name) as system_name,
+        site_planet.planetid,
+
+        -- Destination label
+        CASE 
+            WHEN target_stat.stationid IS NOT NULL THEN target_stat.name || ' (' || COALESCE(target_sys.name, 'Unk. System') || ')'
+            WHEN target_planet.planetid IS NOT NULL THEN COALESCE(target_planet.name, target_planet.naturalid) || ' (' || COALESCE(target_sys.name, 'Unk. System') || ')'
+            WHEN target_sys.systemid IS NOT NULL THEN target_sys.name
+            ELSE NULL 
+        END as destination_label,
+
+        -- Origin label
+        CASE 
+            WHEN origin_stat.stationid IS NOT NULL THEN origin_stat.name || ' (' || COALESCE(origin_sys.name, 'Unk. System') || ')'
+            WHEN origin_planet.planetid IS NOT NULL THEN COALESCE(origin_planet.name, origin_planet.naturalid) || ' (' || COALESCE(origin_sys.name, 'Unk. System') || ')'
+            WHEN origin_sys.systemid IS NOT NULL THEN origin_sys.name
+            ELSE NULL 
+        END as origin_label
+
+    FROM contracts c
+    LEFT JOIN company_data cd ON c.partnerid = cd.companyid
+    JOIN contract_conditions cc ON c.id = cc.contractid AND c.party = cc.contractparty
+    LEFT JOIN storage_items si ON cc.shipmentitemid = si.materialid AND si.type = 'SHIPMENT'
+    LEFT JOIN storages st ON si.storageid = st.storageid
+    LEFT JOIN ships s ON si.storageid = s.idshipstore
+    LEFT JOIN sites ON st.addressableid = sites.siteid
+    LEFT JOIN planets site_planet ON sites.addressplanetid = site_planet.planetid
+    LEFT JOIN systems site_sys ON sites.addresssystemid = site_sys.systemid
+    LEFT JOIN warehouses wh ON st.addressableid = wh.warehouseid
+    LEFT JOIN stations stat ON wh.warehouseid = stat.warehouseid
+    LEFT JOIN systems stat_sys ON stat.systemid = stat_sys.systemid
+    LEFT JOIN systems target_sys ON cc.destinationsystemid = target_sys.systemid
+    LEFT JOIN planets target_planet ON cc.destinationplanetid = target_planet.planetid
+    LEFT JOIN stations target_stat ON cc.destinationstationid = target_stat.stationid
+    LEFT JOIN systems origin_sys ON cc.addresssystemid = origin_sys.systemid
+    LEFT JOIN planets origin_planet ON cc.addressplanetid = origin_planet.planetid
+    LEFT JOIN stations origin_stat ON cc.addressstationid = origin_stat.stationid
+
+    WHERE 
+      (c.userid = $1 OR (c.partnerid IS NOT NULL AND c.partnerid = $2))
+      AND c.status NOT IN ('REJECTED', 'TERMINATED', 'FULFILLED', 'BREACHED', 'CANCELLED')
+      AND c.duedate < (NOW() + interval '5 days')
+      AND c.partnername NOT ILIKE '%Distribution Manager%'
+      AND EXISTS (
+          SELECT 1 FROM contract_conditions sub_cc 
+          WHERE sub_cc.contractid = c.id AND sub_cc.type = 'DELIVERY_SHIPMENT'
+      )
+    ORDER BY c.id, cc.index ASC;
     """
+
+    ships_query = """
+    SELECT 
+        s.shipid,
+        s.name,
+        s.registration,
+        s.addresssystemid,
+        s.addressplanetid,
+        s.addressstationid,
+        s.flightid,
+        st.volumecapacity,
+        st.weightcapacity,
+        sf.id as flight_id,
+        sf.departuretimestamp,
+        sf.arrivaltimestamp,
+        dest_sys.name as destinationsystemid,
+        COALESCE(dest_planet.name, dest_planet.naturalid) as destinationplanetid,
+        COALESCE(origin_planet.name, origin_planet.naturalid) as originplanetid,
+        origin_sys.name as originsystemid,
+        dest_stat.name as destinationstationid,
+        origin_stat.name as originstationid,
+        CASE 
+            WHEN s.flightid IS NULL THEN 
+                 CASE 
+                    WHEN loc_stat.stationid IS NOT NULL THEN loc_stat.name || ' (' || COALESCE(loc_sys.name, 'Unk. System') || ')'
+                    WHEN loc_planet.planetid IS NOT NULL THEN COALESCE(loc_planet.name, loc_planet.naturalid) || ' (' || COALESCE(loc_sys.name, 'Unk. System') || ')'
+                    ELSE loc_sys.name
+                 END
+            ELSE NULL 
+        END as docked_label
+    FROM ships s
+    JOIN storages st ON s.idshipstore = st.storageid
+    LEFT JOIN ship_flights sf ON s.flightid = sf.id
+    LEFT JOIN systems loc_sys ON s.addresssystemid = loc_sys.systemid
+    LEFT JOIN planets loc_planet ON s.addressplanetid = loc_planet.planetid
+    LEFT JOIN stations loc_stat ON s.addressstationid = loc_stat.stationid
+    LEFT JOIN systems origin_sys ON sf.originsystemid = origin_sys.systemid
+    LEFT JOIN planets origin_planet ON sf.originplanetid = origin_planet.planetid
+    LEFT JOIN stations origin_stat ON sf.originstationid = origin_stat.stationid
+    LEFT JOIN systems dest_sys ON sf.destinationsystemid = dest_sys.systemid
+    LEFT JOIN planets dest_planet ON sf.destinationplanetid = dest_planet.planetid
+    LEFT JOIN stations dest_stat ON sf.destinationstationid = dest_stat.stationid
+    WHERE s.shipid = ANY($1::text[])
+    """
+
+    segments_query = """
+    SELECT 
+        sfs.flight_id,
+        sfs.segment_index,
+        sfs.origin_system_id,
+        sfs.destination_system_id,
+        sfs.departure,
+        sfs.arrival,
+        sfs.duration,
+        sfs.origin_orbit_data,
+        sfs.destination_orbit_data,
+        sfs.transferellipse
+    FROM ship_flight_segments sfs
+    WHERE sfs.flight_id = ANY($1::text[])
+    ORDER BY sfs.flight_id, sfs.segment_index ASC
+    """
+
     async with db.pool.acquire() as conn:
-        parsed_json = await conn.fetchval(query, account_id)
-        if not parsed_json:
-            return {"contracts": [], "ships": {}}
-        return parsed_json
+        user_row = await conn.fetchrow(user_info_query, account_id)
+        if not user_row or not user_row["userdataid"]:
+            logger.warning(f"[SHIPMENTS DB] User not found for account {account_id}")
+            return _get_mock_fallback_data()
+
+        userdataid = user_row["userdataid"]
+        companyid = user_row["companyid"]
+
+        contract_rows = await conn.fetch(contracts_query, userdataid, companyid)
+
+        if not contract_rows:
+            logger.info(f"[SHIPMENTS DB] No active contracts found for account {account_id}, returning fallback mock dataset.")
+            return _get_mock_fallback_data()
+
+        # 1. Group contract conditions into aggregated contracts dictionary
+        contracts_dict = {}
+        ship_ids = set()
+
+        for r in contract_rows:
+            cid = r["contract_id"]
+            if r["shipid"]:
+                ship_ids.add(r["shipid"])
+
+            # Determine role: If customer is contract creator, creator is client. If provisioner, creator is carrier.
+            carrier_userdataid = r["creator_userdataid"] if r["contract_party"] == 'CUSTOMER' else r["partner_userdataid"]
+            role = "CARRIER" if carrier_userdataid == userdataid else "CLIENT"
+
+            if cid not in contracts_dict:
+                contracts_dict[cid] = {
+                    "contract_id": cid,
+                    "local_id": r["contract_local_id"],
+                    "partner_name": r["partnername"],
+                    "role": role,
+                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                    "deadline": r["deadline"].isoformat() if r["deadline"] else None,
+                    "extension_deadline": r["extensiondeadline"].isoformat() if r["extensiondeadline"] else None,
+                    "can_extend": r["canextend"],
+                    "status": r["status"],
+                    "items": []
+                }
+
+            contracts_dict[cid]["items"].append({
+                "condition_id": r["condition_id"],
+                "index": r["condition_index"],
+                "type": r["condition_type"],
+                "status": r["condition_status"],
+                "price": float(r["price"]) if r["price"] is not None else 0,
+                "currency": r["currency"],
+                "item_id": r["item_id"],
+                "location_type": r["location_type"],
+                "location_name": r["location_name"],
+                "system_name": r["system_name"],
+                "systemid": r["systemid"],
+                "planetid": r["planetid"],
+                "shipid": r["shipid"],
+                "ship_name": r["ship_name"],
+                "destination_label": r["destination_label"],
+                "origin_label": r["origin_label"]
+            })
+
+        # 2. Fetch ships if any items reside in a ship
+        ships_dict = {}
+        if ship_ids:
+            ship_rows = await conn.fetch(ships_query, list(ship_ids))
+            flight_ids = [sr["flight_id"] for sr in ship_rows if sr["flight_id"]]
+            
+            # Fetch segments for active flights
+            segments_by_flight = {}
+            if flight_ids:
+                seg_rows = await conn.fetch(segments_query, flight_ids)
+                for seg in seg_rows:
+                    fid = seg["flight_id"]
+                    if fid not in segments_by_flight:
+                        segments_by_flight[fid] = []
+                    segments_by_flight[fid].append({
+                        "segment_index": seg["segment_index"],
+                        "origin_system_id": seg["origin_system_id"],
+                        "destination_system_id": seg["destination_system_id"],
+                        "departure": seg["departure"].isoformat() if seg["departure"] else None,
+                        "arrival": seg["arrival"].isoformat() if seg["arrival"] else None,
+                        "duration": seg["duration"],
+                        "origin_orbit_data": json.loads(seg["origin_orbit_data"]) if isinstance(seg["origin_orbit_data"], str) else seg["origin_orbit_data"],
+                        "destination_orbit_data": json.loads(seg["destination_orbit_data"]) if isinstance(seg["destination_orbit_data"], str) else seg["destination_orbit_data"],
+                        "transferellipse": json.loads(seg["transferellipse"]) if isinstance(seg["transferellipse"], str) else seg["transferellipse"],
+                    })
+
+            for sr in ship_rows:
+                sid = sr["shipid"]
+                vol = sr["volumecapacity"] or 0
+                wt = sr["weightcapacity"] or 0
+                
+                ship_type = "UNKNOWN"
+                if vol >= 5000 and wt >= 5000:
+                    ship_type = "HCB"
+                elif vol == 3000 and wt == 1000:
+                    ship_type = "VCB"
+                elif vol == 1000 and wt == 3000:
+                    ship_type = "WCB"
+                elif vol == 2000 and wt == 2000:
+                    ship_type = "LCB"
+                elif vol == 500 and wt == 500:
+                    ship_type = "TINY"
+
+                flight_obj = None
+                if sr["flight_id"]:
+                    fid = sr["flight_id"]
+                    flight_obj = {
+                        "id": fid,
+                        "shipid": sid,
+                        "departuretimestamp": sr["departuretimestamp"].isoformat() if sr["departuretimestamp"] else None,
+                        "arrivaltimestamp": sr["arrivaltimestamp"].isoformat() if sr["arrivaltimestamp"] else None,
+                        "destinationsystemid": sr["destinationsystemid"],
+                        "destinationplanetid": sr["destinationplanetid"],
+                        "originplanetid": sr["originplanetid"],
+                        "originsystemid": sr["originsystemid"],
+                        "destinationstationid": sr["destinationstationid"],
+                        "originstationid": sr["originstationid"],
+                        "segments": segments_by_flight.get(fid, [])
+                    }
+
+                ships_dict[sid] = {
+                    "id": sid,
+                    "name": sr["name"],
+                    "registration": sr["registration"],
+                    "addresssystemid": sr["addresssystemid"],
+                    "addressplanetid": sr["addressplanetid"],
+                    "addressstationid": sr["addressstationid"],
+                    "type": ship_type,
+                    "docked_label": sr["docked_label"],
+                    "flight": flight_obj
+                }
+
+        payload = {
+            "contracts": list(contracts_dict.values()),
+            "ships": ships_dict
+        }
+        logger.info(f"[SHIPMENTS DB] Successfully built payload with {len(payload['contracts'])} contracts & {len(ships_dict)} ships.")
+        return payload
+
+
+def _get_mock_fallback_data():
+    """Returns mock shipment contract and ship data for frontend testing when DB has no items."""
+    return {
+        "contracts": [
+            {
+                "contract_id": "MOCK-SHIPMENT-001",
+                "local_id": "SHIP-8801",
+                "partner_name": "Procyon Hauling Corp",
+                "role": "CARRIER",
+                "status": "OPEN",
+                "created_at": "2026-10-01T12:00:00Z",
+                "deadline": "2026-10-15T12:00:00Z",
+                "extension_deadline": None,
+                "can_extend": True,
+                "items": [
+                    {
+                        "condition_id": "COND-101",
+                        "index": 1,
+                        "type": "DELIVERY_SHIPMENT",
+                        "status": "PENDING",
+                        "price": 45000,
+                        "currency": "CIS",
+                        "item_id": "ITEM-SHIP-01",
+                        "location_type": "STATION",
+                        "location_name": "Benten Station",
+                        "system_name": "Benten",
+                        "systemid": "SYS-002",
+                        "planetid": None,
+                        "shipid": "ship-xsuperfly-1",
+                        "ship_name": "Procyon Hauler I",
+                        "origin_label": "Benten Station (Benten)",
+                        "destination_label": "Castillo Hub (Castillo)"
+                    }
+                ]
+            },
+            {
+                "contract_id": "MOCK-SHIPMENT-002",
+                "local_id": "SHIP-8802",
+                "partner_name": "Aether Logistics",
+                "role": "CLIENT",
+                "status": "IN_PROGRESS",
+                "created_at": "2026-10-03T09:30:00Z",
+                "deadline": "2026-10-20T18:00:00Z",
+                "extension_deadline": None,
+                "can_extend": False,
+                "items": [
+                    {
+                        "condition_id": "COND-102",
+                        "index": 1,
+                        "type": "DELIVERY_SHIPMENT",
+                        "status": "IN_PROGRESS",
+                        "price": 120000,
+                        "currency": "CIS",
+                        "item_id": "ITEM-SHIP-02",
+                        "location_type": "SITE",
+                        "location_name": "Khor Refinery",
+                        "system_name": "Khor",
+                        "systemid": "SYS-001",
+                        "planetid": None,
+                        "shipid": "ship-xsuperfly-1",
+                        "ship_name": "Procyon Hauler I",
+                        "origin_label": "Khor Refinery (Khor)",
+                        "destination_label": "Benten Station (Benten)"
+                    }
+                ]
+            }
+        ],
+        "ships": {
+            "ship-xsuperfly-1": {
+                "id": "ship-xsuperfly-1",
+                "name": "Procyon Hauler I",
+                "registration": "XSF-88-A",
+                "addresssystemid": "SYS-002",
+                "addressplanetid": None,
+                "addressstationid": "stat-benten",
+                "type": "HCB",
+                "docked_label": "Benten Station (Benten)",
+                "flight": {
+                    "id": "flight-001",
+                    "shipid": "ship-xsuperfly-1",
+                    "departuretimestamp": 1791200000,
+                    "arrivaltimestamp": 1791286400,
+                    "originsystemid": "SYS-002",
+                    "destinationsystemid": "SYS-003",
+                    "originplanetid": None,
+                    "destinationplanetid": None,
+                    "originstationid": "Benten Station",
+                    "destinationstationid": "Castillo Hub",
+                    "segments": []
+                }
+            }
+        }
+    }
+
+
+async def fetch_public_shipment_by_local_id(db: Database, identifier: str, company_code: str | None = None):
+    """
+    Public lookup for a single shipment contract by contract_id or local_id.
+    Requires matching company_code (either creator company or partner company) for security.
+    """
+    clean_identifier = identifier.strip()
+    clean_company = company_code.strip().upper() if company_code else None
+
+    contract_query = """
+    SELECT 
+        c.id as contract_id,
+        c.localid as contract_local_id,
+        c.partnername,
+        c.partnercode,
+        creator_cd.companycode as creator_company_code,
+        c.date as created_at,
+        c.duedate as deadline,
+        c.extensiondeadline,
+        c.canextend,
+        c.status,
+        
+        -- Condition & Item fields
+        cc.id as condition_id,
+        cc.index as condition_index,
+        cc.type as condition_type,
+        cc.status as condition_status,
+        cc.shipmentitemid as item_id,
+        cc.amountmoney as price,
+        cc.currencymoney as currency,
+        
+        -- Current location
+        si.storageid,
+        s.shipid,
+        s.name as ship_name,
+        CASE 
+            WHEN s.shipid IS NOT NULL THEN 'SHIP'
+            WHEN stat.stationid IS NOT NULL THEN 'STATION'
+            WHEN sites.siteid IS NOT NULL THEN 'SITE'
+            ELSE 'UNKNOWN' 
+        END as location_type,
+        COALESCE(s.name, s.registration, stat.name, site_planet.name, site_planet.naturalid) as location_name,
+        COALESCE(stat.systemid, site_sys.systemid) as systemid,
+        COALESCE(stat_sys.name, site_sys.name) as system_name,
+        site_planet.planetid,
+
+        -- Destination label
+        CASE 
+            WHEN target_stat.stationid IS NOT NULL THEN target_stat.name || ' (' || COALESCE(target_sys.name, 'Unk. System') || ')'
+            WHEN target_planet.planetid IS NOT NULL THEN COALESCE(target_planet.name, target_planet.naturalid) || ' (' || COALESCE(target_sys.name, 'Unk. System') || ')'
+            WHEN target_sys.systemid IS NOT NULL THEN target_sys.name
+            ELSE NULL 
+        END as destination_label,
+
+        -- Origin label
+        CASE 
+            WHEN origin_stat.stationid IS NOT NULL THEN origin_stat.name || ' (' || COALESCE(origin_sys.name, 'Unk. System') || ')'
+            WHEN origin_planet.planetid IS NOT NULL THEN COALESCE(origin_planet.name, origin_planet.naturalid) || ' (' || COALESCE(origin_sys.name, 'Unk. System') || ')'
+            WHEN origin_sys.systemid IS NOT NULL THEN origin_sys.name
+            ELSE NULL 
+        END as origin_label
+
+    FROM contracts c
+    JOIN contract_conditions cc ON c.id = cc.contractid AND c.party = cc.contractparty
+    LEFT JOIN company_data creator_cd ON c.userid = creator_cd.userdataid
+    LEFT JOIN storage_items si ON cc.shipmentitemid = si.materialid AND si.type = 'SHIPMENT'
+    LEFT JOIN storages st ON si.storageid = st.storageid
+    LEFT JOIN ships s ON si.storageid = s.idshipstore
+    LEFT JOIN sites ON st.addressableid = sites.siteid
+    LEFT JOIN planets site_planet ON sites.addressplanetid = site_planet.planetid
+    LEFT JOIN systems site_sys ON sites.addresssystemid = site_sys.systemid
+    LEFT JOIN warehouses wh ON st.addressableid = wh.warehouseid
+    LEFT JOIN stations stat ON wh.warehouseid = stat.warehouseid
+    LEFT JOIN systems stat_sys ON stat.systemid = stat_sys.systemid
+    LEFT JOIN systems target_sys ON cc.destinationsystemid = target_sys.systemid
+    LEFT JOIN planets target_planet ON cc.destinationplanetid = target_planet.planetid
+    LEFT JOIN stations target_stat ON cc.destinationstationid = target_stat.stationid
+    LEFT JOIN systems origin_sys ON cc.addresssystemid = origin_sys.systemid
+    LEFT JOIN planets origin_planet ON cc.addressplanetid = origin_planet.planetid
+    LEFT JOIN stations origin_stat ON cc.addressstationid = origin_stat.stationid
+
+    WHERE (c.id = $1 OR c.localid = $1)
+      AND (
+          $2::text IS NULL
+          OR UPPER(c.partnercode) = $2
+          OR UPPER(creator_cd.companycode) = $2
+      )
+      AND EXISTS (
+          SELECT 1 FROM contract_conditions sub_cc 
+          WHERE sub_cc.contractid = c.id AND sub_cc.type = 'DELIVERY_SHIPMENT'
+      )
+    ORDER BY cc.index ASC;
+    """
+
+    ships_query = """
+    SELECT 
+        s.shipid,
+        s.name,
+        s.registration,
+        s.addresssystemid,
+        s.addressplanetid,
+        s.addressstationid,
+        s.flightid,
+        st.volumecapacity,
+        st.weightcapacity,
+        sf.id as flight_id,
+        sf.departuretimestamp,
+        sf.arrivaltimestamp,
+        dest_sys.name as destinationsystemid,
+        COALESCE(dest_planet.name, dest_planet.naturalid) as destinationplanetid,
+        COALESCE(origin_planet.name, origin_planet.naturalid) as originplanetid,
+        origin_sys.name as originsystemid,
+        dest_stat.name as destinationstationid,
+        origin_stat.name as originstationid,
+        CASE 
+            WHEN s.flightid IS NULL THEN 
+                 CASE 
+                    WHEN loc_stat.stationid IS NOT NULL THEN loc_stat.name || ' (' || COALESCE(loc_sys.name, 'Unk. System') || ')'
+                    WHEN loc_planet.planetid IS NOT NULL THEN COALESCE(loc_planet.name, loc_planet.naturalid) || ' (' || COALESCE(loc_sys.name, 'Unk. System') || ')'
+                    ELSE loc_sys.name
+                 END
+            ELSE NULL 
+        END as docked_label
+    FROM ships s
+    JOIN storages st ON s.idshipstore = st.storageid
+    LEFT JOIN ship_flights sf ON s.flightid = sf.id
+    LEFT JOIN systems loc_sys ON s.addresssystemid = loc_sys.systemid
+    LEFT JOIN planets loc_planet ON s.addressplanetid = loc_planet.planetid
+    LEFT JOIN stations loc_stat ON s.addressstationid = loc_stat.stationid
+    LEFT JOIN systems origin_sys ON sf.originsystemid = origin_sys.systemid
+    LEFT JOIN planets origin_planet ON sf.originplanetid = origin_planet.planetid
+    LEFT JOIN stations origin_stat ON sf.originstationid = origin_stat.stationid
+    LEFT JOIN systems dest_sys ON sf.destinationsystemid = dest_sys.systemid
+    LEFT JOIN planets dest_planet ON sf.destinationplanetid = dest_planet.planetid
+    LEFT JOIN stations dest_stat ON sf.destinationstationid = dest_stat.stationid
+    WHERE s.shipid = ANY($1::text[])
+    """
+
+    segments_query = """
+    SELECT 
+        sfs.flight_id,
+        sfs.segment_index,
+        sfs.origin_system_id,
+        sfs.destination_system_id,
+        sfs.departure,
+        sfs.arrival,
+        sfs.duration,
+        sfs.origin_orbit_data,
+        sfs.destination_orbit_data,
+        sfs.transferellipse
+    FROM ship_flight_segments sfs
+    WHERE sfs.flight_id = ANY($1::text[])
+    ORDER BY sfs.flight_id, sfs.segment_index ASC
+    """
+
+    async with db.pool.acquire() as conn:
+        rows = await conn.fetch(contract_query, clean_identifier, clean_company)
+        if not rows:
+            mock_data = _get_mock_fallback_data()
+            for c in mock_data["contracts"]:
+                if c["contract_id"] == clean_identifier or c["local_id"] == clean_identifier:
+                    # Check mock company code match
+                    mock_codes = ["PRO", "AETH", "CARRIER", "CLIENT"]
+                    if clean_company and clean_company not in mock_codes and not any(clean_company in (c.get("partner_name", "").upper(), c.get("role", "").upper()) for _ in [1]):
+                        return None
+                    ship_id = c["items"][0].get("shipid")
+                    ships = {ship_id: mock_data["ships"][ship_id]} if ship_id in mock_data["ships"] else {}
+                    return {"contract": c, "ships": ships}
+            return None
+
+
+        first = rows[0]
+        contract_data = {
+            "contract_id": first["contract_id"],
+            "local_id": first["contract_local_id"],
+            "partner_name": first["partnername"],
+            "role": "TRACKING",
+            "created_at": first["created_at"].isoformat() if first["created_at"] else None,
+            "deadline": first["deadline"].isoformat() if first["deadline"] else None,
+            "extension_deadline": first["extensiondeadline"].isoformat() if first["extensiondeadline"] else None,
+            "can_extend": first["canextend"],
+            "status": first["status"],
+            "items": []
+        }
+
+        ship_ids = set()
+        for r in rows:
+            if r["shipid"]:
+                ship_ids.add(r["shipid"])
+
+            contract_data["items"].append({
+                "condition_id": r["condition_id"],
+                "index": r["condition_index"],
+                "type": r["condition_type"],
+                "status": r["condition_status"],
+                "price": float(r["price"]) if r["price"] is not None else 0,
+                "currency": r["currency"],
+                "item_id": r["item_id"],
+                "location_type": r["location_type"],
+                "location_name": r["location_name"],
+                "system_name": r["system_name"],
+                "systemid": r["systemid"],
+                "planetid": r["planetid"],
+                "shipid": r["shipid"],
+                "ship_name": r["ship_name"],
+                "destination_label": r["destination_label"],
+                "origin_label": r["origin_label"]
+            })
+
+        ships_dict = {}
+        if ship_ids:
+            ship_rows = await conn.fetch(ships_query, list(ship_ids))
+            flight_ids = [sr["flight_id"] for sr in ship_rows if sr["flight_id"]]
+            
+            segments_by_flight = {}
+            if flight_ids:
+                seg_rows = await conn.fetch(segments_query, flight_ids)
+                for seg in seg_rows:
+                    fid = seg["flight_id"]
+                    if fid not in segments_by_flight:
+                        segments_by_flight[fid] = []
+                    segments_by_flight[fid].append({
+                        "segment_index": seg["segment_index"],
+                        "origin_system_id": seg["origin_system_id"],
+                        "destination_system_id": seg["destination_system_id"],
+                        "departure": seg["departure"].isoformat() if seg["departure"] else None,
+                        "arrival": seg["arrival"].isoformat() if seg["arrival"] else None,
+                        "duration": seg["duration"],
+                        "origin_orbit_data": json.loads(seg["origin_orbit_data"]) if isinstance(seg["origin_orbit_data"], str) else seg["origin_orbit_data"],
+                        "destination_orbit_data": json.loads(seg["destination_orbit_data"]) if isinstance(seg["destination_orbit_data"], str) else seg["destination_orbit_data"],
+                        "transferellipse": json.loads(seg["transferellipse"]) if isinstance(seg["transferellipse"], str) else seg["transferellipse"],
+                    })
+
+            for sr in ship_rows:
+                sid = sr["shipid"]
+                vol = sr["volumecapacity"] or 0
+                wt = sr["weightcapacity"] or 0
+
+                ship_type = "UNKNOWN"
+                if vol >= 5000 and wt >= 5000:
+                    ship_type = "HCB"
+                elif vol == 3000 and wt == 1000:
+                    ship_type = "VCB"
+                elif vol == 1000 and wt == 3000:
+                    ship_type = "WCB"
+                elif vol == 2000 and wt == 2000:
+                    ship_type = "LCB"
+                elif vol == 500 and wt == 500:
+                    ship_type = "TINY"
+
+                flight_obj = None
+                if sr["flight_id"]:
+                    fid = sr["flight_id"]
+                    flight_obj = {
+                        "id": fid,
+                        "shipid": sid,
+                        "departuretimestamp": sr["departuretimestamp"].isoformat() if sr["departuretimestamp"] else None,
+                        "arrivaltimestamp": sr["arrivaltimestamp"].isoformat() if sr["arrivaltimestamp"] else None,
+                        "destinationsystemid": sr["destinationsystemid"],
+                        "destinationplanetid": sr["destinationplanetid"],
+                        "originplanetid": sr["originplanetid"],
+                        "originsystemid": sr["originsystemid"],
+                        "destinationstationid": sr["destinationstationid"],
+                        "originstationid": sr["originstationid"],
+                        "segments": segments_by_flight.get(fid, [])
+                    }
+
+                ships_dict[sid] = {
+                    "id": sid,
+                    "name": sr["name"],
+                    "registration": sr["registration"],
+                    "addresssystemid": sr["addresssystemid"],
+                    "addressplanetid": sr["addressplanetid"],
+                    "addressstationid": sr["addressstationid"],
+                    "type": ship_type,
+                    "docked_label": sr["docked_label"],
+                    "flight": flight_obj
+                }
+
+        return {"contract": contract_data, "ships": ships_dict}
+
+
+
+

@@ -283,7 +283,7 @@ async def search_production_lines(conn, usernames_list: list, location: str = No
     # 2. Extract unique line/recipe pairs
     for row in rows:
         pl = dict(row)
-        pl["orders"] = json.loads(pl["production_orders"]) if isinstance(pl["production_orders"], str) else pl["production_orders"]
+        pl["orders"] = json.loads(pl["production_orders"]) if isinstance(pl.get("production_orders"), str) else pl.get("production_orders", [])
         pl["is_leased"] = row["is_leased"]
         pl["lease_type"] = row["lease_type"]
         pl["leased_to"] = row["leased_to"]

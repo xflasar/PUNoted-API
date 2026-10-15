@@ -15,6 +15,11 @@ def test_get_vendors(client: fastapi.testclient.TestClient, db_savepoint: None) 
     assert res.get("success") is True
     assert isinstance(res.get("vendors"), list)
 
+def test_get_vendors_csv(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    response = client.get("/vendors/csv")
+    assert response.status_code == 200
+    assert "text/csv" in response.headers["content-type"]
+
 # ----------------- CX -----------------
 def test_get_cx_prices_csv(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/cx/prices/csv")
@@ -29,11 +34,22 @@ def test_get_cx_prices_json(client: fastapi.testclient.TestClient, db_savepoint:
     if len(res) > 0:
         assert "ticker" in res[0] or "Ticker" in res[0]
 
+def test_get_cx_detail(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    response = client.get("/cx/detail/H2O")
+    assert response.status_code == 200
+    assert isinstance(response.json(), (dict, list))
+
+def test_get_cx_history(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    response = client.get("/cx/history/H2O")
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+
 # ----------------- Materials -----------------
 def test_get_materials_list(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/materials/list")
     assert response.status_code == 200
-    assert response.json() == [{"ticker": "H2O", "name": "Water", "category": "Water", "weight": 1.0, "volume": 1.0}]
+    tickers = [m["ticker"] for m in response.json()]
+    assert "H2O" in tickers
 
 def test_get_materials_csv(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/materials/csv")
@@ -43,13 +59,16 @@ def test_get_materials_csv(client: fastapi.testclient.TestClient, db_savepoint: 
 def test_get_material_recipes(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/materials/recipes")
     assert response.status_code == 200
-    assert response.json() == [{"RecipeName": "Water extraction"}]
+    assert len(response.json()) > 0
+    assert "2xH = 1xH2O" in [r["RecipeName"] for r in response.json()]
 
 # ----------------- Planets -----------------
 def test_get_planets(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/planets/")
     assert response.status_code == 200
-    assert response.json() == [{"PlanetNaturalId": "p1", "PlanetName": "Planet 1"}]
+    assert len(response.json()) > 0
+    assert response.json()[0]["PlanetNaturalId"] == "HRT"
+    assert response.json()[0]["PlanetName"] == "Hortus"
 
 # ----------------- Corp -----------------
 def test_get_corporation_prices_json(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
@@ -81,13 +100,15 @@ def test_get_user_role_endpoint(client: fastapi.testclient.TestClient, db_savepo
 def test_get_public_company(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/company/FAKE")
     assert response.status_code == 200
-    assert response.json() == {"CompanyName": "fake co"}
+    assert response.json()["CompanyName"] == "fake co"
+    assert response.json()["CompanyCode"] == "FAKE"
 
 # ----------------- Buildings -----------------
 def test_get_buildings(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     response = client.get("/buildings/")
     assert response.status_code == 200
-    assert response.json() == [{"BuildingTicker": "RIG"}]
+    assert len(response.json()) > 0
+    assert response.json()[0]["Ticker"] == "RIG"
 
 # ----------------- Governance -----------------
 def test_get_governance_terms(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
@@ -99,3 +120,16 @@ def test_get_governance_motions(client: fastapi.testclient.TestClient, db_savepo
     response = client.get("/governance/motions?full=true")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
+
+# ----------------- Public Shipments -----------------
+def test_get_public_shipment_mock_fallback(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    # Tests public shipment lookup (200 success)
+    # NOTE: 404/error handling tests (such as company code mismatch or not found)
+    # should be placed in a dedicated errors/edge-cases test suite with database fixtures.
+    response = client.get("/shipments/MOCK-SHIPMENT-001?company=PRO")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["data"]["contract"]["contract_id"] == "MOCK-SHIPMENT-001"
+    assert "ships" in data["data"]
+

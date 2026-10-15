@@ -336,7 +336,7 @@ async def upsert_storage_records(con: asyncpg.Connection, table_name: str, recor
         if key in ("volumecapacity", "weightcapacity", "volumeload", "weightload", "fixed", "tradestore", "rank", "locked")
         else f"{key} = EXCLUDED.{key}"
         for key in keys if key not in ("storageid", "userid")
-    ])
+    ]) + ", updated_at = NOW()"
 
     query = f"""
     INSERT INTO {table_name} ({keys_str})
@@ -405,7 +405,7 @@ async def upsert_storage_items(con: asyncpg.Connection, table_name: str, records
     keys = list(records[0][1].keys())
     keys_str = ", ".join(keys)
     values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys))])
-    set_clause = ", ".join([f"{key} = EXCLUDED.{key}" for key in keys if key != "compositekey"])
+    set_clause = ", ".join([f"{key} = EXCLUDED.{key}" for key in keys if key != "compositekey"]) + ", updated_at = NOW()"
 
     query = f"""
     INSERT INTO {table_name} ({keys_str})

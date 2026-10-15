@@ -75,7 +75,7 @@ def process_corp_production_and_workforce(prod_records: List[Any], wf_records: L
 
         for line in lines:
             orders = line.get("production_orders", [])
-            capacity = int(line.get("capacity", 0))
+            capacity = int(line.get("capacity") or 0)
 
             if not orders or capacity <= 0:
                 continue
@@ -274,7 +274,13 @@ def process_corp_production_and_workforce(prod_records: List[Any], wf_records: L
         loc = rec["location_name"]
         is_subscription_accurate = rec["is_accurate"]
 
-        needs = json.loads(rec["needs"]) if isinstance(rec["needs"], str) else rec["needs"]
+        raw_needs = rec["needs"]
+        if raw_needs is None:
+            needs = []
+        elif isinstance(raw_needs, str):
+            needs = json.loads(raw_needs)
+        else:
+            needs = raw_needs
 
         for need in needs:
             ticker = need["ticker"]

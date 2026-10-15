@@ -62,6 +62,8 @@ async def _upsert_records(
 
     # Create SET clause for update (exclude unique fields)
     set_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col not in unique_fields]
+    if "updated_at" not in columns:
+        set_clauses.append("updated_at = NOW()")
     set_clause_str = ", ".join(set_clauses)
 
     values_placeholders = ", ".join([f"${i + 1}" for i in range(len(columns))])

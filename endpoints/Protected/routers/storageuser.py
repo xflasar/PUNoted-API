@@ -70,7 +70,7 @@ async def get_storages_user(
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
     db_data = await fetch_storages_as_json(db, valid_targets, location)
-    if "Storages" in db_data[0]:
+    if db_data and "Storages" in db_data[0]:
         return db_data[0]["Storages"]
     return []
 

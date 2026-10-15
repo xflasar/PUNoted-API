@@ -179,7 +179,8 @@ async def handle_accounting_currency_balance_data_message(db: Any, raw_payload: 
         bookbalanceamount = EXCLUDED.bookbalanceamount,
         bookbalancecurrencycode = EXCLUDED.bookbalancecurrencycode,
         balanceamount = EXCLUDED.balanceamount,
-        balancecurrencycode = EXCLUDED.balancecurrencycode;
+        balancecurrencycode = EXCLUDED.balancecurrencycode,
+        updated_at = NOW();
     """
 
     try:

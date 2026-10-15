@@ -32,7 +32,7 @@ async def handle_user_data_message(conn, payload: Dict[str, Any]) -> Dict[str, A
         keys = [k for k in user_data.keys() if k != "contexts"]
         keys_str = ", ".join(keys)
         values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys))])
-        set_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in keys if k != "userid"])
+        set_clause = ", ".join([f"{k} = EXCLUDED.{k}" for k in keys if k != "userid"]) + ", updated_at = NOW()"
         values = [user_data[k] for k in keys]
 
         upsert_query = f"""
@@ -79,7 +79,7 @@ async def handle_user_data_message(conn, payload: Dict[str, Any]) -> Dict[str, A
 
         # Step 3: Update the 'users' table with the new userdataid
         main_user_id = payload["userId"]
-        update_user_query = "UPDATE users SET userdataid = $1, is_synchronized = TRUE WHERE accountid = $2;"
+        update_user_query = "UPDATE users SET userdataid = $1, is_synchronized = TRUE, updated_at = NOW() WHERE accountid = $2;"
         await conn.execute(update_user_query, inserted_userid["userid"], main_user_id)
 
         logger.debug(f"Updated user '{main_user_id}' with userdataid '{inserted_userid['userid']}'.")
@@ -103,9 +103,9 @@ async def handle_public_user_data_message(conn, payload: List[Dict[str, Any]]) -
     INSERT INTO public_users_data (
         id, username, company_id, company_name, company_code, 
         subscription_level, highest_tier, pioneer, moderator, 
-        team, translator, active_days_per_week, created_timestamp, gifts
+        team, translator, active_days_per_week, created_timestamp, gifts, updated_at
     ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, NOW()
     )
     ON CONFLICT (id) DO UPDATE SET
         username = EXCLUDED.username,
@@ -120,7 +120,8 @@ async def handle_public_user_data_message(conn, payload: List[Dict[str, Any]]) -
         translator = EXCLUDED.translator,
         active_days_per_week = EXCLUDED.active_days_per_week,
         created_timestamp = EXCLUDED.created_timestamp,
-        gifts = EXCLUDED.gifts;
+        gifts = EXCLUDED.gifts,
+        updated_at = NOW();
     """
 
     try:

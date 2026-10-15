@@ -205,7 +205,7 @@ async def evaluate_user_telemetry_notifications(
                 if target_order_ids:
                     comex_fulfilled = await conn.fetch(
                         """
-                        SELECT c.orderid, c.type, c.amount, c.initialamount, c.limitamount, c.limitcurrency, c.status,
+                        SELECT c.orderid, c.type, c.amount, c.initialamount, (FLOOR(c.limitamount * 100) / 100) AS limitamount, c.limitcurrency, c.status,
                                COALESCE(m.ticker, c.materialid) as materialticker
                         FROM comex_trade_orders c
                         LEFT JOIN materials m ON m.materialid = c.materialid
@@ -218,7 +218,7 @@ async def evaluate_user_telemetry_notifications(
             else:
                 comex_fulfilled = await conn.fetch(
                     """
-                    SELECT c.orderid, c.type, c.amount, c.initialamount, c.limitamount, c.limitcurrency, c.status,
+                    SELECT c.orderid, c.type, c.amount, c.initialamount, (FLOOR(c.limitamount * 100) / 100) AS limitamount, c.limitcurrency, c.status,
                            COALESCE(m.ticker, c.materialid) as materialticker
                     FROM comex_trade_orders c
                     LEFT JOIN materials m ON m.materialid = c.materialid
@@ -280,7 +280,7 @@ async def evaluate_user_telemetry_notifications(
 
                     if ticker and target > 0:
                         price_row = await conn.fetchrow(
-                            "SELECT price FROM comex_trade_orders WHERE materialticker = $1 AND exchange = $2 ORDER BY created_at DESC LIMIT 1;",
+                            "SELECT (FLOOR(price * 100) / 100) AS price FROM comex_trade_orders WHERE materialticker = $1 AND exchange = $2 ORDER BY created_at DESC LIMIT 1;",
                             ticker, exchange
                         )
                         if price_row and price_row["price"]:
@@ -338,19 +338,22 @@ async def evaluate_user_telemetry_notifications(
                 mat_targets = site_cfg.get("material_target_days", {})
                 default_site_days = float(site_cfg.get("global_target_days", rules.get("supply_days_threshold", 1.0) or 1.0))
 
-                stored_items = await conn.fetch(
-                    """
-                    SELECT materialid, quantity FROM storage_items 
-                    WHERE storageid IN (SELECT storageid FROM storages WHERE addressableid = $1 OR userid = $2);
-                    """,
-                    site["siteid"], user_accountid
-                )
-                stored_map = {r["materialid"]: r["quantity"] for r in stored_items}
-
                 if mat_targets and isinstance(mat_targets, dict):
+                    stored_items = await conn.fetch(
+                        """
+                        SELECT COALESCE(m.ticker, si.materialid) as material_key, si.quantity 
+                        FROM storage_items si
+                        JOIN storages st ON si.storageid = st.storageid
+                        LEFT JOIN materials m ON m.materialid = si.materialid
+                        WHERE st.addressableid = $1 OR st.userid = $2;
+                        """,
+                        site["siteid"], user_accountid
+                    )
+                    stored_map = {r["material_key"].upper(): float(r["quantity"] or 0) for r in stored_items if r["material_key"]}
+
                     low_materials = []
                     for mat_ticker, target_days in mat_targets.items():
-                        mat_amount = float(stored_map.get(mat_ticker, 0))
+                        mat_amount = stored_map.get(mat_ticker.upper(), 0.0)
                         target_d = float(target_days)
                         if mat_amount < (target_d * 10):
                             days_left = round(mat_amount / 10.0, 1) if target_d > 0 else 0
@@ -474,13 +477,17 @@ async def evaluate_user_telemetry_notifications(
 
 async def evaluate_all_users_notifications(pool):
     """
-    Periodic background task running every 6 hours (or once daily) across all active users.
-    Ensures contract conditions transitioning into due-date threshold windows (3d, 2d, 1d, today, overdue)
-    get evaluated automatically with deduplication checks.
+    Periodic background task running across active users (logged in last 7 days).
     """
     try:
         async with pool.acquire() as conn:
-            users = await conn.fetch("SELECT DISTINCT accountid FROM users WHERE accountid IS NOT NULL AND accountid != '';")
+            users = await conn.fetch("""
+                SELECT DISTINCT u.accountid 
+                FROM users u 
+                WHERE u.accountid IS NOT NULL 
+                  AND u.accountid != ''
+                  AND u.xata_updatedat >= NOW() - INTERVAL '7 days';
+            """)
             for u in users:
                 acc_id = str(u["accountid"])
                 try:
