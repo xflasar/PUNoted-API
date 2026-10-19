@@ -12,6 +12,7 @@ from models.corp_production_models import (
     ProductionSummaryItem,
 )
 from repositories.corp_production_repo import (
+    build_recipe_map,
     fetch_corp_flat_orders,
     fetch_corp_workforce,
     fetch_recipe_components,
@@ -51,27 +52,13 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
             flat_orders = await fetch_corp_flat_orders(conn, proxy_id)
 
             if flat_orders:
-                template_ids = list(set(str(row["recipeid"]) for row in flat_orders if row["recipeid"]))
+                pairs = {(str(row["recipeid"]), str(row["productionlineid"])) for row in flat_orders if row["recipeid"]}
 
                 # --- 3. Fetch Components ---
-                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, template_ids)
+                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, pairs)
 
                 # --- 4. Build Recipe Map ---
-                recipe_map = {}
-                for r in core_rows:
-                    recipe_map[r["recipe_id"]] = {
-                        "duration": r["duration"],
-                        "inputs": [],
-                        "outputs": [],
-                    }
-                for i in input_rows:
-                    k = i["recipe_id"]
-                    if k in recipe_map:
-                        recipe_map[k]["inputs"].append({"ticker": i["ticker"], "factor": i["factor"]})
-                for o in output_rows:
-                    k = o["recipe_id"]
-                    if k in recipe_map:
-                        recipe_map[k]["outputs"].append({"ticker": o["ticker"], "factor": o["factor"]})
+                recipe_map = build_recipe_map(core_rows, input_rows, output_rows)
 
                 # --- 5. Reconstruct Lines ---
                 sites_map = {}
@@ -93,7 +80,7 @@ async def build_corp_production_response(conn, user_id: str, debug=False) -> Lis
                             "efficiency": row.get("efficiency", 1.0),
                         }
 
-                    r_key = str(row["recipeid"]) if row.get("recipeid") else ""
+                    r_key = (str(row["recipeid"]), lid) if row.get("recipeid") else None
                     # Deep copy prevents in-place list mutation across orders and players
                     rec_obj = copy.deepcopy(recipe_map.get(r_key, {})) if r_key in recipe_map else {}
                     if rec_obj and row.get("building_ticker"):
@@ -318,23 +305,11 @@ async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[s
             flat_orders = await fetch_corp_flat_orders(conn, proxy_id)
 
             if flat_orders:
-                template_ids = list(set(str(row["recipeid"]) for row in flat_orders if row["recipeid"]))
+                pairs = {(str(row["recipeid"]), str(row["productionlineid"])) for row in flat_orders if row["recipeid"]}
 
-                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, template_ids)
+                core_rows, input_rows, output_rows = await fetch_recipe_components(conn, pairs)
 
-                recipe_map = {}
-                for r in core_rows:
-                    recipe_map[r["recipe_id"]] = {
-                        "duration": r["duration"], "inputs": [], "outputs": []
-                    }
-                for i in input_rows:
-                    k = i["recipe_id"]
-                    if k in recipe_map:
-                        recipe_map[k]["inputs"].append({"ticker": i["ticker"], "factor": i["factor"]})
-                for o in output_rows:
-                    k = o["recipe_id"]
-                    if k in recipe_map:
-                        recipe_map[k]["outputs"].append({"ticker": o["ticker"], "factor": o["factor"]})
+                recipe_map = build_recipe_map(core_rows, input_rows, output_rows)
 
                 sites_map = {}
                 for row in flat_orders:
@@ -353,7 +328,7 @@ async def build_corp_production_flat_response(conn, user_id: str) -> List[Dict[s
                             "production_orders": [],
                             "efficiency": row.get("efficiency", 1.0),
                         }
-                    r_key = str(row["recipeid"]) if row.get("recipeid") else ""
+                    r_key = (str(row["recipeid"]), lid) if row.get("recipeid") else None
                     rec_obj = copy.deepcopy(recipe_map.get(r_key, {})) if r_key in recipe_map else {}
                     if rec_obj and row.get("building_ticker"):
                         rec_obj["building"] = row["building_ticker"]

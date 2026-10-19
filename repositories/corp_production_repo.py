@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import Any, Dict, Iterable, Tuple
 
 # --- QUERY 1: Fetch Flat Orders ---
 SQL_FETCH_CORP_FLAT_ORDERS = """
@@ -78,36 +78,52 @@ WHERE (po.completion IS NULL OR po.completion > NOW());
 """
 
 # --- SPLIT RECIPE QUERIES ---
+# Recipe rows are stored once per production line (duration and factors as that line runs the
+# recipe), so they are fetched by (template, line) pair, as the single-user endpoint does. Matching
+# on the template alone returns one row per line in the whole database.
+# $1: template ids, $2: line ids, paired by position.
 
 # 1. Core Info
 SQL_FETCH_RECIPES_CORE = """
-SELECT DISTINCT ON (r.productiontemplateid)
-    r.productiontemplateid as recipe_id, 
+WITH Targets AS (
+    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
+)
+SELECT
+    r.productiontemplateid::text as recipe_id,
+    r.productionlineid::text as line_id,
     r.duration
 FROM production_recipes r
-WHERE r.productiontemplateid = ANY($1::text[]);
+JOIN Targets t ON r.productiontemplateid::text = t.t_id AND r.productionlineid::text = t.l_id;
 """
 
 # 2. Inputs
 SQL_FETCH_RECIPE_INPUTS = """
-SELECT 
-    i.productiontemplateid as recipe_id, 
-    m.ticker, 
+WITH Targets AS (
+    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
+)
+SELECT
+    i.productiontemplateid::text as recipe_id,
+    i.productionlineid::text as line_id,
+    m.ticker,
     i.factor
 FROM production_recipe_input_factors i
-JOIN materials m ON m.materialid = i.materialid
-WHERE i.productiontemplateid = ANY($1::text[]);
+JOIN Targets t ON i.productiontemplateid::text = t.t_id AND i.productionlineid::text = t.l_id
+JOIN materials m ON m.materialid = i.materialid;
 """
 
 # 3. Outputs
 SQL_FETCH_RECIPE_OUTPUTS = """
-SELECT 
-    o.productiontemplateid as recipe_id, 
-    m.ticker, 
+WITH Targets AS (
+    SELECT unnest($1::text[]) as t_id, unnest($2::text[]) as l_id
+)
+SELECT
+    o.productiontemplateid::text as recipe_id,
+    o.productionlineid::text as line_id,
+    m.ticker,
     o.factor
 FROM production_recipe_output_factors o
-JOIN materials m ON m.materialid = o.materialid
-WHERE o.productiontemplateid = ANY($1::text[]);
+JOIN Targets t ON o.productiontemplateid::text = t.t_id AND o.productionlineid::text = t.l_id
+JOIN materials m ON m.materialid = o.materialid;
 """
 
 SQL_FETCH_CORP_WORKFORCE = """
@@ -167,11 +183,28 @@ async def fetch_corp_flat_orders(conn: Any, user_id: str):
     return await conn.fetch(SQL_FETCH_CORP_FLAT_ORDERS, user_id)
 
 
-async def fetch_recipe_components(conn: Any, template_ids: List[str]):
-    core = await conn.fetch(SQL_FETCH_RECIPES_CORE, template_ids)
-    inputs = await conn.fetch(SQL_FETCH_RECIPE_INPUTS, template_ids)
-    outputs = await conn.fetch(SQL_FETCH_RECIPE_OUTPUTS, template_ids)
+async def fetch_recipe_components(conn: Any, pairs: Iterable[Tuple[str, str]]):
+    """Recipe rows for (template id, production line id) pairs."""
+    pairs = list(pairs)
+    template_ids = [t for t, _ in pairs]
+    line_ids = [line for _, line in pairs]
+    core = await conn.fetch(SQL_FETCH_RECIPES_CORE, template_ids, line_ids)
+    inputs = await conn.fetch(SQL_FETCH_RECIPE_INPUTS, template_ids, line_ids)
+    outputs = await conn.fetch(SQL_FETCH_RECIPE_OUTPUTS, template_ids, line_ids)
     return core, inputs, outputs
+
+
+def build_recipe_map(core_rows: Iterable[Any], input_rows: Iterable[Any], output_rows: Iterable[Any]) -> Dict[Tuple[str, str], dict]:
+    """{(template id, line id): {"duration", "inputs", "outputs"}} from fetch_recipe_components."""
+    recipe_map: Dict[Tuple[str, str], dict] = {}
+    for r in core_rows:
+        recipe_map[(r["recipe_id"], r["line_id"])] = {"duration": r["duration"], "inputs": [], "outputs": []}
+    for rows, side in ((input_rows, "inputs"), (output_rows, "outputs")):
+        for f in rows:
+            k = (f["recipe_id"], f["line_id"])
+            if k in recipe_map:
+                recipe_map[k][side].append({"ticker": f["ticker"], "factor": f["factor"]})
+    return recipe_map
 
 
 async def fetch_corp_workforce(conn: Any, user_id: str):
