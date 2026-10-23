@@ -1,6 +1,7 @@
 import logging
 from typing import Any, Dict, Optional
 from helpers.corp_production_calc import process_corp_production_and_workforce
+from repositories.corp_production_repo import build_recipe_map, fetch_recipe_components
 
 logger = logging.getLogger(__name__)
 
@@ -90,59 +91,17 @@ async def compute_and_broadcast_site_delta(db, global_ws_manager, site_id: str, 
                         "production_orders": [],
                     }
 
-            recipe_ids = list(set(str(r["recipe_id"]) for r in lines_rows if r.get("recipe_id")))
+            pairs = {(str(r["recipe_id"]), str(r["line_id"])) for r in lines_rows if r.get("recipe_id")}
 
-            if recipe_ids:
-                # Fetch recipe components
-                recipe_map = {}
-                c_rows = await conn.fetch(
-                    """
-                    SELECT DISTINCT ON (productiontemplateid::text) productiontemplateid::text as recipe_id, duration
-                    FROM production_recipes
-                    WHERE productiontemplateid::text = ANY($1::text[]);
-                    """,
-                    recipe_ids
-                )
-                for r in c_rows:
-                    recipe_map[r['recipe_id']] = {
-                        "duration": r["duration"],
-                        "inputs": [],
-                        "outputs": [],
-                    }
-
-                in_rows = await conn.fetch(
-                    """
-                    SELECT i.productiontemplateid::text as recipe_id, m.ticker, i.factor
-                    FROM production_recipe_input_factors i
-                    JOIN materials m ON m.materialid = i.materialid
-                    WHERE i.productiontemplateid::text = ANY($1::text[]);
-                    """,
-                    recipe_ids
-                )
-                for i in in_rows:
-                    k = i['recipe_id']
-                    if k in recipe_map:
-                        recipe_map[k]["inputs"].append({"ticker": i["ticker"], "factor": i["factor"]})
-
-                out_rows = await conn.fetch(
-                    """
-                    SELECT o.productiontemplateid::text as recipe_id, m.ticker, o.factor
-                    FROM production_recipe_output_factors o
-                    JOIN materials m ON m.materialid = o.materialid
-                    WHERE o.productiontemplateid::text = ANY($1::text[]);
-                    """,
-                    recipe_ids
-                )
-                for o in out_rows:
-                    k = o['recipe_id']
-                    if k in recipe_map:
-                        recipe_map[k]["outputs"].append({"ticker": o["ticker"], "factor": o["factor"]})
+            if pairs:
+                # Fetch recipe components, per (template, line)
+                recipe_map = build_recipe_map(*await fetch_recipe_components(conn, pairs))
 
                 # Reconstruct line orders
                 for r in lines_rows:
                     lid = r["line_id"]
                     if r["order_id"] and r["recipe_id"]:
-                        r_key = str(r['recipe_id'])
+                        r_key = (str(r['recipe_id']), str(lid))
                         lines_map[lid]["production_orders"].append({
                             "order_id": r["order_id"],
                             "recurring": r.get("recurring"),
