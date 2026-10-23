@@ -201,52 +201,77 @@ async def evaluate_user_telemetry_notifications(
         if rules.get("cx_enabled", True):
             # Check COMEX trade orders that are 100% fulfilled
             comex_fulfilled = []
-            if target_order_ids is not None:
-                if target_order_ids:
-                    comex_fulfilled = await conn.fetch(
-                        """
-                        SELECT c.orderid, c.type, c.amount, c.initialamount, (FLOOR(c.limitamount * 100) / 100) AS limitamount, c.limitcurrency, c.status,
-                               COALESCE(m.ticker, c.materialid) as materialticker
-                        FROM comex_trade_orders c
-                        LEFT JOIN materials m ON m.materialid = c.materialid
-                        WHERE (c.userid = $1 OR c.userid = $2)
-                          AND (c.status = 'FULFILLED' OR c.amount = 0)
-                          AND c.orderid = ANY($3);
-                        """,
-                        user_accountid, userdata_id, target_order_ids
-                    )
-            else:
+            if target_order_ids:
                 comex_fulfilled = await conn.fetch(
                     """
-                    SELECT c.orderid, c.type, c.amount, c.initialamount, (FLOOR(c.limitamount * 100) / 100) AS limitamount, c.limitcurrency, c.status,
+                    SELECT c.orderid, c.type, c.amount, c.initialamount, c.limitamount, c.limitcurrency, c.status,
+                           c.created, c.xata_updatedat,
                            COALESCE(m.ticker, c.materialid) as materialticker
                     FROM comex_trade_orders c
                     LEFT JOIN materials m ON m.materialid = c.materialid
                     WHERE (c.userid = $1 OR c.userid = $2)
                       AND (c.status = 'FULFILLED' OR c.amount = 0)
-                      AND c.xata_updatedat >= NOW() - INTERVAL '2 minutes';
+                      AND c.orderid = ANY($3);
+                    """,
+                    user_accountid, userdata_id, target_order_ids
+                )
+            elif target_order_ids is None:
+                comex_fulfilled = await conn.fetch(
+                    """
+                    SELECT c.orderid, c.type, c.amount, c.initialamount, c.limitamount, c.limitcurrency, c.status,
+                           c.created, c.xata_updatedat,
+                           COALESCE(m.ticker, c.materialid) as materialticker
+                    FROM comex_trade_orders c
+                    LEFT JOIN materials m ON m.materialid = c.materialid
+                    WHERE (c.userid = $1 OR c.userid = $2)
+                      AND (c.status = 'FULFILLED' OR c.amount = 0)
+                      AND c.xata_updatedat >= NOW() - INTERVAL '30 minutes'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM user_notifications un 
+                          WHERE un.dedup_key = 'comex_order_fulfilled_' || c.orderid
+                      );
                     """,
                     user_accountid, userdata_id
                 )
+
             for ord_row in comex_fulfilled:
+                # 1. Skip orders fulfilled in less than 60 seconds (instant market fill while player is active)
+                created_dt = ord_row.get("created")
+                updated_dt = ord_row.get("xata_updatedat")
+                if created_dt and updated_dt:
+                    try:
+                        c_ts = created_dt.timestamp() if hasattr(created_dt, "timestamp") else 0
+                        u_ts = updated_dt.timestamp() if hasattr(updated_dt, "timestamp") else 0
+                        if u_ts and c_ts and (u_ts - c_ts) < 60:
+                            continue
+                    except Exception as e:
+                        logger.debug(f"Could not compute fill duration for order {ord_row.get('orderid')}: {e}")
+
                 dedup = f"comex_order_fulfilled_{ord_row['orderid']}"
-                order_type = (ord_row["type"] or "TRADE").upper()
+                raw_type = (ord_row["type"] or "TRADE").upper()
+                action_word = "buy" if "BUY" in raw_type else ("sell" if "SELL" in raw_type else raw_type.lower())
                 ticker = ord_row["materialticker"] or "Material"
                 total_qty = ord_row["initialamount"] or 0
-                price = ord_row["limitamount"] or 0
+                price_val = float(ord_row["limitamount"] or 0)
                 currency = ord_row["limitcurrency"] or ""
+
+                # Format price to max 2 decimals (no trailing .00 for integers)
+                if price_val.is_integer():
+                    formatted_price = f"{int(price_val)}"
+                else:
+                    formatted_price = f"{price_val:.2f}".rstrip("0").rstrip(".")
 
                 await create_user_notification(
                     conn, user_accountid, "cx", "comex_order_filled",
-                    f"COMEX {order_type} Order Filled: {total_qty} {ticker}",
-                    f"Your {order_type.lower()} order for {total_qty} {ticker} @ {price} {currency} has been 100% fulfilled.",
+                    f"COMEX {raw_type} Order Filled: {total_qty} {ticker}",
+                    f"Your {action_word} order for {total_qty} {ticker} @ {formatted_price} {currency} has been 100% fulfilled.",
                     dedup_key=dedup,
                     data={
                         "orderid": ord_row["orderid"],
                         "ticker": ticker,
-                        "type": order_type,
+                        "type": raw_type,
                         "quantity": total_qty,
-                        "price": price,
+                        "price": round(price_val, 2),
                         "currency": currency,
                     }
                 )
