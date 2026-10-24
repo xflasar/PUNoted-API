@@ -7,6 +7,26 @@ from typing import Any, Dict, List
 MS_PER_DAY = 1000 * 60 * 60 * 24.0
 
 
+def split_line_orders(orders: List[Any]) -> Dict[str, List[Any]]:
+    """Split a production line's orders into one-off batches and the recurring cycle.
+
+    The game re-adds a recurring order to the bottom of the queue when it starts (APEX handbook FAQ,
+    "How do recurring orders work?"). A looping line therefore always has its queued copies, and they
+    are the cycle. Recurring orders that are running with no copy queued were left to wind down: they
+    finish once and do not come back, so they count as one-off orders, not as a daily rate.
+    """
+    running = [o for o in orders if o.get("completion")]
+    queued = [o for o in orders if not o.get("completion")]
+    cycle = [o for o in queued if o.get("recurring")]
+    recurring_running = [o for o in running if o.get("recurring")]
+    return {
+        "batch_active": [o for o in running if not o.get("recurring")] + ([] if cycle else recurring_running),
+        "batch_queued": [o for o in queued if not o.get("recurring")],
+        "recurring_active": recurring_running if cycle else [],
+        "cycle": cycle,
+    }
+
+
 def process_corp_production_and_workforce(prod_records: List[Any], wf_records: List[Any]) -> Dict[str, Any]:
     """
     1. Iterates Production Data.
@@ -60,9 +80,11 @@ def process_corp_production_and_workforce(prod_records: List[Any], wf_records: L
             if not orders or capacity <= 0:
                 continue
 
-            # Added Non-recurring calculations
-            batch_active_orders = [o for o in orders if not o.get("recurring") and o.get("completion")]
-            batch_queued_orders = [o for o in orders if not o.get("recurring") and not o.get("completion")]
+            split = split_line_orders(orders)
+
+            # One-off orders, including recurring orders left running with no copy queued
+            batch_active_orders = split["batch_active"]
+            batch_queued_orders = split["batch_queued"]
 
             for batch_order, is_active in [(o, True) for o in batch_active_orders] + [(o, False) for o in batch_queued_orders]:
                 b_recipe = batch_order.get("production_recipe") or {}
@@ -94,8 +116,8 @@ def process_corp_production_and_workforce(prod_records: List[Any], wf_records: L
                             corp_data[in_ticker]["batch_cons_queued"] += qty
                             consumer_entry["batch_queued"] += qty
 
-            active_orders = [o for o in orders if o.get("recurring") and o.get("completion")]
-            template_orders = [o for o in orders if o.get("recurring") and not o.get("completion")]
+            active_orders = split["recurring_active"]
+            template_orders = split["cycle"]
 
             if not template_orders:
                 continue
