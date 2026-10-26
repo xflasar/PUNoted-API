@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime
 from typing import Any, Dict
 
 from db import Database
@@ -181,8 +182,7 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
     LEFT JOIN sites ON st.addressableid = sites.siteid
     LEFT JOIN planets site_planet ON sites.addressplanetid = site_planet.planetid
     LEFT JOIN systems site_sys ON sites.addresssystemid = site_sys.systemid
-    LEFT JOIN warehouses wh ON st.addressableid = wh.warehouseid
-    LEFT JOIN stations stat ON wh.warehouseid = stat.warehouseid
+    LEFT JOIN stations stat ON st.addressableid = stat.warehouseid
     LEFT JOIN systems stat_sys ON stat.systemid = stat_sys.systemid
     LEFT JOIN systems target_sys ON cc.destinationsystemid = target_sys.systemid
     LEFT JOIN planets target_planet ON cc.destinationplanetid = target_planet.planetid
@@ -193,9 +193,9 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
 
     WHERE 
       (c.userid = $1 OR (c.partnerid IS NOT NULL AND c.partnerid = $2))
-      AND c.status NOT IN ('REJECTED', 'TERMINATED', 'FULFILLED', 'BREACHED', 'CANCELLED')
-      AND c.duedate < (NOW() + interval '5 days')
-      AND c.partnername NOT ILIKE '%Distribution Manager%'
+      AND c.status NOT IN ('REJECTED', 'TERMINATED', 'FULFILLED', 'CANCELLED', 'CLOSED')
+      AND (c.partnername IS NULL OR c.partnername NOT ILIKE '%Distribution Manager%')
+      AND COALESCE(c.extensiondeadline, c.duedate, c.date + interval '7 days') >= (NOW() - interval '3 days')
       AND EXISTS (
           SELECT 1 FROM contract_conditions sub_cc 
           WHERE sub_cc.contractid = c.id AND sub_cc.type = 'DELIVERY_SHIPMENT'
@@ -281,6 +281,7 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
 
         # 1. Group contract conditions into aggregated contracts dictionary
         contracts_dict = {}
+        seen_conditions = set()
         ship_ids = set()
 
         for r in contract_rows:
@@ -306,24 +307,27 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
                     "items": []
                 }
 
-            contracts_dict[cid]["items"].append({
-                "condition_id": r["condition_id"],
-                "index": r["condition_index"],
-                "type": r["condition_type"],
-                "status": r["condition_status"],
-                "price": float(r["price"]) if r["price"] is not None else 0,
-                "currency": r["currency"],
-                "item_id": r["item_id"],
-                "location_type": r["location_type"],
-                "location_name": r["location_name"],
-                "system_name": r["system_name"],
-                "systemid": r["systemid"],
-                "planetid": r["planetid"],
-                "shipid": r["shipid"],
-                "ship_name": r["ship_name"],
-                "destination_label": r["destination_label"],
-                "origin_label": r["origin_label"]
-            })
+            cond_key = (cid, r["condition_id"])
+            if cond_key not in seen_conditions:
+                seen_conditions.add(cond_key)
+                contracts_dict[cid]["items"].append({
+                    "condition_id": r["condition_id"],
+                    "index": r["condition_index"],
+                    "type": r["condition_type"],
+                    "status": r["condition_status"],
+                    "price": float(r["price"]) if r["price"] is not None else 0,
+                    "currency": r["currency"],
+                    "item_id": r["item_id"],
+                    "location_type": r["location_type"],
+                    "location_name": r["location_name"],
+                    "system_name": r["system_name"],
+                    "systemid": r["systemid"],
+                    "planetid": r["planetid"],
+                    "shipid": r["shipid"],
+                    "ship_name": r["ship_name"],
+                    "destination_label": r["destination_label"],
+                    "origin_label": r["origin_label"]
+                })
 
         # 2. Fetch ships if any items reside in a ship
         ships_dict = {}
@@ -339,12 +343,28 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
                     fid = seg["flight_id"]
                     if fid not in segments_by_flight:
                         segments_by_flight[fid] = []
+                    dep = seg["departure"]
+                    arr = seg["arrival"]
+                    dep_val = (
+                        dep.isoformat()
+                        if isinstance(dep, datetime)
+                        else dep
+                        if dep is not None
+                        else None
+                    )
+                    arr_val = (
+                        arr.isoformat()
+                        if isinstance(arr, datetime)
+                        else arr
+                        if arr is not None
+                        else None
+                    )
                     segments_by_flight[fid].append({
                         "segment_index": seg["segment_index"],
                         "origin_system_id": seg["origin_system_id"],
                         "destination_system_id": seg["destination_system_id"],
-                        "departure": seg["departure"].isoformat() if seg["departure"] else None,
-                        "arrival": seg["arrival"].isoformat() if seg["arrival"] else None,
+                        "departure": dep_val,
+                        "arrival": arr_val,
                         "duration": seg["duration"],
                         "origin_orbit_data": json.loads(seg["origin_orbit_data"]) if isinstance(seg["origin_orbit_data"], str) else seg["origin_orbit_data"],
                         "destination_orbit_data": json.loads(seg["destination_orbit_data"]) if isinstance(seg["destination_orbit_data"], str) else seg["destination_orbit_data"],
@@ -508,6 +528,16 @@ async def fetch_public_shipment_by_local_id(db: Database, identifier: str, compa
     clean_identifier = identifier.strip()
     clean_company = company_code.strip().upper() if company_code else None
 
+    # Support {localid}:{companycode} format directly in identifier
+    if not clean_company and ":" in clean_identifier:
+        parts = clean_identifier.split(":", 1)
+        clean_identifier = parts[0].strip()
+        clean_company = parts[1].strip().upper() if parts[1].strip() else None
+
+    # Company code is strictly required for public security
+    if not clean_company or not clean_identifier:
+        return None
+
     contract_query = """
     SELECT 
         c.id as contract_id,
@@ -570,8 +600,7 @@ async def fetch_public_shipment_by_local_id(db: Database, identifier: str, compa
     LEFT JOIN sites ON st.addressableid = sites.siteid
     LEFT JOIN planets site_planet ON sites.addressplanetid = site_planet.planetid
     LEFT JOIN systems site_sys ON sites.addresssystemid = site_sys.systemid
-    LEFT JOIN warehouses wh ON st.addressableid = wh.warehouseid
-    LEFT JOIN stations stat ON wh.warehouseid = stat.warehouseid
+    LEFT JOIN stations stat ON st.addressableid = stat.warehouseid
     LEFT JOIN systems stat_sys ON stat.systemid = stat_sys.systemid
     LEFT JOIN systems target_sys ON cc.destinationsystemid = target_sys.systemid
     LEFT JOIN planets target_planet ON cc.destinationplanetid = target_planet.planetid
@@ -582,8 +611,7 @@ async def fetch_public_shipment_by_local_id(db: Database, identifier: str, compa
 
     WHERE (c.id = $1 OR c.localid = $1)
       AND (
-          $2::text IS NULL
-          OR UPPER(c.partnercode) = $2
+          UPPER(c.partnercode) = $2
           OR UPPER(creator_cd.companycode) = $2
       )
       AND EXISTS (
@@ -685,28 +713,32 @@ async def fetch_public_shipment_by_local_id(db: Database, identifier: str, compa
         }
 
         ship_ids = set()
+        seen_conditions = set()
         for r in rows:
             if r["shipid"]:
                 ship_ids.add(r["shipid"])
 
-            contract_data["items"].append({
-                "condition_id": r["condition_id"],
-                "index": r["condition_index"],
-                "type": r["condition_type"],
-                "status": r["condition_status"],
-                "price": float(r["price"]) if r["price"] is not None else 0,
-                "currency": r["currency"],
-                "item_id": r["item_id"],
-                "location_type": r["location_type"],
-                "location_name": r["location_name"],
-                "system_name": r["system_name"],
-                "systemid": r["systemid"],
-                "planetid": r["planetid"],
-                "shipid": r["shipid"],
-                "ship_name": r["ship_name"],
-                "destination_label": r["destination_label"],
-                "origin_label": r["origin_label"]
-            })
+            cond_id = r["condition_id"]
+            if cond_id not in seen_conditions:
+                seen_conditions.add(cond_id)
+                contract_data["items"].append({
+                    "condition_id": r["condition_id"],
+                    "index": r["condition_index"],
+                    "type": r["condition_type"],
+                    "status": r["condition_status"],
+                    "price": float(r["price"]) if r["price"] is not None else 0,
+                    "currency": r["currency"],
+                    "item_id": r["item_id"],
+                    "location_type": r["location_type"],
+                    "location_name": r["location_name"],
+                    "system_name": r["system_name"],
+                    "systemid": r["systemid"],
+                    "planetid": r["planetid"],
+                    "shipid": r["shipid"],
+                    "ship_name": r["ship_name"],
+                    "destination_label": r["destination_label"],
+                    "origin_label": r["origin_label"]
+                })
 
         ships_dict = {}
         if ship_ids:
@@ -720,12 +752,28 @@ async def fetch_public_shipment_by_local_id(db: Database, identifier: str, compa
                     fid = seg["flight_id"]
                     if fid not in segments_by_flight:
                         segments_by_flight[fid] = []
+                    dep = seg["departure"]
+                    arr = seg["arrival"]
+                    dep_val = (
+                        dep.isoformat()
+                        if isinstance(dep, datetime)
+                        else dep
+                        if dep is not None
+                        else None
+                    )
+                    arr_val = (
+                        arr.isoformat()
+                        if isinstance(arr, datetime)
+                        else arr
+                        if arr is not None
+                        else None
+                    )
                     segments_by_flight[fid].append({
                         "segment_index": seg["segment_index"],
                         "origin_system_id": seg["origin_system_id"],
                         "destination_system_id": seg["destination_system_id"],
-                        "departure": seg["departure"].isoformat() if seg["departure"] else None,
-                        "arrival": seg["arrival"].isoformat() if seg["arrival"] else None,
+                        "departure": dep_val,
+                        "arrival": arr_val,
                         "duration": seg["duration"],
                         "origin_orbit_data": json.loads(seg["origin_orbit_data"]) if isinstance(seg["origin_orbit_data"], str) else seg["origin_orbit_data"],
                         "destination_orbit_data": json.loads(seg["destination_orbit_data"]) if isinstance(seg["destination_orbit_data"], str) else seg["destination_orbit_data"],

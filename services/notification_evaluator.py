@@ -255,7 +255,7 @@ async def evaluate_user_telemetry_notifications(
                 price_val = float(ord_row["limitamount"] or 0)
                 currency = ord_row["limitcurrency"] or ""
 
-                # Format price to max 2 decimals (no trailing .00 for integers)
+                # Format price to max 2 decimals
                 if price_val.is_integer():
                     formatted_price = f"{int(price_val)}"
                 else:
