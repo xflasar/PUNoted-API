@@ -14,7 +14,7 @@ shipments_router = APIRouter()
 @shipments_router.get(
     "/{local_id}",
     summary="Public Shipment Lookup",
-    description="Public lookup for a single shipment contract by local_id or contract_id. Optional company query parameter verifies partner or creator company code.",
+    description="Public lookup for a single shipment contract by local_id or contract_id. Requires company code (via {local_id}:{company} or ?company= parameter) matching either partner.",
 )
 @limiter.limit("60/minute", key_func=get_auth_key)
 @limiter.limit("30/minute", key_func=get_public_key)
