@@ -73,6 +73,16 @@ CREATE TEMP TABLE corporation_shareholders (
     companyname text
 ) ON COMMIT DROP;
 
+CREATE TEMP TABLE user_contexts (
+    userid text NOT NULL,
+    contextid text NOT NULL,
+    type text NOT NULL,
+    action_roles jsonb,
+    created_at timestamptz DEFAULT now(),
+    updated_at timestamptz DEFAULT now(),
+    PRIMARY KEY (userid, contextid)
+) ON COMMIT DROP;
+
 CREATE TEMP TABLE corporations (
     id text PRIMARY KEY,
     name text NOT NULL,
@@ -283,6 +293,7 @@ CREATE TABLE IF NOT EXISTS storages (
     xata_id TEXT,
     xata_updatedat TIMESTAMP WITH TIME ZONE DEFAULT now() NOT NULL,
     xata_version INTEGER DEFAULT 0 NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
     PRIMARY KEY (storageid)
 );
 

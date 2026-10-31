@@ -137,6 +137,11 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
     main.app.state.db = mock_db
     main.v1_app.state.db = mock_db
     main.db.pool = mock_db.pool
+    main.db.poolInit = True
+    main.db.fetch_one = mock_db.fetch_one
+    main.db.fetch_rows = mock_db.fetch_rows
+    main.db.execute = mock_db.execute
+    main.db.executemany = mock_db.executemany
     return connection, transaction
 
 async def cleanup_test_db(connection: asyncpg.Connection, transaction: asyncpg.transaction.Transaction) -> None:

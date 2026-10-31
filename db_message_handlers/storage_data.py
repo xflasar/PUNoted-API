@@ -90,6 +90,34 @@ async def handle_storage_data_message(db, raw_payload: Dict[str, Any]) -> Dict[s
     start_time = time.perf_counter()
     logger.debug("Starting processing storage data.")
 
+    # Guard against non-company context (e.g. planetary government, admin center).
+    # Non-company context sends a different entity's storages, which would wipe the player's personal storages.
+    msg_context = raw_payload.get("context")
+    if msg_context:
+        ctx_str = str(msg_context).strip()
+        ctx_upper = ctx_str.upper()
+        if ctx_upper in ("GOVERNMENT", "ADMINCENTER"):
+            logger.info(f"Skipping storage update in non-company context '{msg_context}' for user {raw_payload.get('userId')}")
+            return {"success": True, "message": "Ignored non-company storage update."}
+
+        # Check if context matches a known non-company context for this user in user_contexts
+        raw_uid = raw_payload.get("userId")
+        if raw_uid:
+            non_company_ctx = await db.fetch_one(
+                """
+                SELECT contextid FROM user_contexts 
+                WHERE userid = (SELECT userdataid FROM users WHERE accountid = $1)
+                  AND contextid = $2
+                  AND UPPER(type) != 'COMPANY'
+                LIMIT 1;
+                """,
+                raw_uid,
+                ctx_str,
+            )
+            if non_company_ctx:
+                logger.info(f"Skipping storage update matching non-company user_context '{ctx_str}' for user {raw_uid}")
+                return {"success": True, "message": "Ignored non-company storage update."}
+
     converted_data = raw_payload.get("data")
     full_refresh = converted_data.get("full_refresh", False)
     storage_records = converted_data.get("storages", [])
@@ -335,7 +363,7 @@ async def upsert_storage_records(con: asyncpg.Connection, table_name: str, recor
         else f"{key} = COALESCE(EXCLUDED.{key}, {table_name}.{key})"
         if key in ("volumecapacity", "weightcapacity", "volumeload", "weightload", "fixed", "tradestore", "rank", "locked")
         else f"{key} = EXCLUDED.{key}"
-        for key in keys if key not in ("storageid", "userid")
+        for key in keys if key != "storageid"
     ]) + ", updated_at = NOW()"
 
     query = f"""
