@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.core.security import require_internal_origin
 from auth import get_current_user_id
+from helpers.corp_production_calc import split_line_orders
 
 production_router = APIRouter(dependencies=[Depends(require_internal_origin)])
 logger = logging.getLogger(__name__)
@@ -425,9 +426,11 @@ async def get_user_production(
                     if not orders:
                         continue
 
-                    # 1. Non-recurring orders (One-time manual craft jobs)
-                    batch_active_orders = [o for o in orders if not o.get("recurring") and o.get("completion")]
-                    batch_queued_orders = [o for o in orders if not o.get("recurring") and not o.get("completion")]
+                    split = split_line_orders(orders)
+
+                    # 1. One-off orders (manual craft jobs, and recurring orders left running with no copy queued)
+                    batch_active_orders = split["batch_active"]
+                    batch_queued_orders = split["batch_queued"]
 
                     line["line_batch_orders"] = {
                         "active": defaultdict(float),
@@ -465,9 +468,8 @@ async def get_user_production(
                                     daily_flow[out_ticker]["batchProdQueued"] += qty
 
                     # 2. Recurring orders (Continuous Daily Flow)
-                    recurring_template_orders = [o for o in orders if o.get("recurring") and not o.get("completion")]
-                    recurring_active_orders = [o for o in orders if o.get("recurring") and o.get("completion")]
-                    flow_orders = recurring_template_orders if recurring_template_orders else recurring_active_orders
+                    # The queued copies are the cycle; a line with none queued is winding down (see split_line_orders)
+                    flow_orders = split["cycle"]
 
                     if not flow_orders:
                         continue
