@@ -64,6 +64,8 @@ class ContractListItem(BaseModel):
     operation_type: str = "UNKNOWN"
     motion_planet_name: Optional[str] = None
     motionPlanetName: Optional[str] = None
+    term_days: Optional[int] = None
+    interest_rate: Optional[float] = None
     conditions: List[ContractCondition] = []
 
 class ContractDetail(ContractListItem):
@@ -111,47 +113,7 @@ class LoansList(BaseModel):
     total: int
 
 
-class BankCreate(BaseModel):
-    name: str
-    description: Optional[str] = None
-    liquidity: float = 0.0
-    default_interest_rate: float = 5.0
+# Re-export banking models for backwards compatibility
+from models.banking_schema import *
 
-
-class BankResponse(BaseModel):
-    id: int
-    name: str
-    owner_username: str
-    liquidity: float
-    default_interest_rate: float
-    description: Optional[str] = None
-    created_at: datetime
-    active_loans_count: Optional[int] = 0
-
-
-class LoanRequestCreate(BaseModel):
-    bank_id: int
-    amount: float
-    interest_rate: float
-    term_days: int
-
-
-class LoanRequestResponse(BaseModel):
-    id: int
-    bank_id: int
-    requester_username: str
-    amount: float
-    interest_rate: float
-    term_days: int
-    status: str
-    contract_id: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
-    bank_name: Optional[str] = None
-
-
-class LoanRequestAction(BaseModel):
-    loan_id: int
-    status: str
-    contract_id: Optional[str] = None
 

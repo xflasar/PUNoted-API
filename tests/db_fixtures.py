@@ -81,9 +81,20 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
     # Mount internal and public data routes to v1_app for testing purposes to avoid cross-loop issues
     from routers.internal.production import production_router
     from routers.internal.storage import storage_router
+    from routers.internal.banking import banking_router
+    from endpoints.Public.routers.shipments import shipments_router as shipments_public_external_router
+    from endpoints.Public.routers.banking import public_banking_router as public_banking_external_router
+    from endpoints.Protected.routers.banking import protected_banking_router as api_banking_external_router
     if not any(hasattr(r, "path") and r.path.startswith("/internal/production") for r in app.routes):
         app.include_router(production_router, prefix="/internal/production")
         app.include_router(storage_router, prefix="/internal/storage")
+    if not any(hasattr(r, "path") and r.path.startswith("/internal/banking") for r in app.routes):
+        app.include_router(banking_router, prefix="/internal/banking")
+    if not any(hasattr(r, "path") and r.path.startswith("/public/shipments") for r in app.routes):
+        app.include_router(shipments_public_external_router, prefix="/public/shipments")
+    if not any(hasattr(r, "path") and r.path.startswith("/banking") for r in app.routes):
+        app.include_router(public_banking_external_router, prefix="/banking")
+        app.include_router(api_banking_external_router, prefix="/api/banking")
 
     dsn = os.getenv("TEST_DATABASE_URL") or "postgresql://punoted:pass@127.0.0.1:5446/punoted_test"
     if dsn and "localhost" in dsn:

@@ -128,7 +128,45 @@ class ContractsRepository:
                       WHERE cc_pay.contractid = c.id
                         AND cc_pay.contractparty = c.party
                         AND cc_pay.type IN ('PAYMENT', 'LOAN_INSTALLMENT', 'LOAN_PAYOUT')
-                  ), 'ICA') as currency
+                  ), 'ICA') as currency,
+
+                  COALESCE(
+                      (
+                          SELECT ROUND(SUM(cc_inst.deadlineduration_millis) / 86400000.0)::int
+                          FROM (
+                              SELECT DISTINCT cc_d.id, cc_d.deadlineduration_millis
+                              FROM contract_conditions cc_d
+                              WHERE cc_d.contractid = c.id AND cc_d.type = 'LOAN_INSTALLMENT'
+                          ) cc_inst
+                      ),
+                      CASE 
+                          WHEN c.duedate IS NOT NULL AND c.date IS NOT NULL 
+                          THEN GREATEST(1, ROUND(EXTRACT(EPOCH FROM (c.duedate - c.date)) / 86400)::int)
+                          ELSE NULL
+                      END
+                  ) as term_days,
+                  (
+                      SELECT ROUND(
+                          (COALESCE((
+                              SELECT SUM(cli_d.interestamount)
+                              FROM (
+                                  SELECT DISTINCT ON (cli_inst.conditionid) cli_inst.interestamount
+                                  FROM contract_loan_installments cli_inst
+                                  JOIN contract_conditions cc_inst ON cc_inst.id = cli_inst.conditionid
+                                  WHERE cc_inst.contractid = c.id AND cc_inst.type = 'LOAN_INSTALLMENT'
+                              ) cli_d
+                          ), 0.0) / NULLIF(
+                              COALESCE(
+                                  (SELECT amountmoney FROM contract_conditions WHERE contractid = c.id AND type = 'LOAN_PAYOUT' LIMIT 1),
+                                  (SELECT SUM(cli_all.repaymentamount) FROM (
+                                      SELECT DISTINCT ON (cli_d.conditionid) cli_d.repaymentamount 
+                                      FROM contract_loan_installments cli_d
+                                      JOIN contract_conditions cc_d ON cc_d.id = cli_d.conditionid
+                                      WHERE cc_d.contractid = c.id
+                                  ) cli_all)
+                              ), 0.0) * 100.0)::numeric, 2
+                      )::float
+                  ) as interest_rate
 
                 FROM contracts c
                 JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
@@ -307,9 +345,15 @@ class ContractsRepository:
                 "total": total_count
             }
 
-    async def get_contract_detail(self, contract_id: str, user_id: str) -> Dict[str, Any]:
+    async def get_contract_detail(self, contract_id: Optional[str] = None, user_id: str = "", local_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        target_id = contract_id or local_id
+        if not target_id:
+            return None
         async with self.db.pool.acquire() as conn:
-            username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+            username = await conn.fetchval(
+                "SELECT username FROM users WHERE accountid::text = $1 OR userdataid::text = $1 OR username = $1",
+                str(user_id)
+            )
 
             contract = await conn.fetchrow(
                 """
@@ -389,7 +433,7 @@ class ContractsRepository:
                 INNER JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
                 WHERE (c.id::text = $1::text OR c.localid::text = $1::text) AND u.username = $2
                 """,
-                str(contract_id), username
+                str(target_id), username
             )
 
             if not contract:
@@ -594,86 +638,5 @@ class ContractsRepository:
                 "breached": [dict(r) for r in breached]
             }
 
-    async def sync_loan_repayments(self):
-        async with self.db.pool.acquire() as conn:
-            await conn.execute("""
-                UPDATE bank_loan_requests blr
-                SET status = 'REPAID', updated_at = NOW()
-                FROM contracts c
-                WHERE (blr.contract_id = c.localid OR blr.contract_id = c.id)
-                  AND blr.status = 'APPROVED'
-                  AND c.status IN ('FULFILLED', 'CLOSED')
-            """)
 
-    async def create_bank(self, owner_username: str, name: str, description: str, liquidity: float, rate: float) -> Dict[str, Any]:
-        async with self.db.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO player_banks (name, owner_username, liquidity, default_interest_rate, description)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING *
-            """, name, owner_username, liquidity, rate, description)
-            return dict(row)
 
-    async def get_banks(self) -> List[Dict[str, Any]]:
-        async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT b.*,
-                       (SELECT COUNT(*) FROM bank_loan_requests WHERE bank_id = b.id AND status = 'APPROVED') as active_loans_count
-                FROM player_banks b
-                ORDER BY b.created_at DESC
-            """)
-            return [dict(row) for row in rows]
-
-    async def get_bank_by_owner(self, owner_username: str) -> Optional[Dict[str, Any]]:
-        async with self.db.pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM player_banks WHERE owner_username = $1", owner_username)
-            return dict(row) if row else None
-
-    async def create_loan_request(self, bank_id: int, requester_username: str, amount: float, interest_rate: float, term_days: int) -> Dict[str, Any]:
-        async with self.db.pool.acquire() as conn:
-            row = await conn.fetchrow("""
-                INSERT INTO bank_loan_requests (bank_id, requester_username, amount, interest_rate, term_days)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING *
-            """, bank_id, requester_username, amount, interest_rate, term_days)
-            return dict(row)
-
-    async def get_requested_loans(self, requester_username: str) -> List[Dict[str, Any]]:
-        await self.sync_loan_repayments()
-        async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT lr.*, b.name as bank_name
-                FROM bank_loan_requests lr
-                JOIN player_banks b ON lr.bank_id = b.id
-                WHERE lr.requester_username = $1
-                ORDER BY lr.created_at DESC
-            """, requester_username)
-            return [dict(row) for row in rows]
-
-    async def get_bank_loan_requests(self, bank_id: int) -> List[Dict[str, Any]]:
-        await self.sync_loan_repayments()
-        async with self.db.pool.acquire() as conn:
-            rows = await conn.fetch("""
-                SELECT lr.*, b.name as bank_name
-                FROM bank_loan_requests lr
-                JOIN player_banks b ON lr.bank_id = b.id
-                WHERE lr.bank_id = $1
-                ORDER BY lr.created_at DESC
-            """, bank_id)
-            return [dict(row) for row in rows]
-
-    async def action_loan_request(self, loan_id: int, status: str, contract_id: Optional[str] = None) -> bool:
-        async with self.db.pool.acquire() as conn:
-            if status == "APPROVED" and contract_id:
-                result = await conn.execute("""
-                    UPDATE bank_loan_requests
-                    SET status = $1, contract_id = $2, updated_at = NOW()
-                    WHERE id = $3
-                """, status, contract_id, loan_id)
-            else:
-                result = await conn.execute("""
-                    UPDATE bank_loan_requests
-                    SET status = $1, updated_at = NOW()
-                    WHERE id = $2
-                """, status, loan_id)
-            return "UPDATE 1" in result
