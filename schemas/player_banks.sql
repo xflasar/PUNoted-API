@@ -10,6 +10,19 @@ CREATE TABLE IF NOT EXISTS player_banks (
     default_interest_rate NUMERIC DEFAULT 5.0,
     description TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    currency VARCHAR(20) DEFAULT 'ICA',
+    default_repay_days INTEGER DEFAULT 14,
+    default_interval VARCHAR(50) DEFAULT 'At Maturity',
+    min_loan_amount NUMERIC DEFAULT 0,
+    max_loan_amount NUMERIC DEFAULT 0,
+    headline VARCHAR(255),
+    last_yield_distribution TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    weekly_yield_rate DOUBLE PRECISION DEFAULT 1.5,
+    public_show_loans BOOLEAN DEFAULT TRUE,
+    public_show_deposits BOOLEAN DEFAULT TRUE,
+    public_show_withdrawals BOOLEAN DEFAULT TRUE,
+    public_show_names BOOLEAN DEFAULT FALSE,
+    is_public BOOLEAN DEFAULT TRUE,
     PRIMARY KEY (id)
 );
 

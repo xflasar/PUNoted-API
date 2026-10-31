@@ -88,6 +88,9 @@ async def global_websocket_endpoint(websocket: WebSocket):
         # Subscribe to cx update channel
         await global_ws_manager.subscribe(websocket, "cx_updates")
 
+        # Subscribe to real-time banking updates channel
+        await global_ws_manager.subscribe(websocket, "banking_updates")
+
         # Send Initial Ship Data
         # initial_ship_data = await fetch_initial_ship_data(db, user_id)
         # await websocket.send_text(serialize_payload({"type": "INITIAL_SHIP_DATA", "data": initial_ship_data}))

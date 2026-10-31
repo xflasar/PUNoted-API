@@ -57,7 +57,13 @@ from endpoints.Protected.routers.user import user_router as api_user_router
 from endpoints.Protected.routers.workforce import (
     workforce_router as api_userworkforce_external_router,
 )
+from endpoints.Protected.routers.banking import (
+    protected_banking_router as api_banking_external_router,
+)
 from endpoints.Public.routers.buildings import buildings_router as buildings_public_external_router
+from endpoints.Public.routers.banking import (
+    public_banking_router as public_banking_external_router,
+)
 from endpoints.Public.routers.company import company_router as company_public_external_router
 from endpoints.Public.routers.corp import corporation_router as corporation_public_external_router
 from endpoints.Public.routers.cx import cx_router as api_cx_external_router
@@ -75,6 +81,7 @@ from routers.flights import flights_router
 from routers.governance import governance_router
 from routers.group import group_router
 from routers.internal.contracts import contracts_router
+from routers.internal.banking import banking_router
 from routers.internal.corporation import corporation_internal_router
 from routers.internal.corporation_ships import corp_ships_internal_router
 from routers.internal.company import internal_company_router
@@ -420,6 +427,7 @@ app.include_router(internal_data_group_router, prefix="/internal/datagroup", tag
 app.include_router(user_router, prefix="/internal/users", tags=["users"])
 app.include_router(settings_router, prefix="/internal/settings", tags=["User Settings"])
 app.include_router(contracts_router, prefix="/internal/contracts", tags=["Contracts"])
+app.include_router(banking_router, prefix="/internal/banking", tags=["Banking"])
 app.include_router(leaderboard_router, prefix="/internal/leaderboard", tags=["Leaderboard"])
 app.include_router(finances_router, prefix="/internal/finances", tags=["Finances"])
 app.include_router(internal_buildings_router, prefix="/internal/buildings", tags=["Buildings"])
@@ -457,6 +465,7 @@ v1_app.include_router(
 )
 v1_app.include_router(api_userworkforce_external_router, prefix="/workforce", tags=["Workforce Data"])
 v1_app.include_router(corporation_external_router, prefix="/corporation", tags=["Corporation Data"])
+v1_app.include_router(api_banking_external_router, prefix="/banking", tags=["Banking Data"])
 
 # -- Public External API v1 (Registered to v1_app sub-app)
 v1_app.include_router(api_vendors_external_router, prefix="/vendors", tags=["Vendors Data"])
@@ -468,6 +477,7 @@ v1_app.include_router(buildings_public_external_router, prefix="/buildings", tag
 v1_app.include_router(company_public_external_router, prefix="/company", tags=["Company Data"])
 v1_app.include_router(governance_public_external_router, prefix="/governance", tags=["Governance Data"])
 v1_app.include_router(shipments_public_external_router, prefix="/shipments", tags=["Shipments Data"])
+v1_app.include_router(public_banking_external_router, prefix="/banking", tags=["Public Banking Data"])
 
 # Flights router is registered under /public/flights to the main app
 app.include_router(flights_router, prefix="/public/flights", tags=["flights"])
@@ -494,6 +504,7 @@ if DEBUG_MODE:
     )
     app.include_router(api_userworkforce_external_router, prefix="/v1/workforce", tags=["Workforce Data"])
     app.include_router(corporation_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
+    app.include_router(api_banking_external_router, prefix="/v1/banking", tags=["Banking Data"])
     
     app.include_router(api_vendors_external_router, prefix="/v1/vendors", tags=["Vendors Data"])
     app.include_router(api_cx_external_router, prefix="/v1/cx", tags=["CX Data"])
@@ -504,6 +515,7 @@ if DEBUG_MODE:
     app.include_router(company_public_external_router, prefix="/v1/company", tags=["Company Data"])
     app.include_router(governance_public_external_router, prefix="/v1/governance", tags=["Governance Data"])
     app.include_router(shipments_public_external_router, prefix="/v1/shipments", tags=["Shipments Data"])
+    app.include_router(public_banking_external_router, prefix="/v1/banking", tags=["Public Banking Data"])
 
 # Mount the v1 sub-app under /v1 prefix
 app.mount("/v1", v1_app)

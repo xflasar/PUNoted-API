@@ -124,9 +124,7 @@ def test_get_governance_motions(client: fastapi.testclient.TestClient, db_savepo
 # ----------------- Public Shipments -----------------
 def test_get_public_shipment_mock_fallback(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
     # Tests public shipment lookup (200 success)
-    # NOTE: 404/error handling tests (such as company code mismatch or not found)
-    # should be placed in a dedicated errors/edge-cases test suite with database fixtures.
-    response = client.get("/shipments/MOCK-SHIPMENT-001?company=PRO")
+    response = client.get("/public/shipments/MOCK-SHIPMENT-001?company=PRO")
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is True
