@@ -268,7 +268,7 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
         user_row = await conn.fetchrow(user_info_query, account_id)
         if not user_row or not user_row["userdataid"]:
             logger.warning(f"[SHIPMENTS DB] User not found for account {account_id}")
-            return _get_mock_fallback_data()
+            return {"contracts": [], "ships": {}}
 
         userdataid = user_row["userdataid"]
         companyid = user_row["companyid"]
@@ -276,8 +276,8 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
         contract_rows = await conn.fetch(contracts_query, userdataid, companyid)
 
         if not contract_rows:
-            logger.info(f"[SHIPMENTS DB] No active contracts found for account {account_id}, returning fallback mock dataset.")
-            return _get_mock_fallback_data()
+            logger.info(f"[SHIPMENTS DB] No active contracts found for account {account_id}")
+            return {"contracts": [], "ships": {}}
 
         # 1. Group contract conditions into aggregated contracts dictionary
         contracts_dict = {}
@@ -423,101 +423,6 @@ async def fetch_active_shipments_structured(db: Database, account_id: str):
         }
         logger.info(f"[SHIPMENTS DB] Successfully built payload with {len(payload['contracts'])} contracts & {len(ships_dict)} ships.")
         return payload
-
-
-def _get_mock_fallback_data():
-    """Returns mock shipment contract and ship data for frontend testing when DB has no items."""
-    return {
-        "contracts": [
-            {
-                "contract_id": "MOCK-SHIPMENT-001",
-                "local_id": "SHIP-8801",
-                "partner_name": "Procyon Hauling Corp",
-                "role": "CARRIER",
-                "status": "OPEN",
-                "created_at": "2026-10-01T12:00:00Z",
-                "deadline": "2026-10-15T12:00:00Z",
-                "extension_deadline": None,
-                "can_extend": True,
-                "items": [
-                    {
-                        "condition_id": "COND-101",
-                        "index": 1,
-                        "type": "DELIVERY_SHIPMENT",
-                        "status": "PENDING",
-                        "price": 45000,
-                        "currency": "CIS",
-                        "item_id": "ITEM-SHIP-01",
-                        "location_type": "STATION",
-                        "location_name": "Benten Station",
-                        "system_name": "Benten",
-                        "systemid": "SYS-002",
-                        "planetid": None,
-                        "shipid": "ship-xsuperfly-1",
-                        "ship_name": "Procyon Hauler I",
-                        "origin_label": "Benten Station (Benten)",
-                        "destination_label": "Castillo Hub (Castillo)"
-                    }
-                ]
-            },
-            {
-                "contract_id": "MOCK-SHIPMENT-002",
-                "local_id": "SHIP-8802",
-                "partner_name": "Aether Logistics",
-                "role": "CLIENT",
-                "status": "IN_PROGRESS",
-                "created_at": "2026-10-03T09:30:00Z",
-                "deadline": "2026-10-20T18:00:00Z",
-                "extension_deadline": None,
-                "can_extend": False,
-                "items": [
-                    {
-                        "condition_id": "COND-102",
-                        "index": 1,
-                        "type": "DELIVERY_SHIPMENT",
-                        "status": "IN_PROGRESS",
-                        "price": 120000,
-                        "currency": "CIS",
-                        "item_id": "ITEM-SHIP-02",
-                        "location_type": "SITE",
-                        "location_name": "Khor Refinery",
-                        "system_name": "Khor",
-                        "systemid": "SYS-001",
-                        "planetid": None,
-                        "shipid": "ship-xsuperfly-1",
-                        "ship_name": "Procyon Hauler I",
-                        "origin_label": "Khor Refinery (Khor)",
-                        "destination_label": "Benten Station (Benten)"
-                    }
-                ]
-            }
-        ],
-        "ships": {
-            "ship-xsuperfly-1": {
-                "id": "ship-xsuperfly-1",
-                "name": "Procyon Hauler I",
-                "registration": "XSF-88-A",
-                "addresssystemid": "SYS-002",
-                "addressplanetid": None,
-                "addressstationid": "stat-benten",
-                "type": "HCB",
-                "docked_label": "Benten Station (Benten)",
-                "flight": {
-                    "id": "flight-001",
-                    "shipid": "ship-xsuperfly-1",
-                    "departuretimestamp": 1791200000,
-                    "arrivaltimestamp": 1791286400,
-                    "originsystemid": "SYS-002",
-                    "destinationsystemid": "SYS-003",
-                    "originplanetid": None,
-                    "destinationplanetid": None,
-                    "originstationid": "Benten Station",
-                    "destinationstationid": "Castillo Hub",
-                    "segments": []
-                }
-            }
-        }
-    }
 
 
 async def fetch_public_shipment_by_local_id(db: Database, identifier: str, company_code: str | None = None):
@@ -685,16 +590,6 @@ async def fetch_public_shipment_by_local_id(db: Database, identifier: str, compa
     async with db.pool.acquire() as conn:
         rows = await conn.fetch(contract_query, clean_identifier, clean_company)
         if not rows:
-            mock_data = _get_mock_fallback_data()
-            for c in mock_data["contracts"]:
-                if c["contract_id"] == clean_identifier or c["local_id"] == clean_identifier:
-                    # Check mock company code match
-                    mock_codes = ["PRO", "AETH", "CARRIER", "CLIENT"]
-                    if clean_company and clean_company not in mock_codes and not any(clean_company in (c.get("partner_name", "").upper(), c.get("role", "").upper()) for _ in [1]):
-                        return None
-                    ship_id = c["items"][0].get("shipid")
-                    ships = {ship_id: mock_data["ships"][ship_id]} if ship_id in mock_data["ships"] else {}
-                    return {"contract": c, "ships": ships}
             return None
 
 

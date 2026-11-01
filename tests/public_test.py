@@ -122,12 +122,9 @@ def test_get_governance_motions(client: fastapi.testclient.TestClient, db_savepo
     assert isinstance(response.json(), list)
 
 # ----------------- Public Shipments -----------------
-def test_get_public_shipment_mock_fallback(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
-    # Tests public shipment lookup (200 success)
-    response = client.get("/public/shipments/MOCK-SHIPMENT-001?company=PRO")
-    assert response.status_code == 200
+def test_get_public_shipment_not_found(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
+    response = client.get("/public/shipments/NONEXISTENT?company=PRO")
+    assert response.status_code == 404
     data = response.json()
-    assert data["success"] is True
-    assert data["data"]["contract"]["contract_id"] == "MOCK-SHIPMENT-001"
-    assert "ships" in data["data"]
+    assert data["success"] is False
 
