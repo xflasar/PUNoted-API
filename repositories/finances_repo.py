@@ -115,28 +115,17 @@ InventoryValuation AS (
        OR cb.ticker LIKE '%.EC1'
     GROUP BY 1
 ),
+CurrentShareholderCodes AS (
+    SELECT DISTINCT companycode
+    FROM corporation_shareholders
+),
 VirtualLedger AS (
     -- CX SELLS
     SELECT 
-        'CX_' || t.tradeid AS id,  -- <--- ADDED ID
+        'CX_' || t.tradeid AS id,
         t.pricecurrency AS currency, 
         CASE 
-            WHEN COALESCE(
-                (
-                    SELECT EXISTS(
-                        SELECT 1 
-                        FROM corporation_shareholders_history csh 
-                        WHERE csh.companycode = t.partnercode 
-                          AND csh.snapshot_at::date = t.tradetime::date
-                    )
-                    WHERE EXISTS (SELECT 1 FROM corporation_shareholders_history WHERE snapshot_at::date = t.tradetime::date)
-                ),
-                EXISTS(
-                    SELECT 1 
-                    FROM corporation_shareholders cs 
-                    WHERE cs.companycode = t.partnercode
-                )
-            ) THEN 'CORP_CX' 
+            WHEN sc.companycode IS NOT NULL THEN 'CORP_CX' 
             ELSE 'CX' 
         END AS category, 
         (t.amount * t.priceamount) AS amount, 
@@ -146,6 +135,7 @@ VirtualLedger AS (
         t.partnercode
     FROM comex_trade_orders_trades t
     JOIN comex_trade_orders o ON t.orderid = o.orderid
+    LEFT JOIN CurrentShareholderCodes sc ON sc.companycode = t.partnercode
     WHERE o.userid IN (SELECT userdataid FROM TargetUser)
       AND o.type IN ('SELL', 'SELLING')
 
@@ -153,25 +143,10 @@ VirtualLedger AS (
 
     -- CX BUYS
     SELECT 
-        'CX_' || t.tradeid AS id,  -- <--- ADDED ID
+        'CX_' || t.tradeid AS id,
         t.pricecurrency AS currency, 
         CASE 
-            WHEN COALESCE(
-                (
-                    SELECT EXISTS(
-                        SELECT 1 
-                        FROM corporation_shareholders_history csh 
-                        WHERE csh.companycode = t.partnercode 
-                          AND csh.snapshot_at::date = t.tradetime::date
-                    )
-                    WHERE EXISTS (SELECT 1 FROM corporation_shareholders_history WHERE snapshot_at::date = t.tradetime::date)
-                ),
-                EXISTS(
-                    SELECT 1 
-                    FROM corporation_shareholders cs 
-                    WHERE cs.companycode = t.partnercode
-                )
-            ) THEN 'CORP_CX' 
+            WHEN sc.companycode IS NOT NULL THEN 'CORP_CX' 
             ELSE 'CX' 
         END AS category, 
         -(t.amount * t.priceamount) AS amount, 
@@ -181,6 +156,7 @@ VirtualLedger AS (
         t.partnercode
     FROM comex_trade_orders_trades t
     JOIN comex_trade_orders o ON t.orderid = o.orderid
+    LEFT JOIN CurrentShareholderCodes sc ON sc.companycode = t.partnercode
     WHERE o.userid IN (SELECT userdataid FROM TargetUser)
       AND o.type IN ('BUY', 'BUYING')
 
@@ -188,58 +164,44 @@ VirtualLedger AS (
 
     -- CONTRACTS
     SELECT 
-        'CTR_' || c.id AS id,  -- <--- ADDED ID
+        'CTR_' || c.id AS id,
         cc.currencymoney AS currency, 
         CASE 
-            WHEN COALESCE(
-                (
-                    SELECT EXISTS(
-                        SELECT 1 
-                        FROM corporation_shareholders_history csh 
-                        WHERE csh.companycode = c.partnercode 
-                          AND csh.snapshot_at::date = c.date::date
-                    )
-                    WHERE EXISTS (SELECT 1 FROM corporation_shareholders_history WHERE snapshot_at::date = c.date::date)
-                ),
-                EXISTS(
-                    SELECT 1 
-                    FROM corporation_shareholders cs 
-                    WHERE cs.companycode = c.partnercode
-                )
-            ) THEN 'CORP_CONTRACT' 
+            WHEN sc.companycode IS NOT NULL THEN 'CORP_CONTRACT' 
             ELSE 'CONTRACT' 
         END AS category, 
         CASE 
             WHEN cc.party = c.party THEN -cc.amountmoney 
             ELSE cc.amountmoney 
         END AS amount,
-        COALESCE(
-            (
-                SELECT SUM(cm.amount)
-                FROM contract_materials cm
-                JOIN contract_conditions cc_mat ON cm.contractconditionid = cc_mat.id
-                WHERE cc_mat.contractid = c.id
-                  AND cm.amount IS NOT NULL
-            ),
-            0
-        ) AS item_quantity,
+        0 AS item_quantity,
         c.date AS timestamp,
         c.partnername, 
         c.partnercode  
     FROM contract_conditions cc
     JOIN contracts c ON cc.contractid = c.id
+    LEFT JOIN CurrentShareholderCodes sc ON sc.companycode = c.partnercode
     WHERE c.userid IN (SELECT userdataid FROM TargetUser)
       AND cc.type = 'PAYMENT' 
       AND cc.status IN ('FULFILLED', 'RESOLVED') 
       AND cc.amountmoney IS NOT NULL
 	  AND c.party = cc.contractparty
 ),
+LimitedVirtualLedger AS (
+    SELECT *
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER(PARTITION BY currency ORDER BY timestamp DESC) as rn
+        FROM VirtualLedger
+    ) t
+    WHERE rn <= 250
+),
 RecentTransactions AS (
     SELECT 
         currency,
         jsonb_agg(
             jsonb_build_object(
-                'Id', id,  -- <--- INJECTED INTO JSON
+                'Id', id,
                 'Type', CASE 
                     WHEN category IN ('CX', 'CORP_CX') AND amount > 0 THEN category || ' SELL'
                     WHEN category IN ('CX', 'CORP_CX') AND amount < 0 THEN category || ' BUY'
@@ -254,7 +216,7 @@ RecentTransactions AS (
                 'Timestamp', to_char(timestamp, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
             ) ORDER BY timestamp DESC
         ) AS transactions_json
-    FROM VirtualLedger
+    FROM LimitedVirtualLedger
     GROUP BY currency
 ),
 MultiTimeframeCashFlow AS (

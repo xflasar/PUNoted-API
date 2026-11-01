@@ -1434,7 +1434,7 @@ def optimize_json_fallback(obj):
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
 # --- Cache Configuration ---
-CACHE_TTL_SECONDS = 60
+CACHE_TTL_SECONDS = 3600  # Static map data cached for 1 hour
 _map_cache = {
     "data": None,
     "timestamp": 0

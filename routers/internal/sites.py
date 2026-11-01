@@ -92,12 +92,35 @@ async def get_all_user_sites(request: Request, user_id: str = Depends(get_curren
                 SELECT inbound.siteid, FALSE as am_owner, NULL::text as leased_to, inbound.landlord as leased_from, inbound.lease_type as lease_type
                 FROM MyInboundLeases inbound
             ),
+            SitePlanets AS (
+                SELECT DISTINCT s.addressplanetid
+                FROM sites s
+                JOIN AccessibleSites acc ON s.siteid::text = acc.siteid
+                WHERE s.addressplanetid IS NOT NULL
+            ),
+            LatestPhysical AS (
+                SELECT 
+                    sp.addressplanetid AS planetid,
+                    phys.surface,
+                    phys.pressure,
+                    phys.gravity,
+                    phys.temperature
+                FROM SitePlanets sp
+                CROSS JOIN LATERAL (
+                    SELECT surface, pressure, gravity, temperature
+                    FROM planet_physical_data
+                    WHERE planetid = sp.addressplanetid
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                ) phys
+            ),
             SiteBuildingBOM AS (
                 SELECT 
                     sp.siteid,
                     m.ticker,
                     SUM(COALESCE(pm.amount, bbm.amount, 0)) as amount
                 FROM site_platforms sp
+                JOIN AccessibleSites acc ON sp.siteid = acc.siteid
                 JOIN buildings b ON b.buildingid = sp.buildingid
                 LEFT JOIN platform_materials pm ON pm.platformid = sp.platformid AND (pm.materialtype = 'build' OR pm.materialtype = 'construction')
                 LEFT JOIN building_build_materials bbm ON bbm.buildingid = b.buildingid
@@ -110,7 +133,23 @@ async def get_all_user_sites(request: Request, user_id: str = Depends(get_curren
                     b.ticker,
                     COALESCE(b.area, 0) as area
                 FROM site_platforms sp
+                JOIN AccessibleSites acc ON sp.siteid = acc.siteid
                 JOIN buildings b ON b.buildingid = sp.buildingid
+            ),
+            AggregatedBOM AS (
+                SELECT 
+                    bom.siteid,
+                    jsonb_object_agg(bom.ticker, bom.amount) AS site_building_materials
+                FROM SiteBuildingBOM bom
+                GROUP BY bom.siteid
+            ),
+            AggregatedDetails AS (
+                SELECT 
+                    bd.siteid,
+                    jsonb_agg(jsonb_build_object('ticker', bd.ticker, 'area', bd.area)) AS site_building_details,
+                    ARRAY_AGG(bd.ticker ORDER BY bd.ticker) AS site_building_tickers
+                FROM SiteBuildingDetails bd
+                GROUP BY bd.siteid
             )
             SELECT 
                 s.siteid,
@@ -132,33 +171,18 @@ async def get_all_user_sites(request: Request, user_id: str = Depends(get_curren
                 acc.leased_to,
                 acc.leased_from,
                 (acc.lease_type = 'Outbound' OR acc.lease_type = 'Inbound') AS is_leased,
-                COALESCE(
-                    (SELECT ARRAY_AGG(b.ticker ORDER BY b.ticker)
-                     FROM site_platforms sp2
-                     JOIN buildings b ON b.buildingid = sp2.buildingid
-                     WHERE sp2.siteid = s.siteid),
-                    '{}'
-                ) AS site_building_tickers,
-                COALESCE(
-                    (SELECT jsonb_object_agg(bom.ticker, bom.amount)
-                     FROM SiteBuildingBOM bom
-                     WHERE bom.siteid = s.siteid),
-                    '{}'::jsonb
-                ) AS site_building_materials,
-                COALESCE(
-                    (SELECT jsonb_agg(jsonb_build_object('ticker', bd.ticker, 'area', bd.area))
-                     FROM SiteBuildingDetails bd
-                     WHERE bd.siteid = s.siteid),
-                    '[]'::jsonb
-                ) AS site_building_details
+                COALESCE(ad.site_building_tickers, '{}') AS site_building_tickers,
+                COALESCE(abom.site_building_materials, '{}'::jsonb) AS site_building_materials,
+                COALESCE(ad.site_building_details, '[]'::jsonb) AS site_building_details
             FROM AccessibleSites acc
             JOIN sites s ON s.siteid::text = acc.siteid
             JOIN planets p ON p.planetid = s.addressplanetid
-            LEFT JOIN planet_physical_data phys ON phys.planetid = p.planetid
+            LEFT JOIN LatestPhysical phys ON phys.planetid = p.planetid
             JOIN users u ON u.userdataid = s.userid
             LEFT JOIN users_data ud ON ud.userid = u.userdataid
             LEFT JOIN company_data cd ON cd.userdataid = u.userdataid
-            GROUP BY s.siteid, p.naturalid, p.planetid, phys.surface, p.surface, phys.pressure, phys.gravity, phys.temperature, p.temperature, ud.displayname, cd.companycode, acc.am_owner, acc.lease_type, acc.leased_to, acc.leased_from;
+            LEFT JOIN AggregatedBOM abom ON abom.siteid = s.siteid
+            LEFT JOIN AggregatedDetails ad ON ad.siteid = s.siteid;
             """
             rows = await conn.fetch(query, user_id)
             sites = []

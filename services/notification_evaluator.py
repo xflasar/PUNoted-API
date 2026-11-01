@@ -408,76 +408,82 @@ async def evaluate_user_telemetry_notifications(
                         )
 
         # 6. Daily Financial Summary (Midnight Summary - Once per day)
-        finance_accs = await conn.fetch("""
-            SELECT 
-                balancecurrencycode AS code, 
-                SUM(balanceamount) AS balance
-            FROM user_currency_accounts 
-            WHERE userid = $1 OR userid = $2
-            GROUP BY balancecurrencycode
-            ORDER BY SUM(balanceamount) DESC
-            LIMIT 4;
-        """, user_accountid, userdata_id)
+        dedup = f"financial_daily_{user_accountid}_{today_str}"
+        already_notified = await conn.fetchval(
+            "SELECT 1 FROM user_notifications WHERE dedup_key = $1 LIMIT 1;",
+            dedup
+        )
+        if not already_notified:
+            finance_accs = await conn.fetch("""
+                SELECT 
+                    balancecurrencycode AS code, 
+                    SUM(balanceamount) AS balance
+                FROM user_currency_accounts 
+                WHERE userid = $1 OR userid = $2
+                GROUP BY balancecurrencycode
+                ORDER BY SUM(balanceamount) DESC
+                LIMIT 4;
+            """, user_accountid, userdata_id)
 
-        if finance_accs:
-            currencies_data = []
-            for acc in finance_accs:
-                code = acc["code"]
-                bal = float(acc["balance"] or 0)
+            if finance_accs:
+                currencies_data = []
+                for acc in finance_accs:
+                    code = acc["code"]
+                    bal = float(acc["balance"] or 0)
 
-                income_24h = 0.0
-                expense_24h = 0.0
-                try:
-                    stats_row = await conn.fetchrow("""
-                        SELECT 
-                            (
-                                COALESCE((
-                                    SELECT SUM(CASE WHEN cc.party != c.party THEN cc.amountmoney ELSE 0 END)
-                                    FROM contract_conditions cc
-                                    JOIN contracts c ON cc.contractid = c.id
-                                    WHERE (c.userid = $1 OR c.userid = $2)
-                                      AND cc.currencymoney = $3
-                                      AND cc.status = 'FULFILLED'
-                                      AND c.updated_at >= NOW() - INTERVAL '24 hours'
-                                ), 0)
-                                +
-                                COALESCE((
-                                    SELECT SUM(t.amount * t.priceamount)
-                                    FROM comex_trade_orders_trades t
-                                    JOIN comex_trade_orders o ON t.orderid = o.orderid
-                                    WHERE (o.userid = $1 OR o.userid = $2)
-                                      AND t.pricecurrency = $3
-                                      AND o.type IN ('SELL', 'SELLING')
-                                      AND t.tradetime >= NOW() - INTERVAL '24 hours'
-                                ), 0)
-                            ) AS inc,
-                            (
-                                COALESCE((
-                                    SELECT SUM(CASE WHEN cc.party = c.party THEN cc.amountmoney ELSE 0 END)
-                                    FROM contract_conditions cc
-                                    JOIN contracts c ON cc.contractid = c.id
-                                    WHERE (c.userid = $1 OR c.userid = $2)
-                                      AND cc.currencymoney = $3
-                                      AND cc.status = 'FULFILLED'
-                                      AND c.updated_at >= NOW() - INTERVAL '24 hours'
-                                ), 0)
-                                +
-                                COALESCE((
-                                    SELECT SUM(t.amount * t.priceamount)
-                                    FROM comex_trade_orders_trades t
-                                    JOIN comex_trade_orders o ON t.orderid = o.orderid
-                                    WHERE (o.userid = $1 OR o.userid = $2)
-                                      AND t.pricecurrency = $3
-                                      AND o.type IN ('BUY', 'BUYING')
-                                      AND t.tradetime >= NOW() - INTERVAL '24 hours'
-                                ), 0)
-                            ) AS exp;
-                    """, user_accountid, userdata_id, code)
-                    if stats_row:
-                        income_24h = float(stats_row["inc"] or 0)
-                        expense_24h = float(stats_row["exp"] or 0)
-                except Exception:
-                    pass
+                    income_24h = 0.0
+                    expense_24h = 0.0
+                    try:
+                        stats_row = await conn.fetchrow("""
+                            SELECT 
+                                (
+                                    COALESCE((
+                                        SELECT SUM(CASE WHEN cc.party != c.party THEN cc.amountmoney ELSE 0 END)
+                                        FROM contract_conditions cc
+                                        JOIN contracts c ON cc.contractid = c.id
+                                        WHERE (c.userid = $1 OR c.userid = $2)
+                                          AND cc.currencymoney = $3
+                                          AND cc.status = 'FULFILLED'
+                                          AND c.updated_at >= NOW() - INTERVAL '24 hours'
+                                    ), 0)
+                                    +
+                                    COALESCE((
+                                        SELECT SUM(t.amount * t.priceamount)
+                                        FROM comex_trade_orders_trades t
+                                        JOIN comex_trade_orders o ON t.orderid = o.orderid
+                                        WHERE (o.userid = $1 OR o.userid = $2)
+                                          AND t.pricecurrency = $3
+                                          AND o.type IN ('SELL', 'SELLING')
+                                          AND t.tradetime >= NOW() - INTERVAL '24 hours'
+                                    ), 0)
+                                ) AS inc,
+                                (
+                                    COALESCE((
+                                        SELECT SUM(CASE WHEN cc.party = c.party THEN cc.amountmoney ELSE 0 END)
+                                        FROM contract_conditions cc
+                                        JOIN contracts c ON cc.contractid = c.id
+                                        WHERE (c.userid = $1 OR c.userid = $2)
+                                          AND cc.currencymoney = $3
+                                          AND cc.status = 'FULFILLED'
+                                          AND c.updated_at >= NOW() - INTERVAL '24 hours'
+                                    ), 0)
+                                    +
+                                    COALESCE((
+                                        SELECT SUM(t.amount * t.priceamount)
+                                        FROM comex_trade_orders_trades t
+                                        JOIN comex_trade_orders o ON t.orderid = o.orderid
+                                        WHERE (o.userid = $1 OR o.userid = $2)
+                                          AND t.pricecurrency = $3
+                                          AND o.type IN ('BUY', 'BUYING')
+                                          AND t.tradetime >= NOW() - INTERVAL '24 hours'
+                                    ), 0)
+                                ) AS exp;
+                        """, user_accountid, userdata_id, code)
+                        if stats_row:
+                            income_24h = float(stats_row["inc"] or 0)
+                            expense_24h = float(stats_row["exp"] or 0)
+                    except Exception:
+                        pass
 
                 currencies_data.append({
                     "code": code,

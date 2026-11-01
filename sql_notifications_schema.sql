@@ -26,6 +26,9 @@ ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT 
 ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
 ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
 
+CREATE UNIQUE INDEX IF NOT EXISTS user_notifications_dedup_key_key ON user_notifications (dedup_key);
+ALTER TABLE user_notifications ADD CONSTRAINT user_notifications_dedup_key_key UNIQUE USING INDEX user_notifications_dedup_key_key;
+
 CREATE INDEX IF NOT EXISTS idx_user_notif_acc_created ON user_notifications (accountid, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_user_notif_unread ON user_notifications (accountid, is_read);
 CREATE INDEX IF NOT EXISTS idx_user_notif_acc_active ON user_notifications (accountid, is_deleted, created_at DESC);

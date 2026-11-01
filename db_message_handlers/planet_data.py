@@ -168,7 +168,13 @@ async def handle_planet_data_message(conn, raw_payload: Dict[str, Any]) -> Dict[
                         keys_str = ", ".join(keys_to_insert)
                         values_placeholders = ", ".join([f"${i + 1}" for i in range(len(keys_to_insert))])
 
-                        insert_query = f"INSERT INTO {table_name} ({keys_str}) VALUES ({values_placeholders});"
+                        # Add ON CONFLICT DO NOTHING if table has a natural key to prevent race-condition duplicate inserts
+                        conflict_keys = [k for k in key_fields if k in keys_to_insert]
+                        if conflict_keys:
+                            conflict_target = ", ".join(conflict_keys)
+                            insert_query = f"INSERT INTO {table_name} ({keys_str}) VALUES ({values_placeholders}) ON CONFLICT ({conflict_target}) DO NOTHING;"
+                        else:
+                            insert_query = f"INSERT INTO {table_name} ({keys_str}) VALUES ({values_placeholders});"
 
                         # Prepare values strictly matching keys_to_insert order
                         values_for_insert = [

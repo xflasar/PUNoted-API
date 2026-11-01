@@ -120,7 +120,8 @@ async def lifespan(app: FastAPI):
     print("Database connected.")
 
     # 2. Redis Cache
-    redis = aioredis.from_url("redis://localhost:6379/0", encoding="utf8", decode_responses=True)
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
     FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
     print("Redis initialized.")
 
@@ -133,7 +134,7 @@ async def lifespan(app: FastAPI):
         from services.notification_evaluator import evaluate_user_telemetry_notifications
         while True:
             try:
-                await asyncio.sleep(60)
+                await asyncio.sleep(300)
                 connected_user_ids = list(global_ws_manager.user_sockets.keys())
                 for uid in connected_user_ids:
                     try:

@@ -23,6 +23,10 @@ CREATE TABLE IF NOT EXISTS player_banks (
     public_show_withdrawals BOOLEAN DEFAULT TRUE,
     public_show_names BOOLEAN DEFAULT FALSE,
     is_public BOOLEAN DEFAULT TRUE,
+    max_interest_rate NUMERIC,
+    max_weekly_yield_rate NUMERIC,
+    deposit_status VARCHAR(50) DEFAULT 'OPEN',
+    deposit_strategy VARCHAR(50) DEFAULT 'BALANCED',
     PRIMARY KEY (id)
 );
 
