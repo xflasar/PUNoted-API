@@ -37,13 +37,14 @@ YELLOW = "\033[93m"
 CYAN = "\033[96m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
-RESET = "\033[0m"
+# Prevent pytest from collecting this file or its helper functions as automated test suite
+__test__ = False
 
 
 async def get_test_credentials(
     explicit_token: Optional[str] = None,
     explicit_user: Optional[str] = None
-) -> Tuple[str, str, str]:
+) -> Dict[str, Any]:
     """Retrieves credentials for testing: either explicitly given, or resolved from DB."""
     dsn = os.getenv("DATABASE_URL") or os.getenv("XATA_DATABASE_URL")
     if not dsn:
@@ -150,7 +151,7 @@ def check_user_isolation(data: Any, expected_username: str) -> Tuple[bool, str]:
     return True, "OK"
 
 
-async def test_endpoint(
+async def query_endpoint(
     client: httpx.AsyncClient,
     path: str,
     headers: Dict[str, str],
@@ -158,6 +159,7 @@ async def test_endpoint(
     category: str,
     is_protected_single_user: bool = False
 ) -> Dict[str, Any]:
+    query_endpoint.__test__ = False
     start_t = time.perf_counter()
     try:
         resp = await client.get(path, headers=headers, timeout=12.0)
@@ -318,7 +320,7 @@ async def main_async(base_url: str, token: Optional[str] = None, user: Optional[
 
     async with httpx.AsyncClient(base_url=base_url) as client:
         tasks = [
-            test_endpoint(client, path, hdrs, username, cat, is_single)
+            query_endpoint(client, path, hdrs, username, cat, is_single)
             for path, hdrs, cat, is_single in endpoints
         ]
         results = await asyncio.gather(*tasks)
