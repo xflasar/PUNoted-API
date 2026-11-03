@@ -57,6 +57,9 @@ from endpoints.Protected.routers.user import user_router as api_user_router
 from endpoints.Protected.routers.workforce import (
     workforce_router as api_userworkforce_external_router,
 )
+from endpoints.Protected.routers.shipments import (
+    protected_shipments_router as api_shipments_external_router,
+)
 from endpoints.Protected.routers.banking import (
     protected_banking_router as api_banking_external_router,
 )
@@ -467,6 +470,7 @@ v1_app.include_router(
 v1_app.include_router(api_userworkforce_external_router, prefix="/workforce", tags=["Workforce Data"])
 v1_app.include_router(corporation_external_router, prefix="/corporation", tags=["Corporation Data"])
 v1_app.include_router(api_banking_external_router, prefix="/banking", tags=["Banking Data"])
+v1_app.include_router(api_shipments_external_router, prefix="/shipments", tags=["Shipments Data"])
 
 # -- Public External API v1 (Registered to v1_app sub-app)
 v1_app.include_router(api_vendors_external_router, prefix="/vendors", tags=["Vendors Data"])
@@ -506,6 +510,7 @@ if DEBUG_MODE:
     app.include_router(api_userworkforce_external_router, prefix="/v1/workforce", tags=["Workforce Data"])
     app.include_router(corporation_external_router, prefix="/v1/corporation", tags=["Corporation Data"])
     app.include_router(api_banking_external_router, prefix="/v1/banking", tags=["Banking Data"])
+    app.include_router(api_shipments_external_router, prefix="/v1/shipments", tags=["Shipments Data"])
     
     app.include_router(api_vendors_external_router, prefix="/v1/vendors", tags=["Vendors Data"])
     app.include_router(api_cx_external_router, prefix="/v1/cx", tags=["CX Data"])

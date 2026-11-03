@@ -67,7 +67,7 @@ async def search_production_user(
     request: Request,
     username: Optional[str] = Query(None, description="Specific username"),
     location: Optional[str] = Query(None, description="Filter by Planet/Natural ID"),
-    user_id: str = Depends(RequireAuth(["production:read"])),
+    user_id: str = Depends(RequireAuth(["production:read"], is_single_user_endpoint=True)),
 ):
     pool = request.app.state.db.pool
     valid_targets = getattr(request.state, "valid_target_users", [])
@@ -79,21 +79,14 @@ async def search_production_user(
         # 1. Fetch standard multi-user structure
         json_str = await search_production_lines(conn, valid_targets, location)
 
-        # 2. Unwrap to return ONLY the Production list
+        # 2. Unwrap to return ONLY the Production list for the target user
         try:
             data_list = orjson.loads(json_str)
-            target_record = None
-            if not username:
-                me_username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
-                for record in data_list:
-                    if record.get("Username") == me_username:
-                        target_record = record
-                        break
-            if not target_record and data_list:
-                target_record = data_list[0]
+            target_user = username or valid_targets[0]
+            for record in data_list:
+                if record.get("Username") == target_user:
+                    return record.get("Production", [])
 
-            if target_record and "Production" in target_record:
-                return target_record["Production"]
             return []
         except Exception:
             return []
@@ -110,7 +103,7 @@ async def search_burn_production_user(
     request: Request,
     username: Optional[str] = Query(None, description="Specific username"),
     location: Optional[str] = Query(None, description="Filter by Planet/Natural ID"),
-    user_id: str = Depends(RequireAuth(["production:read"])),
+    user_id: str = Depends(RequireAuth(["production:read"], is_single_user_endpoint=True)),
 ):
     pool: asyncpg.Pool = request.app.state.db.pool
     valid_targets = getattr(request.state, "valid_target_users", [])
@@ -121,24 +114,13 @@ async def search_burn_production_user(
         # 1. Fetch standard multi-user structure
         json_str = await search_production_lines(conn, valid_targets, location, burn=True)
 
-        # 2. Unwrap to return ONLY the BurnRates object
+        # 2. Unwrap to return ONLY the BurnRates object for the target user
         try:
             data_list = orjson.loads(json_str)
-            target_record = None
-            if not username:
-                username = await conn.fetchval("SELECT username FROM users WHERE accountid = $1", user_id)
+            target_user = username or valid_targets[0]
             for record in data_list:
-                if record.get("Username") == username:
-                    target_record = record
-                    break
-            else:
-                # If target is valid user but has no active production lines, return empty dict
-                if username in valid_targets:
-                    return {}
-                raise HTTPException(status_code=404, detail="User not found or access denied")
-
-            if target_record and "BurnRates" in target_record:
-                return target_record["BurnRates"]
+                if record.get("Username") == target_user:
+                    return record.get("BurnRates", {})
 
             return {}
         except HTTPException:
@@ -155,7 +137,7 @@ async def search_burn_production_user(
 @limiter.limit("30/minute", key_func=get_auth_key)
 async def search_simple_production_user(
     request: Request,
-    user_id: str = Depends(RequireAuth(["production:read"])),
+    user_id: str = Depends(RequireAuth(["production:read"], is_single_user_endpoint=True)),
 ):
     pool = request.app.state.db.pool
     valid_targets = getattr(request.state, "valid_target_users", [])

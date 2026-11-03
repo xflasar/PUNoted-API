@@ -82,16 +82,18 @@ async def get_contract_user(
     localid: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     page: int = Query(1, ge=1),
-    user_id: str = Depends(RequireAuth(["contracts:read"]))
+    user_id: str = Depends(RequireAuth(["contracts:read"], is_single_user_endpoint=True))
 ):
     pool = request.app.state.db.pool
 
-    target_user = getattr(request.state, "valid_target_users", [])
+    valid_targets = getattr(request.state, "valid_target_users", [])
+    if not valid_targets:
+        return []
 
     async with pool.acquire() as conn:
         json_str = await get_filtered_contracts(
             conn,
-            [target_user],
+            valid_targets,
             c_type=contracttype,
             status=status,
             partner_code=partnercode,
@@ -156,10 +158,13 @@ async def export_user_csv(
     status: Optional[str] = Query(None),
     partnercode: Optional[str] = Query(None),
     party: Optional[str] = Query(None),
-    user_id: str = Depends(RequireAuth(["contracts:read"]))
+    user_id: str = Depends(RequireAuth(["contracts:read"], is_single_user_endpoint=True))
 ):
     pool = request.app.state.db.pool
-    target_user = username or getattr(request.state, "valid_target_users", [])
+    valid_targets = getattr(request.state, "valid_target_users", [])
+    if not valid_targets:
+        return Response(status_code=403)
+    target_user = valid_targets[0]
 
     async def iter_csv():
         async with pool.acquire() as conn:

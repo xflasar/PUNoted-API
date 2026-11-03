@@ -55,6 +55,11 @@ CONTRACTS_UPDATABLE_KEYS = [
     "extensiondeadline",
     "relatedcontracts",
     "contracttype",
+    "canextend",
+    "canrequesttermination",
+    "agentcontract",
+    "terminationreceived",
+    "terminationsent",
 ]
 
 # Conditions Table

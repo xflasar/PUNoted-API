@@ -223,10 +223,14 @@ MultiTimeframeCashFlow AS (
     SELECT 
         currency,
         category,
+        SUM(CASE WHEN amount > 0 AND timestamp >= NOW() - INTERVAL '24 hours' THEN amount ELSE 0 END) AS income_24h,
+        SUM(CASE WHEN amount < 0 AND timestamp >= NOW() - INTERVAL '24 hours' THEN ABS(amount) ELSE 0 END) AS expense_24h,
         SUM(CASE WHEN amount > 0 AND timestamp >= NOW() - INTERVAL '7 days' THEN amount ELSE 0 END) AS income_7d,
         SUM(CASE WHEN amount < 0 AND timestamp >= NOW() - INTERVAL '7 days' THEN ABS(amount) ELSE 0 END) AS expense_7d,
         SUM(CASE WHEN amount > 0 AND timestamp >= NOW() - INTERVAL '30 days' THEN amount ELSE 0 END) AS income_30d,
         SUM(CASE WHEN amount < 0 AND timestamp >= NOW() - INTERVAL '30 days' THEN ABS(amount) ELSE 0 END) AS expense_30d,
+        SUM(CASE WHEN amount > 0 AND timestamp >= NOW() - INTERVAL '1 year' THEN amount ELSE 0 END) AS income_1y,
+        SUM(CASE WHEN amount < 0 AND timestamp >= NOW() - INTERVAL '1 year' THEN ABS(amount) ELSE 0 END) AS expense_1y,
         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS income_all,
         SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) AS expense_all
     FROM VirtualLedger
@@ -238,12 +242,57 @@ AggregatedFlows AS (
         jsonb_agg(
             jsonb_build_object(
                 'Category', category,
+                '24H', jsonb_build_object('Income', income_24h, 'Expense', expense_24h, 'Net', income_24h - expense_24h),
                 '7D', jsonb_build_object('Income', income_7d, 'Expense', expense_7d, 'Net', income_7d - expense_7d),
                 '30D', jsonb_build_object('Income', income_30d, 'Expense', expense_30d, 'Net', income_30d - expense_30d),
+                '1Y', jsonb_build_object('Income', income_1y, 'Expense', expense_1y, 'Net', income_1y - expense_1y),
                 'AllTime', jsonb_build_object('Income', income_all, 'Expense', expense_all, 'Net', income_all - expense_all)
             )
         ) AS flows_json
     FROM MultiTimeframeCashFlow
+    GROUP BY currency
+),
+TopPartnersAgg AS (
+    SELECT 
+        currency,
+        jsonb_agg(
+            jsonb_build_object(
+                'code', partnercode,
+                'name', partnername,
+                'volume', volume,
+                'income', income,
+                'expense', expense,
+                'net', net,
+                'lastTimestamp', to_char(last_tx, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+            ) ORDER BY volume DESC
+        ) AS top_partners_json
+    FROM (
+        SELECT 
+            currency,
+            partnercode,
+            COALESCE(MAX(partnername), partnercode) as partnername,
+            SUM(ABS(amount)) as volume,
+            SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as income,
+            SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END) as expense,
+            SUM(amount) as net,
+            MAX(timestamp) as last_tx,
+            ROW_NUMBER() OVER(PARTITION BY currency ORDER BY SUM(ABS(amount)) DESC) as rn
+        FROM VirtualLedger
+        WHERE partnercode IS NOT NULL AND partnercode != ''
+        GROUP BY currency, partnercode
+    ) p
+    WHERE rn <= 100
+    GROUP BY currency
+),
+VolumeBreakdownAgg AS (
+    SELECT 
+        currency,
+        jsonb_build_object(
+            'cx', COALESCE(SUM(CASE WHEN category IN ('CX', 'CORP_CX') THEN ABS(amount) ELSE 0 END), 0),
+            'contract', COALESCE(SUM(CASE WHEN category = 'CONTRACT' THEN ABS(amount) ELSE 0 END), 0),
+            'corp', COALESCE(SUM(CASE WHEN category IN ('CORP_CX', 'CORP_CONTRACT') THEN ABS(amount) ELSE 0 END), 0)
+        ) AS volume_breakdown_json
+    FROM VirtualLedger
     GROUP BY currency
 ),
 DailyBalances AS (
@@ -253,7 +302,6 @@ DailyBalances AS (
         balanceamount AS closing_balance
     FROM user_currency_accounts_history
     WHERE userid IN (SELECT userdataid FROM TargetUser)
-      AND snapshot_at >= NOW() - INTERVAL '30 days'
     
     UNION
     
@@ -271,7 +319,7 @@ AggregatedHistory AS (
         currency,
         jsonb_agg(
             jsonb_build_object(
-                'Date', to_char(date, 'MM/DD'),
+                'Date', to_char(date, 'YYYY-MM-DD'),
                 'Balance', closing_balance
             ) ORDER BY date ASC
         ) AS history_json
@@ -299,6 +347,8 @@ SELECT
                                        COALESCE(iv.inventory_value, 0) + 
                                        COALESCE(pc.pending_receivable, 0),
                         'CashFlows', COALESCE(af.flows_json, '[]'::jsonb),
+                        'TopPartners', COALESCE(tp.top_partners_json, '[]'::jsonb),
+                        'VolumeBreakdown', COALESCE(vb.volume_breakdown_json, '{"cx":0,"contract":0,"corp":0}'::jsonb),
                         'History', COALESCE(ah.history_json, '[]'::jsonb),
                         'Transactions', COALESCE(rt.transactions_json, '[]'::jsonb)
                     )
@@ -308,6 +358,8 @@ SELECT
                 LEFT JOIN PendingContracts pc ON cb.currency = pc.currency
                 LEFT JOIN InventoryValuation iv ON cb.currency = iv.currency
                 LEFT JOIN AggregatedFlows af ON cb.currency = af.currency
+                LEFT JOIN TopPartnersAgg tp ON cb.currency = tp.currency
+                LEFT JOIN VolumeBreakdownAgg vb ON cb.currency = vb.currency
                 LEFT JOIN AggregatedHistory ah ON cb.currency = ah.currency
                 LEFT JOIN RecentTransactions rt ON cb.currency = rt.currency
             ), 
@@ -323,6 +375,143 @@ async def get_financial_overview_json(db, user_id: str) -> str:
             return json_str or "{}"
     except Exception as e:
         logger.error(f"Error fetching financial overview: {e}", exc_info=True)
+        raise e
+
+SQL_PAGINATED_TRANSACTIONS = """
+WITH TargetUser AS (
+    SELECT DISTINCT userdataid 
+    FROM users 
+    WHERE accountid = $1::uuid
+),
+CurrentShareholderCodes AS (
+    SELECT DISTINCT companycode
+    FROM corporation_shareholders
+    WHERE userid IN (SELECT userdataid FROM TargetUser)
+),
+VirtualLedger AS (
+    -- Route 1: Comex Trades
+    SELECT 
+        'CX_' || t.tradeid AS id,
+        t.pricecurrency AS currency,
+        CASE WHEN o.type = 'BUY' THEN -t.priceamount ELSE t.priceamount END AS amount,
+        t.amount as item_quantity,
+        t.timestamp,
+        CASE WHEN o.type = 'BUY' THEN 'CX BUY' ELSE 'CX SELL' END AS category,
+        ce.name AS partnername,
+        ce.naturalid AS partnercode
+    FROM comex_trade_orders_trades t
+    JOIN comex_trade_orders o ON t.orderid = o.orderid
+    JOIN commodity_exchanges ce ON o.exchangeid = ce.id
+    WHERE o.userid IN (SELECT userdataid FROM TargetUser)
+
+    UNION ALL
+
+    -- Route 2: Fulfilled & Resolved Contracts
+    SELECT 
+        'CONTRACT_' || c.id || '_' || cc.id AS id,
+        cc.currency AS currency,
+        CASE 
+            WHEN cc.contractparty = 'PAYER' THEN -cc.amountmoney
+            ELSE cc.amountmoney 
+        END AS amount,
+        NULL::numeric as item_quantity,
+        c.date_fulfilled AS timestamp,
+        CASE 
+            WHEN sc.companycode IS NOT NULL THEN 'CORP_CONTRACT'
+            ELSE 'CONTRACT'
+        END AS category,
+        c.partnername,
+        c.partnercode  
+    FROM contract_conditions cc
+    JOIN contracts c ON cc.contractid = c.id
+    LEFT JOIN CurrentShareholderCodes sc ON sc.companycode = c.partnercode
+    WHERE c.userid IN (SELECT userdataid FROM TargetUser)
+      AND cc.type = 'PAYMENT' 
+      AND cc.status IN ('FULFILLED', 'RESOLVED') 
+      AND cc.amountmoney IS NOT NULL
+      AND c.party = cc.contractparty
+),
+Filtered AS (
+    SELECT *
+    FROM VirtualLedger
+    WHERE ($2::text IS NULL OR currency = $2::text)
+      AND (
+          $3::text IS NULL OR $3::text = 'ALL' OR
+          ($3::text = '24H' AND timestamp >= NOW() - INTERVAL '24 hours') OR
+          ($3::text = '7D' AND timestamp >= NOW() - INTERVAL '7 days') OR
+          ($3::text = '30D' AND timestamp >= NOW() - INTERVAL '30 days') OR
+          ($3::text = '1Y' AND timestamp >= NOW() - INTERVAL '1 year')
+      )
+      AND (
+          $4::text IS NULL OR $4::text = '' OR
+          partnercode ILIKE '%' || $4::text || '%' OR
+          partnername ILIKE '%' || $4::text || '%' OR
+          category ILIKE '%' || $4::text || '%'
+      )
+),
+TotalCount AS (
+    SELECT COUNT(*)::int AS count FROM Filtered
+),
+PageRows AS (
+    SELECT 
+        id,
+        category AS type,
+        partnername,
+        partnercode,
+        amount,
+        item_quantity,
+        timestamp
+    FROM Filtered
+    ORDER BY timestamp DESC
+    LIMIT $5::int OFFSET $6::int
+)
+SELECT jsonb_build_object(
+    'total_count', (SELECT count FROM TotalCount),
+    'limit', $5::int,
+    'offset', $6::int,
+    'transactions', COALESCE(
+        (
+            SELECT jsonb_agg(
+                jsonb_build_object(
+                    'Id', id,
+                    'Type', type,
+                    'PartnerName', COALESCE(partnername, 'Unknown'),
+                    'PartnerCode', COALESCE(partnercode, '???'),
+                    'Amount', amount,
+                    'ItemQuantity', item_quantity,
+                    'Timestamp', to_char(timestamp, 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                )
+            )
+            FROM PageRows
+        ),
+        '[]'::jsonb
+    )
+)::text;
+"""
+
+async def get_paginated_transactions_json(
+    db, 
+    user_id: str, 
+    currency: str | None = None, 
+    timeframe: str | None = None, 
+    search: str | None = None, 
+    limit: int = 50, 
+    offset: int = 0
+) -> str:
+    try:
+        async with db.pool.acquire() as conn:
+            json_str = await conn.fetchval(
+                SQL_PAGINATED_TRANSACTIONS, 
+                user_id, 
+                currency, 
+                timeframe, 
+                search, 
+                limit, 
+                offset
+            )
+            return json_str or '{"total_count": 0, "transactions": []}'
+    except Exception as e:
+        logger.error(f"Error fetching paginated transactions: {e}", exc_info=True)
         raise e
 
 SQL_TRANSACTION_DETAIL = """

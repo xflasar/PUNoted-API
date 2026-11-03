@@ -1,7 +1,11 @@
 import logging
 
 from app.core.redis_client import redis_client
-from repositories.finances_repo import get_financial_overview_json, get_transaction_details_json
+from repositories.finances_repo import (
+    get_financial_overview_json, 
+    get_transaction_details_json,
+    get_paginated_transactions_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,29 @@ async def fetch_financial_overview(db, user_id: str) -> str:
 
     except Exception as e:
         logger.error(f"Failed to generate financial overview: {e}", exc_info=True)
+        raise
+
+async def fetch_paginated_transactions(
+    db, 
+    user_id: str, 
+    currency: str | None = None, 
+    timeframe: str | None = None, 
+    search: str | None = None, 
+    limit: int = 50, 
+    offset: int = 0
+) -> str:
+    try:
+        return await get_paginated_transactions_json(
+            db, 
+            user_id, 
+            currency=currency, 
+            timeframe=timeframe, 
+            search=search, 
+            limit=limit, 
+            offset=offset
+        )
+    except Exception as e:
+        logger.error(f"Failed to fetch paginated transactions: {e}", exc_info=True)
         raise
 
 async def fetch_transaction_details(db, user_id: str, tx_id: str) -> str:

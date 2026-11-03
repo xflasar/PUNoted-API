@@ -485,25 +485,25 @@ async def evaluate_user_telemetry_notifications(
                     except Exception:
                         pass
 
-                currencies_data.append({
-                    "code": code,
-                    "balance": bal,
-                    "income_24h": income_24h,
-                    "expense_24h": expense_24h
-                })
+                    currencies_data.append({
+                        "code": code,
+                        "balance": bal,
+                        "income_24h": income_24h,
+                        "expense_24h": expense_24h
+                    })
 
-            balances_str = ", ".join([f"{int(c['balance']):,} {c['code']}" for c in currencies_data[:3]])
-            dedup = f"financial_daily_{user_accountid}_{today_str}"
-            await create_user_notification(
-                conn, user_accountid, "financial", "financial_daily",
-                "Daily Financial Balance Summary",
-                f"24h Financial Summary across your active liquid accounts: {balances_str}.",
-                dedup_key=dedup,
-                data={
-                    "balances": [dict(a) for a in finance_accs],
-                    "currencies": currencies_data
-                }
-            )
+                balances_str = ", ".join([f"{int(c['balance']):,} {c['code']}" for c in currencies_data[:3]])
+                dedup = f"financial_daily_{user_accountid}_{today_str}"
+                await create_user_notification(
+                    conn, user_accountid, "financial", "financial_daily",
+                    "Daily Financial Balance Summary",
+                    f"24h Financial Summary across your active liquid accounts: {balances_str}.",
+                    dedup_key=dedup,
+                    data={
+                        "balances": [dict(a) for a in finance_accs],
+                        "currencies": currencies_data
+                    }
+                )
 
 
 async def evaluate_all_users_notifications(pool):
