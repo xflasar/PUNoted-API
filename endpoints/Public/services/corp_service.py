@@ -6,7 +6,7 @@ from endpoints.Public.repositories.corp_repo import fetch_corp_prices
 logger = logging.getLogger(__name__)
 
 CSV_HEADERS = [
-    "ticker", "price"
+    "Location", "Type", "CX", "Ticker", "Price"
 ]
 
 async def generate_json_data(db) -> list:
@@ -15,16 +15,31 @@ async def generate_json_data(db) -> list:
         json_data = []
 
         for record in records:
-            # Using the walrus operator (:=) to fetch, assign, and type-check in one optimized step.
+            ticker = record.get("ticker") or ""
+            raw_price = record.get("price", 0)
+            price = float(raw_price) if isinstance(raw_price, Decimal) else (float(raw_price) if raw_price is not None else 0.0)
+
             json_data.append({
-                header: float(val) if isinstance(val := record.get(header, 0), Decimal) else val
-                for header in CSV_HEADERS
+                "Location": "EMPIRE",
+                "Type": "BOTH",
+                "CX": "",
+                "Ticker": ticker,
+                "Price": price,
+                "ticker": ticker,
+                "price": price,
             })
 
         return json_data
     except Exception as e:
         logger.error(f"Failed to generate JSON data for market data: {e}", exc_info=True)
         raise
+
+async def generate_csv_data(db) -> str:
+    json_data = await generate_json_data(db)
+    csv_lines = [";".join(CSV_HEADERS)]
+    for row in json_data:
+        csv_lines.append(";".join([str(row.get(header, "")) for header in CSV_HEADERS]))
+    return "\n".join(csv_lines)
 
 async def get_ship_presets(db, corporation_id: str, user_id: str = None) -> list:
     import json

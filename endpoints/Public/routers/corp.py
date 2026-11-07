@@ -1,3 +1,4 @@
+from endpoints.Public.services.corp_service import generate_csv_data
 import json
 import logging
 from typing import Optional
@@ -38,9 +39,7 @@ corporation_router = APIRouter()
 @limiter.limit("120/minute", key_func=get_auth_key)
 @limiter.limit("60/minute", key_func=get_public_key)
 async def get_corporation_prices_json(
-    request: Request,
-    #cx: Optional[str] = Query(None, description="Search by CX CODE."),
-    user_id: Optional[str] = Depends(OptionalAuth())
+    request: Request
 ):
     db = request.app.state.db
 
@@ -49,6 +48,27 @@ async def get_corporation_prices_json(
     return Response(
         content=json.dumps(json_data),
         media_type="application/json",
+        headers={
+            "Cache-Control": "public, max-age=1800"
+        }
+    )
+
+@corporation_router.get(
+    "/csv/prices",
+    description="Get corporation market data in CSV format. Public access allowed."
+)
+@limiter.limit("120/minute", key_func=get_auth_key)
+@limiter.limit("60/minute", key_func=get_public_key)
+async def get_corporation_prices_csv(
+    request: Request
+):
+    db = request.app.state.db
+
+    csv_data = await generate_csv_data(db)
+
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
         headers={
             "Cache-Control": "public, max-age=1800"
         }
