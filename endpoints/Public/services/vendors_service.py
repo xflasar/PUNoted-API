@@ -34,7 +34,8 @@ async def generate_vendors_csv(
             "vendor_id", "company_code", "company_name", "corp_name", "operator_name",
             "active", "last_active", "exchange", "order_id", "ticker", "order_type",
             "fixed_price", "corp_price", "cx_price", "total_available",
-            "location_id", "location_name", "location_code", "location_available"
+            "location_id", "location_name", "location_code", "location_available",
+            "contract_reserved_amount"
         ])
 
         for v in vendors:
@@ -64,6 +65,7 @@ async def generate_vendors_csv(
                         loc.get("location_name", ""),
                         loc.get("location_code", ""),
                         loc.get("available", 0.0),
+                        loc.get("contract_reserved_amount", 0.0),
                     ])
 
         return output.getvalue()

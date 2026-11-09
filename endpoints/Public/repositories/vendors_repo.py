@@ -80,18 +80,26 @@ async def fetch_public_vendors(
                 if raw_loc:
                     if isinstance(raw_loc, str):
                         try:
-                            loc_list = json.loads(raw_loc)
+                            parsed_json = json.loads(raw_loc)
+                            if isinstance(parsed_json, str):
+                                parsed_json = json.loads(parsed_json)
+                            loc_list = parsed_json if isinstance(parsed_json, list) else []
                         except Exception:
                             loc_list = []
-                    else:
+                    elif isinstance(raw_loc, list):
                         loc_list = raw_loc
+                    else:
+                        loc_list = []
+
+                # Ensure all elements in loc_list are dictionaries
+                loc_list = [l for l in loc_list if isinstance(l, dict)]
 
                 r_dict["parsed_locations"] = loc_list
                 parsed_orders.append(r_dict)
 
                 for loc in loc_list:
-                    if "id" in loc:
-                        all_location_ids.add(loc["id"])
+                    if "id" in loc and loc["id"]:
+                        all_location_ids.add(str(loc["id"]))
 
             # Step 3: Location lookup (Name & Natural Code)
             location_lookup = {}
@@ -146,6 +154,38 @@ async def fetch_public_vendors(
                     (r["displayname"], r["ticker"], r["location_id"]): float(r["quantity"] or 0) for r in inv_rows
                 }
 
+            # Step 4b: Contract reserved amount lookup
+            contract_reserved_map = {}
+            if gamename_ticker_pairs:
+                contracts_reserved_query = f"""
+                    SELECT 
+                        ud.displayname,
+                        COALESCE(m.ticker, cm.materialid) as ticker,
+                        COALESCE(cc.addressstationid, cc.addressplanetid, cc.destinationstationid, cc.destinationplanetid)::text as location_id,
+                        SUM(GREATEST(0, cm.amount - COALESCE(cm.pickedupamount, 0)))::float as reserved_amount
+                    FROM contracts c
+                    JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
+                    JOIN users_data ud ON (ud.userid::text = u.userdataid::text OR ud.userid::text = u.accountid::text)
+                    JOIN contract_conditions cc ON cc.contractid = c.id AND cc.contractparty = c.party
+                    JOIN contract_materials cm ON cm.contractconditionid = cc.id AND cm.contractparty = cc.contractparty
+                    LEFT JOIN materials m ON m.materialid = cm.materialid
+                    JOIN (VALUES {values_str}) AS t(displayname, ticker)
+                      ON ud.displayname = t.displayname AND COALESCE(m.ticker, cm.materialid) = t.ticker
+                    WHERE c.status NOT IN ('FULFILLED', 'REJECTED', 'TERMINATED', 'CANCELLED', 'CLOSED', 'BREACHED')
+                      AND cc.status NOT IN ('FULFILLED', 'REJECTED', 'CANCELLED')
+                      AND cc.party = c.party
+                      AND cc.type IN ('PROVISION', 'DELIVERY', 'PROVISION_SHIPMENT')
+                    GROUP BY 1, 2, 3
+                    HAVING COALESCE(cc.addressstationid, cc.addressplanetid, cc.destinationstationid, cc.destinationplanetid) IS NOT NULL;
+                """
+                try:
+                    res_rows = await con.fetch(contracts_reserved_query)
+                    contract_reserved_map = {
+                        (r["displayname"], r["ticker"], r["location_id"]): float(r["reserved_amount"] or 0.0) for r in res_rows
+                    }
+                except Exception as ex_res:
+                    logger.warning(f"Could not fetch contract reserved amounts: {ex_res}")
+
             # Step 5: Construct vendor dictionary
             vendors_dict = {}
 
@@ -168,6 +208,7 @@ async def fetch_public_vendors(
 
                 final_locations = []
                 total_available = 0.0
+                total_contract_reserved = 0.0
 
                 for loc in r["parsed_locations"]:
                     loc_id = loc.get("id")
@@ -175,12 +216,14 @@ async def fetch_public_vendors(
 
                     storage_qty = inventory_map.get((r["gamename"], r["materialticker"], loc_id), 0.0)
                     target_amount = loc.get("amount", 0)
+                    contract_reserved_qty = contract_reserved_map.get((r["gamename"], r["materialticker"], loc_id), 0.0)
+                    total_contract_reserved += contract_reserved_qty
 
                     loc_available = 0.0
                     if r["ordertype"] == "buy":
                         loc_available = max(0.0, float(target_amount) - storage_qty)
                     else:
-                        loc_available = max(0.0, storage_qty - float(target_amount))
+                        loc_available = max(0.0, storage_qty - float(target_amount) - contract_reserved_qty)
 
                     total_available += loc_available
 
@@ -190,6 +233,7 @@ async def fetch_public_vendors(
                             "location_name": details["name"] if details else "Unknown",
                             "location_code": details["code"] if details else "???",
                             "available": loc_available,
+                            "contract_reserved_amount": contract_reserved_qty,
                         }
                     )
 
@@ -205,6 +249,7 @@ async def fetch_public_vendors(
                         "cxprice": float(r.get("cxprice", 0.0) or 0.0),
                     },
                     "available": total_available,
+                    "contract_reserved_amount": total_contract_reserved,
                 }
 
                 vendors_dict[vendor_id]["orders"].append(order_data)

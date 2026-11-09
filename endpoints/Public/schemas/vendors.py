@@ -16,6 +16,7 @@ class VendorLocation(BaseModel):
     location_name: str
     location_code: str
     available: float
+    contract_reserved_amount: float = 0.0
 
 class VendorOrder(BaseModel):
     orderid: Optional[str] = None
@@ -25,6 +26,7 @@ class VendorOrder(BaseModel):
     location: List[VendorLocation] = Field(default_factory=list)
     price: Dict[str, float] = Field(default_factory=dict)
     available: float = 0.0
+    contract_reserved_amount: float = 0.0
 
 class VendorEntry(BaseModel):
     vendor: VendorDetails
