@@ -115,37 +115,6 @@ class BankingRepository:
                   {bank_filter}
             """, *params)
 
-            # Auto-populate loan_structure from contract installment conditions for linked loans
-            await conn.execute("""
-                UPDATE bank_loan_requests blr
-                SET loan_structure = sub.calc_structure
-                FROM (
-                    SELECT 
-                        c.id as contract_id,
-                        c.localid as contract_localid,
-                        CASE 
-                            WHEN (
-                                SELECT COUNT(*)
-                                FROM contract_loan_installments cli
-                                JOIN contract_conditions cc ON cc.id = cli.conditionid
-                                WHERE cc.contractid = c.id AND cli.repaymentamount = 0 AND cli.interestamount > 0
-                            ) > 0 THEN 'INTEREST_ONLY'
-                            WHEN (
-                                SELECT COUNT(*)
-                                FROM contract_loan_installments cli
-                                JOIN contract_conditions cc ON cc.id = cli.conditionid
-                                WHERE cc.contractid = c.id AND cli.repaymentamount > 0 AND cli.interestamount > 0
-                            ) > 1 THEN 'AMORTIZING_STABLE'
-                            ELSE 'STANDARD'
-                        END as calc_structure
-                    FROM contracts c
-                ) sub
-                WHERE (blr.contract_id = sub.contract_id OR blr.contract_id = sub.contract_localid)
-                  AND COALESCE(blr.transaction_type, 'LOAN') = 'LOAN'
-                  AND sub.calc_structure != 'STANDARD'
-                  AND (blr.loan_structure IS NULL OR blr.loan_structure = 'STANDARD');
-            """)
-
     async def create_bank(
         self,
         owner_username: str,
