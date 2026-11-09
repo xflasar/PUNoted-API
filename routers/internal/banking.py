@@ -11,6 +11,8 @@ from models.banking_schema import (
     LoanRequestResponse,
     LoanRequestAction,
     LoanLinkContract,
+    LoanRelinkContract,
+    LoanEditPayload,
     ManualDepositPayload,
     BankCsvImportPayload,
     BankCsvImportResponse,
@@ -347,7 +349,8 @@ async def link_contract_to_bank(
             data.contract_localid,
             data.interest_rate,
             data.term_days,
-            data.transaction_type or "LOAN"
+            data.transaction_type or "LOAN",
+            data.loan_structure
         )
         await global_ws_manager.broadcast("banking_updates", {"type": "BANKING_DATA_UPDATE", "event": "CONTRACT_LINKED", "bank_id": data.bank_id})
         return linked_res
@@ -405,3 +408,88 @@ async def get_bank_depositors(
     service: BankingService = Depends(get_banking_service)
 ):
     return await service.get_bank_depositors(bank_id)
+
+
+@banking_router.delete("/loans/{loan_id:int}")
+async def delete_loan_transaction(
+    loan_id: int,
+    user_id: str = Depends(get_current_user_id),
+    service: BankingService = Depends(get_banking_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        username = await get_username_from_user_id(conn, user_id)
+        bank_id = await conn.fetchval("SELECT bank_id FROM bank_loan_requests WHERE id = $1", loan_id)
+        if not bank_id:
+            raise HTTPException(status_code=404, detail="Loan or transaction not found")
+        owner_username = await conn.fetchval("SELECT owner_username FROM player_banks WHERE id = $1", bank_id)
+        if not username or username != owner_username:
+            raise HTTPException(status_code=403, detail="You do not own the bank associated with this transaction")
+
+    deleted = await service.delete_loan_transaction(loan_id)
+    if not deleted:
+        raise HTTPException(status_code=400, detail="Failed to delete transaction")
+
+    await global_ws_manager.broadcast("banking_updates", {"type": "BANKING_DATA_UPDATE", "event": "LOAN_DELETED", "bank_id": bank_id, "loan_id": loan_id})
+    return {"success": True, "message": "Transaction deleted successfully"}
+
+
+@banking_router.put("/loans/{loan_id:int}", response_model=LoanRequestResponse)
+async def edit_loan_transaction(
+    loan_id: int,
+    data: LoanEditPayload,
+    user_id: str = Depends(get_current_user_id),
+    service: BankingService = Depends(get_banking_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        username = await get_username_from_user_id(conn, user_id)
+        bank_id = await conn.fetchval("SELECT bank_id FROM bank_loan_requests WHERE id = $1", loan_id)
+        if not bank_id:
+            raise HTTPException(status_code=404, detail="Loan or transaction not found")
+        owner_username = await conn.fetchval("SELECT owner_username FROM player_banks WHERE id = $1", bank_id)
+        if not username or username != owner_username:
+            raise HTTPException(status_code=403, detail="You do not own the bank associated with this transaction")
+
+    try:
+        updated = await service.edit_loan_transaction(
+            loan_id,
+            amount=data.amount,
+            interest_rate=data.interest_rate,
+            term_days=data.term_days,
+            status=data.status,
+            contract_id=data.contract_id,
+            requester_username=data.requester_username,
+            loan_structure=data.loan_structure
+        )
+        await global_ws_manager.broadcast("banking_updates", {"type": "BANKING_DATA_UPDATE", "event": "LOAN_EDITED", "bank_id": bank_id, "loan_id": loan_id})
+        return updated
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@banking_router.post("/loans/relink", response_model=LoanRequestResponse)
+async def relink_contract_to_loan(
+    data: LoanRelinkContract,
+    user_id: str = Depends(get_current_user_id),
+    service: BankingService = Depends(get_banking_service)
+):
+    async with service.repo.db.pool.acquire() as conn:
+        username = await get_username_from_user_id(conn, user_id)
+        bank_id = await conn.fetchval("SELECT bank_id FROM bank_loan_requests WHERE id = $1", data.loan_id)
+        if not bank_id:
+            raise HTTPException(status_code=404, detail="Loan or transaction not found")
+        owner_username = await conn.fetchval("SELECT owner_username FROM player_banks WHERE id = $1", bank_id)
+        if not username or username != owner_username:
+            raise HTTPException(status_code=403, detail="You do not own the bank associated with this transaction")
+
+    try:
+        relinked = await service.relink_contract_to_loan(
+            loan_id=data.loan_id,
+            contract_localid=data.contract_localid,
+            interest_rate=data.interest_rate,
+            term_days=data.term_days
+        )
+        await global_ws_manager.broadcast("banking_updates", {"type": "BANKING_DATA_UPDATE", "event": "CONTRACT_RELINKED", "bank_id": bank_id, "loan_id": data.loan_id})
+        return relinked
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+

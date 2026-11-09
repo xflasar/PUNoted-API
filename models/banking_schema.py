@@ -60,6 +60,9 @@ class BankResponse(BaseModel):
     total_loans_count: Optional[int] = 0
     total_lent_amount: Optional[float] = 0.0
     active_lent_amount: Optional[float] = 0.0
+    active_repaid_amount: Optional[float] = 0.0
+    active_outstanding_capital: Optional[float] = 0.0
+    available_liquidity: Optional[float] = None
     currency: Optional[str] = "ICA"
     default_repay_days: Optional[int] = 14
     default_interval: Optional[str] = "At Maturity"
@@ -103,6 +106,13 @@ class LoanRequestResponse(BaseModel):
     currency: Optional[str] = None
     transaction_type: Optional[str] = "LOAN"
     is_verified: Optional[bool] = False
+    payout_fulfilled: Optional[bool] = False
+    total_installments: Optional[int] = 0
+    fulfilled_installments: Optional[int] = 0
+    repaid_amount: Optional[float] = 0.0
+    loan_structure: Optional[str] = "STANDARD"
+    total_interest_amount: Optional[float] = 0.0
+    final_balloon_amount: Optional[float] = 0.0
 
 
 class LoanRequestAction(BaseModel):
@@ -117,6 +127,25 @@ class LoanLinkContract(BaseModel):
     interest_rate: Optional[float] = None
     term_days: Optional[int] = None
     transaction_type: Optional[str] = "LOAN"
+    loan_structure: Optional[str] = None
+
+
+class LoanRelinkContract(BaseModel):
+    loan_id: int
+    contract_localid: str
+    interest_rate: Optional[float] = None
+    term_days: Optional[int] = None
+
+
+class LoanEditPayload(BaseModel):
+    loan_id: int
+    amount: Optional[float] = None
+    interest_rate: Optional[float] = None
+    term_days: Optional[int] = None
+    status: Optional[str] = None
+    contract_id: Optional[str] = None
+    requester_username: Optional[str] = None
+    loan_structure: Optional[str] = None
 
 
 class ManualDepositPayload(BaseModel):

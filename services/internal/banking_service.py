@@ -70,8 +70,8 @@ class BankingService:
     async def action_loan_request(self, loan_id: int, status: str, contract_id: Optional[str] = None) -> bool:
         return await self.repo.action_loan_request(loan_id, status, contract_id)
 
-    async def link_contract_to_bank(self, bank_id: int, contract_localid: str, interest_rate: Optional[float] = None, term_days: Optional[int] = None, transaction_type: str = "LOAN"):
-        return await self.repo.link_contract_to_bank(bank_id, contract_localid, interest_rate, term_days, transaction_type)
+    async def link_contract_to_bank(self, bank_id: int, contract_localid: str, interest_rate: Optional[float] = None, term_days: Optional[int] = None, transaction_type: str = "LOAN", loan_structure: Optional[str] = None):
+        return await self.repo.link_contract_to_bank(bank_id, contract_localid, interest_rate, term_days, transaction_type, loan_structure)
 
     async def import_bank_ledger_csv(self, bank_id: int, csv_content: str):
         return await self.repo.import_bank_ledger_csv(bank_id, csv_content)
@@ -84,3 +84,32 @@ class BankingService:
 
     async def process_automatic_weekly_yields(self) -> Dict[str, Any]:
         return await self.repo.process_automatic_weekly_yields()
+
+    async def delete_loan_transaction(self, loan_id: int) -> bool:
+        return await self.repo.delete_loan_transaction(loan_id)
+
+    async def edit_loan_transaction(
+        self,
+        loan_id: int,
+        amount: Optional[float] = None,
+        interest_rate: Optional[float] = None,
+        term_days: Optional[int] = None,
+        status: Optional[str] = None,
+        contract_id: Optional[str] = None,
+        requester_username: Optional[str] = None,
+        loan_structure: Optional[str] = None
+    ) -> Dict[str, Any]:
+        return await self.repo.edit_loan_transaction(
+            loan_id, amount, interest_rate, term_days, status, contract_id, requester_username, loan_structure
+        )
+
+    async def relink_contract_to_loan(
+        self,
+        loan_id: int,
+        contract_localid: str,
+        interest_rate: Optional[float] = None,
+        term_days: Optional[int] = None
+    ) -> Dict[str, Any]:
+        return await self.repo.relink_contract_to_loan(
+            loan_id, contract_localid, interest_rate, term_days
+        )

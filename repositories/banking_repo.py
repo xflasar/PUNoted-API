@@ -15,6 +15,8 @@ class BankingRepository:
         If bank_id is provided, only inspects transactions for that specific bank.
         """
         async with self.db.pool.acquire() as conn:
+            await conn.execute("ALTER TABLE bank_loan_requests ADD COLUMN IF NOT EXISTS loan_structure VARCHAR(30) DEFAULT 'STANDARD';")
+
             # 1. Sync pending contract transactions (DEPOSITS, WITHDRAWALS, LOANS)
             if bank_id is not None:
                 pending_records = await conn.fetch("""
@@ -24,7 +26,7 @@ class BankingRepository:
                         c.status as contract_status
                     FROM bank_loan_requests blr
                     JOIN contracts c ON (c.localid = blr.contract_id OR c.id = blr.contract_id)
-                    WHERE blr.status = 'PENDING' AND blr.bank_id = $1
+                    WHERE blr.status IN ('PENDING', 'ACCEPTED') AND blr.bank_id = $1
                 """, bank_id)
             else:
                 pending_records = await conn.fetch("""
@@ -34,7 +36,7 @@ class BankingRepository:
                         c.status as contract_status
                     FROM bank_loan_requests blr
                     JOIN contracts c ON (c.localid = blr.contract_id OR c.id = blr.contract_id)
-                    WHERE blr.status = 'PENDING'
+                    WHERE blr.status IN ('PENDING', 'ACCEPTED')
                 """)
             
             for rec in pending_records:
@@ -49,56 +51,69 @@ class BankingRepository:
                     await conn.execute("UPDATE bank_loan_requests SET status = 'REJECTED', updated_at = NOW() WHERE id = $1", blr_id)
                     continue
                 
-                # Check payment conditions for this contract
+                # Check payout / payment conditions for this contract
                 pay_conds = await conn.fetch("""
-                    SELECT status FROM contract_conditions
+                    SELECT type, status FROM contract_conditions
                     WHERE contractid = $1 AND type IN ('PAYMENT', 'LOAN_PAYOUT')
                 """, c_id)
                 
-                if c_status in ("FULFILLED", "CLOSED"):
-                    is_fulfilled = True
-                elif pay_conds:
-                    has_pending = any(pc["status"] == "PENDING" for pc in pay_conds)
-                    has_fulfilled = any(pc["status"] == "FULFILLED" for pc in pay_conds)
-                    is_fulfilled = (not has_pending) and has_fulfilled
-                else:
-                    is_fulfilled = False
-                    
-                if is_fulfilled:
-                    if t_type == "DEPOSIT":
-                        if amt > 0:
-                            await conn.execute("UPDATE player_banks SET liquidity = COALESCE(liquidity, 0) + $1 WHERE id = $2", amt, b_id)
+                if t_type == "LOAN":
+                    if c_status in ("FULFILLED", "CLOSED"):
+                        await conn.execute("UPDATE bank_loan_requests SET status = 'REPAID', updated_at = NOW() WHERE id = $1", blr_id)
+                    elif c_status == "PARTIALLY_FULFILLED":
+                        # Payout was disbursed, loan is active and being repaid
                         await conn.execute("UPDATE bank_loan_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1", blr_id)
-                    elif t_type == "WITHDRAWAL":
-                        if amt > 0:
-                            await conn.execute("UPDATE player_banks SET liquidity = GREATEST(0, COALESCE(liquidity, 0) - $1) WHERE id = $2", amt, b_id)
-                        await conn.execute("UPDATE bank_loan_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1", blr_id)
-                    else: # LOAN
-                        new_st = "REPAID" if c_status in ("FULFILLED", "CLOSED") else "APPROVED"
-                        await conn.execute("UPDATE bank_loan_requests SET status = $1, updated_at = NOW() WHERE id = $2", new_st, blr_id)
+                    elif c_status == "OPEN":
+                        payout_fulfilled = any(pc["status"] == "FULFILLED" for pc in pay_conds)
+                        if payout_fulfilled:
+                            await conn.execute("UPDATE bank_loan_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1", blr_id)
+                        else:
+                            # Accepted and open in-game, but initial loan money payout not yet fulfilled
+                            await conn.execute("UPDATE bank_loan_requests SET status = 'ACCEPTED', updated_at = NOW() WHERE id = $1", blr_id)
+                elif t_type in ("DEPOSIT", "WITHDRAWAL"):
+                    if c_status in ("FULFILLED", "CLOSED"):
+                        is_fulfilled = True
+                    elif pay_conds:
+                        has_pending = any(pc["status"] == "PENDING" for pc in pay_conds)
+                        has_fulfilled = any(pc["status"] == "FULFILLED" for pc in pay_conds)
+                        is_fulfilled = (not has_pending) and has_fulfilled
+                    else:
+                        is_fulfilled = False
+                        
+                    if is_fulfilled:
+                        if t_type == "DEPOSIT":
+                            if amt > 0:
+                                await conn.execute("UPDATE player_banks SET liquidity = COALESCE(liquidity, 0) + $1 WHERE id = $2", amt, b_id)
+                            await conn.execute("UPDATE bank_loan_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1", blr_id)
+                        elif t_type == "WITHDRAWAL":
+                            if amt > 0:
+                                await conn.execute("UPDATE player_banks SET liquidity = GREATEST(0, COALESCE(liquidity, 0) - $1) WHERE id = $2", amt, b_id)
+                            await conn.execute("UPDATE bank_loan_requests SET status = 'APPROVED', updated_at = NOW() WHERE id = $1", blr_id)
 
-            # 2. Check active loans (status = 'APPROVED') that reached FULFILLED or CLOSED
-            if bank_id is not None:
-                await conn.execute("""
-                    UPDATE bank_loan_requests blr
-                    SET status = 'REPAID', updated_at = NOW()
-                    FROM contracts c
-                    WHERE (blr.contract_id = c.localid OR blr.contract_id = c.id)
-                      AND blr.status = 'APPROVED'
-                      AND COALESCE(blr.transaction_type, 'LOAN') = 'LOAN'
-                      AND c.status IN ('FULFILLED', 'CLOSED')
-                      AND blr.bank_id = $1
-                """, bank_id)
-            else:
-                await conn.execute("""
-                    UPDATE bank_loan_requests blr
-                    SET status = 'REPAID', updated_at = NOW()
-                    FROM contracts c
-                    WHERE (blr.contract_id = c.localid OR blr.contract_id = c.id)
-                      AND blr.status = 'APPROVED'
-                      AND COALESCE(blr.transaction_type, 'LOAN') = 'LOAN'
-                      AND c.status IN ('FULFILLED', 'CLOSED')
-                """)
+            # 2. Check active or accepted loans that reached FULFILLED, CLOSED or REJECTED
+            bank_filter = "AND blr.bank_id = $1" if bank_id is not None else ""
+            params = [bank_id] if bank_id is not None else []
+            
+            await conn.execute(f"""
+                UPDATE bank_loan_requests blr
+                SET status = 'REPAID', updated_at = NOW()
+                FROM contracts c
+                WHERE (blr.contract_id = c.localid OR blr.contract_id = c.id)
+                  AND blr.status IN ('APPROVED', 'ACCEPTED')
+                  AND COALESCE(blr.transaction_type, 'LOAN') = 'LOAN'
+                  AND c.status IN ('FULFILLED', 'CLOSED')
+                  {bank_filter}
+            """, *params)
+
+            await conn.execute(f"""
+                UPDATE bank_loan_requests blr
+                SET status = 'REJECTED', updated_at = NOW()
+                FROM contracts c
+                WHERE (blr.contract_id = c.localid OR blr.contract_id = c.id)
+                  AND blr.status IN ('APPROVED', 'ACCEPTED')
+                  AND c.status IN ('BREACHED', 'CANCELLED', 'TERMINATED', 'REJECTED')
+                  {bank_filter}
+            """, *params)
 
     async def create_bank(
         self,
@@ -176,6 +191,14 @@ class BankingRepository:
                        (SELECT COUNT(*) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'LOAN') as total_loans_count,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as total_lent_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND status = 'APPROVED' AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as active_lent_amount,
+                       COALESCE((
+                           SELECT SUM(cli.repaymentamount)
+                           FROM bank_loan_requests lr
+                           JOIN contracts c ON (lr.contract_id = c.localid OR lr.contract_id = c.id)
+                           JOIN contract_conditions cc ON cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
+                           JOIN contract_loan_installments cli ON cli.conditionid = cc.id
+                           WHERE lr.bank_id = b.id AND lr.status = 'APPROVED' AND COALESCE(lr.transaction_type, 'LOAN') = 'LOAN'
+                       ), 0.0) as active_repaid_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'DEPOSIT' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_deposit_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'WITHDRAWAL' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_withdrawal_amount,
                        COALESCE((SELECT COUNT(DISTINCT requester_username) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'DEPOSIT'), 0) as depositors_count
@@ -186,7 +209,14 @@ class BankingRepository:
                 ORDER BY b.created_at DESC
             """
             rows = await conn.fetch(query)
-            return [dict(row) for row in rows]
+            banks = []
+            for row in rows:
+                d = dict(row)
+                active_out = max(0.0, float(d.get("active_lent_amount") or 0.0) - float(d.get("active_repaid_amount") or 0.0))
+                d["active_outstanding_capital"] = active_out
+                d["available_liquidity"] = max(0.0, float(d.get("liquidity") or 0.0) - active_out)
+                banks.append(d)
+            return banks
 
     async def get_bank_by_owner(self, owner_username: str) -> Optional[Dict[str, Any]]:
         async with self.db.pool.acquire() as conn:
@@ -202,6 +232,14 @@ class BankingRepository:
                        (SELECT COUNT(*) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'LOAN') as total_loans_count,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as total_lent_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND status = 'APPROVED' AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as active_lent_amount,
+                       COALESCE((
+                           SELECT SUM(cli.repaymentamount)
+                           FROM bank_loan_requests lr
+                           JOIN contracts c ON (lr.contract_id = c.localid OR lr.contract_id = c.id)
+                           JOIN contract_conditions cc ON cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
+                           JOIN contract_loan_installments cli ON cli.conditionid = cc.id
+                           WHERE lr.bank_id = b.id AND lr.status = 'APPROVED' AND COALESCE(lr.transaction_type, 'LOAN') = 'LOAN'
+                       ), 0.0) as active_repaid_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'DEPOSIT' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_deposit_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'WITHDRAWAL' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_withdrawal_amount,
                        COALESCE((SELECT COUNT(DISTINCT requester_username) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'DEPOSIT'), 0) as depositors_count
@@ -210,7 +248,13 @@ class BankingRepository:
                 LEFT JOIN users_data ud ON ud.userid = u.userdataid
                 WHERE b.owner_username = $1
             """, owner_username)
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            active_out = max(0.0, float(d.get("active_lent_amount") or 0.0) - float(d.get("active_repaid_amount") or 0.0))
+            d["active_outstanding_capital"] = active_out
+            d["available_liquidity"] = max(0.0, float(d.get("liquidity") or 0.0) - active_out)
+            return d
 
     async def get_bank_by_id(self, bank_id: int) -> Optional[Dict[str, Any]]:
         await self.sync_loan_repayments(bank_id=bank_id)
@@ -223,6 +267,14 @@ class BankingRepository:
                        (SELECT COUNT(*) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'LOAN') as total_loans_count,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as total_lent_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND status = 'APPROVED' AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as active_lent_amount,
+                       COALESCE((
+                           SELECT SUM(cli.repaymentamount)
+                           FROM bank_loan_requests lr
+                           JOIN contracts c ON (lr.contract_id = c.localid OR lr.contract_id = c.id)
+                           JOIN contract_conditions cc ON cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
+                           JOIN contract_loan_installments cli ON cli.conditionid = cc.id
+                           WHERE lr.bank_id = b.id AND lr.status = 'APPROVED' AND COALESCE(lr.transaction_type, 'LOAN') = 'LOAN'
+                       ), 0.0) as active_repaid_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'DEPOSIT' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_deposit_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'WITHDRAWAL' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_withdrawal_amount,
                        COALESCE((SELECT COUNT(DISTINCT requester_username) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'DEPOSIT'), 0) as depositors_count
@@ -231,7 +283,13 @@ class BankingRepository:
                 LEFT JOIN users_data ud ON ud.userid = u.userdataid
                 WHERE b.id = $1
             """, bank_id)
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            active_out = max(0.0, float(d.get("active_lent_amount") or 0.0) - float(d.get("active_repaid_amount") or 0.0))
+            d["active_outstanding_capital"] = active_out
+            d["available_liquidity"] = max(0.0, float(d.get("liquidity") or 0.0) - active_out)
+            return d
 
     async def create_loan_request(self, bank_id: int, requester_username: str, amount: float, interest_rate: float, term_days: int) -> Dict[str, Any]:
         async with self.db.pool.acquire() as conn:
@@ -252,6 +310,10 @@ class BankingRepository:
                     c.partner_name,
                     c.contract_status,
                     c.contract_duedate,
+                    COALESCE(c.payout_fulfilled, false) as payout_fulfilled,
+                    COALESCE(c.total_installments, 0) as total_installments,
+                    COALESCE(c.fulfilled_installments, 0) as fulfilled_installments,
+                    COALESCE(c.repaid_amount, 0.0) as repaid_amount,
                     COALESCE(b.currency, 'ICA') as currency
                 FROM bank_loan_requests lr
                 JOIN player_banks b ON lr.bank_id = b.id
@@ -260,7 +322,57 @@ class BankingRepository:
                         c.partnercode as partner_code,
                         c.partnername as partner_name,
                         c.status as contract_status,
-                        c.duedate as contract_duedate
+                        c.duedate as contract_duedate,
+                        COALESCE((
+                            SELECT BOOL_OR(cc.status = 'FULFILLED')
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id AND cc.type IN ('LOAN_PAYOUT', 'PAYMENT')
+                        ), false) as payout_fulfilled,
+                        COALESCE((
+                            SELECT COUNT(*)
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT'
+                        ), 0)::int as total_installments,
+                        COALESCE((
+                            SELECT COUNT(*)
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
+                        ), 0)::int as fulfilled_installments,
+                        COALESCE((
+                            SELECT SUM(cli.repaymentamount)
+                            FROM contract_loan_installments cli
+                            JOIN contract_conditions cc ON cc.id = cli.conditionid
+                            WHERE cc.contractid = c.id AND cc.status = 'FULFILLED'
+                        ), 0.0)::float as repaid_amount,
+                        COALESCE((
+                            SELECT SUM(cli.interestamount)
+                            FROM contract_loan_installments cli
+                            JOIN contract_conditions cc ON cc.id = cli.conditionid
+                            WHERE cc.contractid = c.id
+                        ), 0.0)::float as total_interest_amount,
+                        COALESCE((
+                            SELECT cli.repaymentamount
+                            FROM contract_loan_installments cli
+                            JOIN contract_conditions cc ON cc.id = cli.conditionid
+                            WHERE cc.contractid = c.id
+                            ORDER BY cc.index DESC
+                            LIMIT 1
+                        ), 0.0)::float as final_balloon_amount,
+                        CASE 
+                            WHEN (
+                                SELECT COUNT(*)
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id AND cli.repaymentamount = 0 AND cli.interestamount > 0
+                            ) > 0 THEN 'INTEREST_ONLY'
+                            WHEN (
+                                SELECT COUNT(*)
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id AND cli.repaymentamount > 0 AND cli.interestamount > 0
+                            ) > 1 THEN 'AMORTIZING_STABLE'
+                            ELSE 'STANDARD'
+                        END as loan_structure
                     FROM contracts c
                     LEFT JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
                     WHERE (c.localid = lr.contract_id OR c.id = lr.contract_id)
@@ -318,6 +430,13 @@ class BankingRepository:
                     ) as partner_name,
                     c.contract_status,
                     c.contract_duedate,
+                    COALESCE(c.payout_fulfilled, false) as payout_fulfilled,
+                    COALESCE(c.total_installments, 0) as total_installments,
+                    COALESCE(c.fulfilled_installments, 0) as fulfilled_installments,
+                    COALESCE(c.repaid_amount, 0.0) as repaid_amount,
+                    COALESCE(c.loan_structure, lr.loan_structure, 'STANDARD') as loan_structure,
+                    COALESCE(c.total_interest_amount, 0.0) as total_interest_amount,
+                    COALESCE(c.final_balloon_amount, 0.0) as final_balloon_amount,
                     COALESCE(b.currency, 'ICA') as currency
                 FROM bank_loan_requests lr
                 JOIN player_banks b ON lr.bank_id = b.id
@@ -330,7 +449,57 @@ class BankingRepository:
                         c.duedate as contract_duedate,
                         u.username as contract_owner_username,
                         pud_user.company_code as user_company_code,
-                        pud_user.company_name as user_company_name
+                        pud_user.company_name as user_company_name,
+                        COALESCE((
+                            SELECT BOOL_OR(cc.status = 'FULFILLED')
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id AND cc.type IN ('LOAN_PAYOUT', 'PAYMENT')
+                        ), false) as payout_fulfilled,
+                        COALESCE((
+                            SELECT COUNT(*)
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT'
+                        ), 0)::int as total_installments,
+                        COALESCE((
+                            SELECT COUNT(*)
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
+                        ), 0)::int as fulfilled_installments,
+                        COALESCE((
+                            SELECT SUM(cli.repaymentamount)
+                            FROM contract_loan_installments cli
+                            JOIN contract_conditions cc ON cc.id = cli.conditionid
+                            WHERE cc.contractid = c.id AND cc.status = 'FULFILLED'
+                        ), 0.0)::float as repaid_amount,
+                        COALESCE((
+                            SELECT SUM(cli.interestamount)
+                            FROM contract_loan_installments cli
+                            JOIN contract_conditions cc ON cc.id = cli.conditionid
+                            WHERE cc.contractid = c.id
+                        ), 0.0)::float as total_interest_amount,
+                        COALESCE((
+                            SELECT cli.repaymentamount
+                            FROM contract_loan_installments cli
+                            JOIN contract_conditions cc ON cc.id = cli.conditionid
+                            WHERE cc.contractid = c.id
+                            ORDER BY cc.index DESC
+                            LIMIT 1
+                        ), 0.0)::float as final_balloon_amount,
+                        CASE 
+                            WHEN (
+                                SELECT COUNT(*)
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id AND cli.repaymentamount = 0 AND cli.interestamount > 0
+                            ) > 0 THEN 'INTEREST_ONLY'
+                            WHEN (
+                                SELECT COUNT(*)
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id AND cli.repaymentamount > 0 AND cli.interestamount > 0
+                            ) > 1 THEN 'AMORTIZING_STABLE'
+                            ELSE 'STANDARD'
+                        END as loan_structure
                     FROM contracts c
                     LEFT JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
                     LEFT JOIN public_users_data pud_user ON LOWER(pud_user.username) = LOWER(u.username)
@@ -363,13 +532,310 @@ class BankingRepository:
                 """, status, loan_id)
             return "UPDATE 1" in result
 
+    async def delete_loan_transaction(self, loan_id: int) -> bool:
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                DELETE FROM bank_loan_requests
+                WHERE id = $1
+                RETURNING id, bank_id, transaction_type, amount, status
+            """, loan_id)
+            return row is not None
+
+    async def edit_loan_transaction(
+        self,
+        loan_id: int,
+        amount: Optional[float] = None,
+        interest_rate: Optional[float] = None,
+        term_days: Optional[int] = None,
+        status: Optional[str] = None,
+        contract_id: Optional[str] = None,
+        requester_username: Optional[str] = None,
+        loan_structure: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        async with self.db.pool.acquire() as conn:
+            existing = await conn.fetchrow("SELECT * FROM bank_loan_requests WHERE id = $1", loan_id)
+            if not existing:
+                raise ValueError("Transaction record not found")
+
+            new_amt = float(amount) if amount is not None else float(existing["amount"] or 0)
+            new_rate = float(interest_rate) if interest_rate is not None else float(existing["interest_rate"] or 0)
+            new_term = int(term_days) if term_days is not None else int(existing["term_days"] or 0)
+            new_status = status.upper().strip() if status else existing["status"]
+            new_contract = contract_id.strip() if contract_id is not None else existing["contract_id"]
+            new_requester = requester_username.strip() if requester_username else existing["requester_username"]
+            
+            clean_structure = None
+            if loan_structure:
+                s_up = loan_structure.upper().strip()
+                if "INTEREST" in s_up:
+                    clean_structure = "INTEREST_ONLY"
+                elif "AMORTIZ" in s_up or "STABLE" in s_up:
+                    clean_structure = "AMORTIZING_STABLE"
+                else:
+                    clean_structure = "STANDARD"
+            new_structure = clean_structure if clean_structure is not None else existing.get("loan_structure", "STANDARD")
+
+            row = await conn.fetchrow("""
+                UPDATE bank_loan_requests
+                SET amount = $1,
+                    interest_rate = $2,
+                    term_days = $3,
+                    status = $4,
+                    contract_id = $5,
+                    requester_username = $6,
+                    loan_structure = $7,
+                    updated_at = NOW()
+                WHERE id = $8
+                RETURNING *
+            """, new_amt, new_rate, new_term, new_status, new_contract, new_requester, new_structure, loan_id)
+            return dict(row) if row else {}
+
+    async def relink_contract_to_loan(
+        self,
+        loan_id: int,
+        contract_localid: str,
+        interest_rate: Optional[float] = None,
+        term_days: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        async with self.db.pool.acquire() as conn:
+            loan_row = await conn.fetchrow("SELECT * FROM bank_loan_requests WHERE id = $1", loan_id)
+            if not loan_row:
+                raise ValueError("Loan transaction not found")
+
+            bank_id = loan_row["bank_id"]
+            bank_row = await conn.fetchrow("""
+                SELECT b.default_interest_rate, b.default_repay_days, b.owner_username, b.name,
+                       pud_bank.company_code as bank_owner_company_code, pud_bank.company_name as bank_owner_company_name
+                FROM player_banks b
+                LEFT JOIN public_users_data pud_bank ON LOWER(pud_bank.username) = LOWER(b.owner_username)
+                WHERE b.id = $1
+            """, bank_id)
+            bank_rate = bank_row["default_interest_rate"] if bank_row else 5.0
+            bank_term = bank_row["default_repay_days"] if bank_row else 14
+            bank_owner = (bank_row["owner_username"] or "") if bank_row else ""
+
+            contract_row = await conn.fetchrow("""
+                SELECT 
+                    c.localid, c.id, c.partnername, c.partnercode, c.status, c.date, c.duedate,
+                    u.username as contract_owner_username,
+                    pud_user.company_code as user_company_code,
+                    pud_user.company_name as user_company_name,
+                    COALESCE(
+                        (
+                            SELECT cc_payout.amountmoney
+                            FROM contract_conditions cc_payout
+                            WHERE cc_payout.contractid = c.id AND cc_payout.type IN ('LOAN_PAYOUT', 'PAYMENT')
+                            LIMIT 1
+                        ),
+                        (
+                            SELECT SUM(cli_sub.repaymentamount)
+                            FROM (
+                                SELECT DISTINCT ON (cli.conditionid) cli.repaymentamount
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc_sub ON cc_sub.id = cli.conditionid
+                                WHERE cc_sub.contractid = c.id
+                                ORDER BY cli.conditionid
+                            ) cli_sub
+                        ),
+                        (
+                            SELECT SUM(cc.amountmoney)
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id
+                        ), 0.0
+                    ) as total_amount,
+                    COALESCE((
+                        SELECT MAX(cc.currencymoney)
+                        FROM contract_conditions cc
+                        WHERE cc.contractid = c.id
+                    ), 'ICA') as currency,
+                    (
+                        SELECT ROUND(SUM(cc_inst.deadlineduration_millis) / 86400000.0)::int
+                        FROM (
+                            SELECT DISTINCT cc_d.id, cc_d.deadlineduration_millis
+                            FROM contract_conditions cc_d
+                            WHERE cc_d.contractid = c.id AND cc_d.type = 'LOAN_INSTALLMENT'
+                        ) cc_inst
+                    ) as contract_term_days,
+                    (
+                        SELECT ROUND(
+                            (
+                                COALESCE((
+                                    SELECT SUM(cli_d.interestamount)
+                                    FROM (
+                                        SELECT DISTINCT ON (cli.conditionid) cli.interestamount
+                                        FROM contract_loan_installments cli
+                                        JOIN contract_conditions cc_sub ON cc_sub.id = cli.conditionid
+                                        WHERE cc_sub.contractid = c.id AND cc_sub.type = 'LOAN_INSTALLMENT'
+                                        ORDER BY cli.conditionid
+                                    ) cli_d
+                                ), 0.0) / NULLIF(
+                                    COALESCE(
+                                        (SELECT amountmoney FROM contract_conditions WHERE contractid = c.id AND type = 'LOAN_PAYOUT' LIMIT 1),
+                                        (
+                                            SELECT SUM(cli_all.repaymentamount)
+                                            FROM (
+                                                SELECT DISTINCT ON (cli.conditionid) cli.repaymentamount 
+                                                FROM contract_loan_installments cli
+                                                JOIN contract_conditions cc_d ON cc_d.id = cli.conditionid
+                                                WHERE cc_d.contractid = c.id
+                                                ORDER BY cli.conditionid
+                                            ) cli_all
+                                        )
+                                    ), 0.0
+                                ) * 100.0
+                            )::numeric, 3
+                        )::float
+                    ) as contract_interest_rate
+                FROM contracts c
+                LEFT JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
+                LEFT JOIN public_users_data pud_user ON LOWER(pud_user.username) = LOWER(u.username)
+                WHERE LOWER(TRIM(c.localid)) = LOWER(TRIM($1)) OR LOWER(TRIM(c.id)) = LOWER(TRIM($1))
+                ORDER BY 
+                    CASE WHEN LOWER(u.username) = LOWER($2) THEN 1 ELSE 2 END,
+                    c.date DESC
+                LIMIT 1
+            """, contract_localid.strip(), bank_owner)
+            if not contract_row:
+                raise ValueError(f"Contract with localid '{contract_localid}' not found")
+
+            # Check duplicate link on a DIFFERENT transaction in the same bank
+            existing_other = await conn.fetchrow("""
+                SELECT id FROM bank_loan_requests
+                WHERE bank_id = $1 AND id != $2 AND (contract_id = $3 OR contract_id = $4)
+            """, bank_id, loan_id, contract_row["localid"], contract_row["id"])
+            if existing_other:
+                raise ValueError(f"Contract '{contract_localid}' is already linked to transaction #{existing_other['id']}")
+
+            pay_conds = await conn.fetch("""
+                SELECT id, type, party, contractparty, status, amountmoney
+                FROM contract_conditions
+                WHERE contractid = $1 AND type IN ('PAYMENT', 'LOAN_PAYOUT')
+                ORDER BY index ASC
+            """, contract_row["id"])
+
+            is_payment_fulfilled = any(pc["status"] == "FULFILLED" for pc in pay_conds)
+
+            # Determine counterpart display
+            bank_owner_lower = bank_owner.lower()
+            bank_code_lower = (bank_row["bank_owner_company_code"] or "").lower() if bank_row else ""
+            bank_comp_lower = (bank_row["bank_owner_company_name"] or "").lower() if bank_row else ""
+            bank_name_lower = (bank_row["name"] or "").lower() if bank_row else ""
+
+            pcode = (contract_row["partnercode"] or "").strip()
+            pname = (contract_row["partnername"] or "").strip()
+
+            is_partner_bank = (
+                (pcode and pcode.lower() == bank_code_lower) or
+                (pname and (pname.lower() == bank_comp_lower or pname.lower() == bank_name_lower or pname.lower() == bank_owner_lower))
+            )
+
+            if is_partner_bank:
+                c_code = (contract_row["user_company_code"] or "").strip()
+                c_name = (contract_row["user_company_name"] or contract_row["contract_owner_username"] or "").strip()
+            else:
+                c_code = pcode
+                c_name = pname or (contract_row["user_company_name"] or "").strip() or (contract_row["contract_owner_username"] or "").strip()
+
+            if c_code and c_name and c_code.lower() != c_name.lower():
+                partner = f"[{c_code}] {c_name}"
+            elif c_code:
+                partner = f"[{c_code}]"
+            elif c_name:
+                partner = c_name
+            else:
+                partner = loan_row["requester_username"]
+
+            amount = float(contract_row["total_amount"] or 0)
+            if amount <= 0 and pay_conds:
+                amount = float(sum(float(pc["amountmoney"] or 0) for pc in pay_conds))
+            if amount <= 0:
+                amount = float(loan_row["amount"] or 0)
+
+            c_localid = contract_row["localid"] or contract_row["id"]
+            trans_type = loan_row["transaction_type"] or "LOAN"
+
+            if interest_rate is not None:
+                rate = float(interest_rate)
+            elif contract_row["contract_interest_rate"] is not None:
+                rate = float(contract_row["contract_interest_rate"])
+            else:
+                rate = float(loan_row["interest_rate"] or bank_rate or 5.0)
+
+            if term_days is not None:
+                term = int(term_days)
+            elif contract_row["contract_term_days"] is not None and contract_row["contract_term_days"] > 0:
+                term = int(contract_row["contract_term_days"])
+            elif contract_row["duedate"] and contract_row["date"]:
+                diff = (contract_row["duedate"] - contract_row["date"]).days
+                term = max(1, diff)
+            else:
+                term = int(loan_row["term_days"] or bank_term or 14)
+
+            if contract_row["status"] in ("FULFILLED", "CLOSED"):
+                c_status = "REPAID"
+            elif contract_row["status"] == "PARTIALLY_FULFILLED":
+                c_status = "APPROVED"
+            elif is_payment_fulfilled:
+                c_status = "APPROVED"
+            elif contract_row["status"] == "OPEN":
+                c_status = "ACCEPTED"
+            else:
+                c_status = "PENDING"
+
+            row = await conn.fetchrow("""
+                UPDATE bank_loan_requests
+                SET contract_id = $1,
+                    requester_username = $2,
+                    amount = $3,
+                    interest_rate = $4,
+                    term_days = $5,
+                    status = $6,
+                    is_verified = true,
+                    updated_at = NOW()
+                WHERE id = $7
+                RETURNING *
+            """, c_localid, partner, amount, rate, term, c_status, loan_id)
+            res = dict(row)
+            res["bank_name"] = await conn.fetchval("SELECT name FROM player_banks WHERE id = $1", bank_id)
+            res["partner_code"] = contract_row["partnercode"]
+            res["partner_name"] = contract_row["partnername"]
+            res["contract_status"] = contract_row["status"]
+            res["contract_duedate"] = contract_row["duedate"]
+            res["currency"] = contract_row["currency"]
+            res["transaction_type"] = trans_type
+            res["is_verified"] = True
+
+            res["payout_fulfilled"] = await conn.fetchval("""
+                SELECT COALESCE(BOOL_OR(status = 'FULFILLED'), false)
+                FROM contract_conditions
+                WHERE contractid = $1 AND type IN ('LOAN_PAYOUT', 'PAYMENT')
+            """, contract_row["id"])
+            res["total_installments"] = await conn.fetchval("""
+                SELECT COUNT(*)::int
+                FROM contract_conditions
+                WHERE contractid = $1 AND type = 'LOAN_INSTALLMENT'
+            """, contract_row["id"])
+            res["fulfilled_installments"] = await conn.fetchval("""
+                SELECT COUNT(*)::int
+                FROM contract_conditions
+                WHERE contractid = $1 AND type = 'LOAN_INSTALLMENT' AND status = 'FULFILLED'
+            """, contract_row["id"])
+            res["repaid_amount"] = await conn.fetchval("""
+                SELECT COALESCE(SUM(cli.repaymentamount), 0.0)::float
+                FROM contract_loan_installments cli
+                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                WHERE cc.contractid = $1 AND cc.status = 'FULFILLED'
+            """, contract_row["id"])
+            return res
+
     async def link_contract_to_bank(
         self,
         bank_id: int,
         contract_localid: str,
         interest_rate: Optional[float] = None,
         term_days: Optional[int] = None,
-        transaction_type: str = "LOAN"
+        transaction_type: str = "LOAN",
+        loan_structure: Optional[str] = None
     ) -> Dict[str, Any]:
         async with self.db.pool.acquire() as conn:
             bank_row = await conn.fetchrow("""
@@ -522,6 +988,14 @@ class BankingRepository:
 
             c_localid = contract_row["localid"] or contract_row["id"]
 
+            clean_structure = "STANDARD"
+            if loan_structure:
+                s_up = loan_structure.upper().strip()
+                if "INTEREST" in s_up:
+                    clean_structure = "INTEREST_ONLY"
+                elif "AMORTIZ" in s_up or "STABLE" in s_up:
+                    clean_structure = "AMORTIZING_STABLE"
+
             if trans_type == "DEPOSIT":
                 rate = 0.0
                 term = 0
@@ -561,8 +1035,12 @@ class BankingRepository:
 
                 if contract_row["status"] in ("FULFILLED", "CLOSED"):
                     c_status = "REPAID"
+                elif contract_row["status"] == "PARTIALLY_FULFILLED":
+                    c_status = "APPROVED"
                 elif is_payment_fulfilled:
                     c_status = "APPROVED"
+                elif contract_row["status"] == "OPEN":
+                    c_status = "ACCEPTED"
                 else:
                     c_status = "PENDING"
 
@@ -575,11 +1053,11 @@ class BankingRepository:
 
             row = await conn.fetchrow("""
                 INSERT INTO bank_loan_requests (
-                    bank_id, requester_username, amount, interest_rate, term_days, status, contract_id, transaction_type, is_verified
+                    bank_id, requester_username, amount, interest_rate, term_days, status, contract_id, transaction_type, is_verified, loan_structure
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9)
                 RETURNING *
-            """, bank_id, partner, amount, rate, term, c_status, c_localid, trans_type)
+            """, bank_id, partner, amount, rate, term, c_status, c_localid, trans_type, clean_structure)
             res = dict(row)
             res["bank_name"] = await conn.fetchval("SELECT name FROM player_banks WHERE id = $1", bank_id)
             res["partner_code"] = contract_row["partnercode"]
@@ -589,6 +1067,30 @@ class BankingRepository:
             res["currency"] = contract_row["currency"]
             res["transaction_type"] = trans_type
             res["is_verified"] = True
+            res["loan_structure"] = row["loan_structure"] or clean_structure
+
+            # Calculate condition metrics for response
+            res["payout_fulfilled"] = await conn.fetchval("""
+                SELECT COALESCE(BOOL_OR(status = 'FULFILLED'), false)
+                FROM contract_conditions
+                WHERE contractid = $1 AND type IN ('LOAN_PAYOUT', 'PAYMENT')
+            """, contract_row["id"])
+            res["total_installments"] = await conn.fetchval("""
+                SELECT COUNT(*)::int
+                FROM contract_conditions
+                WHERE contractid = $1 AND type = 'LOAN_INSTALLMENT'
+            """, contract_row["id"])
+            res["fulfilled_installments"] = await conn.fetchval("""
+                SELECT COUNT(*)::int
+                FROM contract_conditions
+                WHERE contractid = $1 AND type = 'LOAN_INSTALLMENT' AND status = 'FULFILLED'
+            """, contract_row["id"])
+            res["repaid_amount"] = await conn.fetchval("""
+                SELECT COALESCE(SUM(cli.repaymentamount), 0.0)::float
+                FROM contract_loan_installments cli
+                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                WHERE cc.contractid = $1 AND cc.status = 'FULFILLED'
+            """, contract_row["id"])
             return res
 
     async def record_manual_deposit(
@@ -765,22 +1267,30 @@ class BankingRepository:
                     else:
                         matched_contract_id = contract_localid
 
+                raw_structure = (clean_row.get("loan_structure") or clean_row.get("structure") or clean_row.get("loan_type") or clean_row.get("loantype") or "STANDARD").upper().strip()
+                if "INTEREST" in raw_structure or raw_structure == "IO":
+                    loan_structure = "INTEREST_ONLY"
+                elif "STABLE" in raw_structure or "AMORT" in raw_structure:
+                    loan_structure = "AMORTIZING_STABLE"
+                else:
+                    loan_structure = "STANDARD"
+
                 if row_date:
                     await conn.execute("""
                         INSERT INTO bank_loan_requests (
                             bank_id, requester_username, amount, interest_rate, term_days,
-                            status, contract_id, transaction_type, is_verified, created_at, updated_at
+                            status, contract_id, transaction_type, is_verified, loan_structure, created_at, updated_at
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
-                    """, bank_id, user, amount, rate, term, status, matched_contract_id, trans_type, is_row_verified, row_date)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+                    """, bank_id, user, amount, rate, term, status, matched_contract_id, trans_type, is_row_verified, loan_structure, row_date)
                 else:
                     await conn.execute("""
                         INSERT INTO bank_loan_requests (
                             bank_id, requester_username, amount, interest_rate, term_days,
-                            status, contract_id, transaction_type, is_verified
+                            status, contract_id, transaction_type, is_verified, loan_structure
                         )
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                    """, bank_id, user, amount, rate, term, status, matched_contract_id, trans_type, is_row_verified)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                    """, bank_id, user, amount, rate, term, status, matched_contract_id, trans_type, is_row_verified, loan_structure)
 
                 if status in ("APPROVED", "REPAID", "FULFILLED"):
                     if trans_type == "DEPOSIT":
@@ -1246,3 +1756,294 @@ class BankingRepository:
             "payouts_count": payouts_count,
             "reset_cycle_time": now.isoformat()
         }
+
+    async def delete_loan_transaction(self, loan_id: int) -> bool:
+        async with self.db.pool.acquire() as conn:
+            res = await conn.execute("DELETE FROM bank_loan_requests WHERE id = $1", loan_id)
+            return res == "DELETE 1"
+
+    async def edit_loan_transaction(
+        self,
+        loan_id: int,
+        amount: Optional[float] = None,
+        interest_rate: Optional[float] = None,
+        term_days: Optional[int] = None,
+        status: Optional[str] = None,
+        contract_id: Optional[str] = None,
+        requester_username: Optional[str] = None,
+        loan_structure: Optional[str] = None
+    ) -> Dict[str, Any]:
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM bank_loan_requests WHERE id = $1", loan_id)
+            if not row:
+                raise ValueError("Loan/transaction not found")
+
+            if row["is_verified"]:
+                raise ValueError("Verified transactions linked to contracts cannot be directly edited. Use 'Relink Contract' or delete and re-import.")
+
+            new_amount = float(amount) if amount is not None else float(row["amount"])
+            new_rate = float(interest_rate) if interest_rate is not None else float(row["interest_rate"])
+            new_term = int(term_days) if term_days is not None else int(row["term_days"])
+            new_status = status.strip() if status is not None else row["status"]
+            new_contract = contract_id.strip() if contract_id is not None else row["contract_id"]
+            new_requester = requester_username.strip() if requester_username is not None else row["requester_username"]
+
+            clean_structure = None
+            if loan_structure:
+                s_up = loan_structure.upper().strip()
+                if "INTEREST" in s_up:
+                    clean_structure = "INTEREST_ONLY"
+                elif "AMORTIZ" in s_up or "STABLE" in s_up:
+                    clean_structure = "AMORTIZING_STABLE"
+                else:
+                    clean_structure = "STANDARD"
+            new_structure = clean_structure if clean_structure is not None else row.get("loan_structure", "STANDARD")
+
+            updated = await conn.fetchrow("""
+                UPDATE bank_loan_requests
+                SET amount = $1, interest_rate = $2, term_days = $3, status = $4, contract_id = $5, requester_username = $6, loan_structure = $7
+                WHERE id = $8
+                RETURNING *
+            """, new_amount, new_rate, new_term, new_status, new_contract, new_requester, new_structure, loan_id)
+            return dict(updated)
+
+    async def relink_contract_to_loan(
+        self,
+        loan_id: int,
+        contract_localid: str,
+        interest_rate: Optional[float] = None,
+        term_days: Optional[int] = None
+    ) -> Dict[str, Any]:
+        async with self.db.pool.acquire() as conn:
+            loan_row = await conn.fetchrow("SELECT * FROM bank_loan_requests WHERE id = $1", loan_id)
+            if not loan_row:
+                raise ValueError("Loan/transaction not found")
+
+            bank_id = loan_row["bank_id"]
+            bank_row = await conn.fetchrow("""
+                SELECT 
+                    pb.id, pb.name, pb.owner_username, pb.currency, pb.default_interest_rate, pb.default_repay_days,
+                    pud.company_code as bank_owner_company_code,
+                    pud.company_name as bank_owner_company_name
+                FROM player_banks pb
+                LEFT JOIN public_users_data pud ON LOWER(pud.username) = LOWER(pb.owner_username)
+                WHERE pb.id = $1
+            """, bank_id)
+            if not bank_row:
+                raise ValueError("Bank not found")
+
+            bank_owner = bank_row["owner_username"]
+
+            contract_row = await conn.fetchrow("""
+                SELECT 
+                    c.id, c.localid, c.name, c.party, c.partnerid, c.partnercode, c.partnername,
+                    c.status, c.date, c.duedate,
+                    u.username as owner_username,
+                    pud_user.company_code as owner_company_code,
+                    pud_user.company_name as owner_company_name,
+                    COALESCE(
+                        (
+                            SELECT cc_payout.amountmoney
+                            FROM contract_conditions cc_payout
+                            WHERE cc_payout.contractid = c.id AND cc_payout.type IN ('LOAN_PAYOUT', 'PAYMENT')
+                            LIMIT 1
+                        ),
+                        (
+                            SELECT SUM(cli_sub.repaymentamount)
+                            FROM (
+                                SELECT DISTINCT ON (cli.conditionid) cli.repaymentamount
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc_sub ON cc_sub.id = cli.conditionid
+                                WHERE cc_sub.contractid = c.id
+                                ORDER BY cli.conditionid
+                            ) cli_sub
+                        ),
+                        (
+                            SELECT SUM(cc.amountmoney)
+                            FROM contract_conditions cc
+                            WHERE cc.contractid = c.id
+                        ), 0.0
+                    ) as total_amount,
+                    COALESCE((
+                        SELECT MAX(cc.currencymoney)
+                        FROM contract_conditions cc
+                        WHERE cc.contractid = c.id
+                    ), 'ICA') as currency,
+                    (
+                        SELECT ROUND(SUM(cc_inst.deadlineduration_millis) / 86400000.0)::int
+                        FROM (
+                            SELECT DISTINCT cc_d.id, cc_d.deadlineduration_millis
+                            FROM contract_conditions cc_d
+                            WHERE cc_d.contractid = c.id AND cc_d.type = 'LOAN_INSTALLMENT'
+                        ) cc_inst
+                    ) as contract_term_days,
+                    (
+                        SELECT ROUND(
+                            (
+                                COALESCE((
+                                    SELECT SUM(cli_d.interestamount)
+                                    FROM (
+                                        SELECT DISTINCT ON (cli.conditionid) cli.interestamount
+                                        FROM contract_loan_installments cli
+                                        JOIN contract_conditions cc_sub ON cc_sub.id = cli.conditionid
+                                        WHERE cc_sub.contractid = c.id AND cc_sub.type = 'LOAN_INSTALLMENT'
+                                        ORDER BY cli.conditionid
+                                    ) cli_d
+                                ), 0.0) / NULLIF(
+                                    COALESCE(
+                                        (SELECT amountmoney FROM contract_conditions WHERE contractid = c.id AND type = 'LOAN_PAYOUT' LIMIT 1),
+                                        (
+                                            SELECT SUM(cli_all.repaymentamount)
+                                            FROM (
+                                                SELECT DISTINCT ON (cli.conditionid) cli.repaymentamount 
+                                                FROM contract_loan_installments cli
+                                                JOIN contract_conditions cc_d ON cc_d.id = cli.conditionid
+                                                WHERE cc_d.contractid = c.id
+                                                ORDER BY cli.conditionid
+                                            ) cli_all
+                                        )
+                                    ), 0.0
+                                ) * 100.0
+                            )::numeric, 3
+                        )::float
+                    ) as contract_interest_rate
+                FROM contracts c
+                LEFT JOIN users u ON (u.userdataid::text = c.userid::text OR u.accountid::text = c.userid::text)
+                LEFT JOIN public_users_data pud_user ON LOWER(pud_user.username) = LOWER(u.username)
+                WHERE LOWER(TRIM(c.localid)) = LOWER(TRIM($1)) OR LOWER(TRIM(c.id)) = LOWER(TRIM($1))
+                ORDER BY 
+                    CASE WHEN LOWER(u.username) = LOWER($2) THEN 1 ELSE 2 END,
+                    c.date DESC
+                LIMIT 1
+            """, contract_localid.strip(), bank_owner)
+
+            if not contract_row:
+                raise ValueError(f"Contract with localid '{contract_localid}' not found")
+
+            existing = await conn.fetchrow("""
+                SELECT id FROM bank_loan_requests
+                WHERE bank_id = $1 AND id != $2 AND (contract_id = $3 OR contract_id = $4)
+            """, bank_id, loan_id, contract_row["localid"], contract_row["id"])
+            if existing:
+                raise ValueError(f"Contract '{contract_localid}' is already linked to another loan or record in this bank")
+
+            trans_type = loan_row["transaction_type"] or "LOAN"
+
+            # Inspect payout conditions
+            pay_conds = await conn.fetch("""
+                SELECT id, type, party, contractparty, status, amountmoney
+                FROM contract_conditions
+                WHERE contractid = $1 AND type IN ('PAYMENT', 'LOAN_PAYOUT')
+                ORDER BY index ASC
+            """, contract_row["id"])
+
+            if contract_row["status"] in ("FULFILLED", "CLOSED"):
+                is_payment_fulfilled = True
+            elif pay_conds:
+                has_pending = any(pc["status"] == "PENDING" for pc in pay_conds)
+                has_fulfilled = any(pc["status"] == "FULFILLED" for pc in pay_conds)
+                is_payment_fulfilled = (not has_pending) and has_fulfilled
+            else:
+                is_payment_fulfilled = False
+
+            bank_owner_lower = bank_owner.lower()
+            bank_code_lower = (bank_row["bank_owner_company_code"] or "").lower() if bank_row else ""
+            bank_comp_lower = (bank_row["bank_owner_company_name"] or "").lower() if bank_row else ""
+            bank_name_lower = (bank_row["name"] or "").lower() if bank_row else ""
+
+            pcode = (contract_row["partnercode"] or "").strip()
+            pname = (contract_row["partnername"] or "").strip()
+
+            is_partner_bank = (
+                (pcode and pcode.lower() == bank_code_lower) or
+                (pname and (pname.lower() == bank_comp_lower or pname.lower() == bank_name_lower or pname.lower() == bank_owner_lower))
+            )
+
+            if is_partner_bank:
+                partner = contract_row["owner_username"] or contract_row["owner_company_code"] or contract_row["owner_company_name"] or "Unknown"
+            else:
+                partner = contract_row["partnercode"] or contract_row["partnername"] or "Unknown"
+
+            amount = float(contract_row["total_amount"] or loan_row["amount"])
+
+            if trans_type == "DEPOSIT":
+                rate = 0.0
+                term = 0
+                c_status = "APPROVED" if is_payment_fulfilled else "PENDING"
+            elif trans_type == "WITHDRAWAL":
+                rate = 0.0
+                term = 0
+                c_status = "APPROVED" if is_payment_fulfilled else "PENDING"
+            else:
+                # LOAN
+                if interest_rate is not None:
+                    rate = float(interest_rate)
+                elif contract_row["contract_interest_rate"] is not None:
+                    rate = float(contract_row["contract_interest_rate"])
+                else:
+                    rate = float(loan_row["interest_rate"] or bank_row["default_interest_rate"] or 5.0)
+
+                if term_days is not None:
+                    term = int(term_days)
+                elif contract_row["contract_term_days"] is not None and contract_row["contract_term_days"] > 0:
+                    term = int(contract_row["contract_term_days"])
+                elif contract_row["duedate"] and contract_row["date"]:
+                    diff = (contract_row["duedate"] - contract_row["date"]).days
+                    term = max(1, diff)
+                else:
+                    term = int(loan_row["term_days"] or bank_row["default_repay_days"] or 14)
+
+                if contract_row["status"] in ("FULFILLED", "CLOSED"):
+                    c_status = "REPAID"
+                elif contract_row["status"] == "PARTIALLY_FULFILLED":
+                    c_status = "APPROVED"
+                elif is_payment_fulfilled:
+                    c_status = "APPROVED"
+                elif contract_row["status"] == "OPEN":
+                    c_status = "ACCEPTED"
+                else:
+                    c_status = "PENDING"
+
+            c_localid = contract_row["localid"] or contract_row["id"]
+
+            row = await conn.fetchrow("""
+                UPDATE bank_loan_requests
+                SET requester_username = $1, amount = $2, interest_rate = $3, term_days = $4,
+                    status = $5, contract_id = $6, is_verified = true
+                WHERE id = $7
+                RETURNING *
+            """, partner, amount, rate, term, c_status, c_localid, loan_id)
+
+            res = dict(row)
+            res["bank_name"] = bank_row["name"]
+            res["partner_code"] = contract_row["partnercode"]
+            res["partner_name"] = contract_row["partnername"]
+            res["contract_status"] = contract_row["status"]
+            res["contract_duedate"] = contract_row["duedate"]
+            res["currency"] = contract_row["currency"]
+            res["transaction_type"] = trans_type
+            res["is_verified"] = True
+
+            res["payout_fulfilled"] = await conn.fetchval("""
+                SELECT COALESCE(BOOL_OR(status = 'FULFILLED'), false)
+                FROM contract_conditions
+                WHERE contractid = $1 AND type IN ('LOAN_PAYOUT', 'PAYMENT')
+            """, contract_row["id"])
+            res["total_installments"] = await conn.fetchval("""
+                SELECT COUNT(*)::int
+                FROM contract_conditions
+                WHERE contractid = $1 AND type = 'LOAN_INSTALLMENT'
+            """, contract_row["id"])
+            res["fulfilled_installments"] = await conn.fetchval("""
+                SELECT COUNT(*)::int
+                FROM contract_conditions
+                WHERE contractid = $1 AND type = 'LOAN_INSTALLMENT' AND status = 'FULFILLED'
+            """, contract_row["id"])
+            res["repaid_amount"] = await conn.fetchval("""
+                SELECT COALESCE(SUM(cli.repaymentamount), 0.0)::float
+                FROM contract_loan_installments cli
+                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                WHERE cc.contractid = $1 AND cc.status = 'FULFILLED'
+            """, contract_row["id"])
+
+            return res
