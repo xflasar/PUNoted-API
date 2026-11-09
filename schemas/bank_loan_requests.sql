@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS bank_loan_requests (
     status VARCHAR(20) DEFAULT 'PENDING'::character varying,
     contract_id VARCHAR(100),
     transaction_type VARCHAR(30) DEFAULT 'LOAN'::character varying,
+    loan_structure VARCHAR(30) DEFAULT 'STANDARD'::character varying,
     is_verified BOOLEAN DEFAULT false,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
