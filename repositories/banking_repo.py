@@ -233,12 +233,16 @@ class BankingRepository:
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as total_lent_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND status = 'APPROVED' AND COALESCE(transaction_type, 'LOAN') = 'LOAN'), 0.0) as active_lent_amount,
                        COALESCE((
-                           SELECT SUM(cli.repaymentamount)
-                           FROM bank_loan_requests lr
-                           JOIN contracts c ON (lr.contract_id = c.localid OR lr.contract_id = c.id)
-                           JOIN contract_conditions cc ON cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
-                           JOIN contract_loan_installments cli ON cli.conditionid = cc.id
-                           WHERE lr.bank_id = b.id AND lr.status = 'APPROVED' AND COALESCE(lr.transaction_type, 'LOAN') = 'LOAN'
+                           SELECT SUM(cli_sub.repaymentamount)
+                           FROM (
+                               SELECT DISTINCT ON (cli.conditionid) cli.repaymentamount
+                               FROM bank_loan_requests lr
+                               JOIN contracts c ON (lr.contract_id = c.localid OR lr.contract_id = c.id)
+                               JOIN contract_conditions cc ON cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
+                               JOIN contract_loan_installments cli ON cli.conditionid = cc.id
+                               WHERE lr.bank_id = b.id AND lr.status = 'APPROVED' AND COALESCE(lr.transaction_type, 'LOAN') = 'LOAN'
+                               ORDER BY cli.conditionid
+                           ) cli_sub
                        ), 0.0) as active_repaid_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'DEPOSIT' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_deposit_amount,
                        COALESCE((SELECT SUM(amount) FROM bank_loan_requests WHERE bank_id = b.id AND COALESCE(transaction_type, 'LOAN') = 'WITHDRAWAL' AND status IN ('APPROVED', 'REPAID', 'FULFILLED')), 0.0) as total_withdrawal_amount,
@@ -339,16 +343,24 @@ class BankingRepository:
                             WHERE cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
                         ), 0)::int as fulfilled_installments,
                         COALESCE((
-                            SELECT SUM(cli.repaymentamount)
-                            FROM contract_loan_installments cli
-                            JOIN contract_conditions cc ON cc.id = cli.conditionid
-                            WHERE cc.contractid = c.id AND cc.status = 'FULFILLED'
+                            SELECT SUM(cli_sub.repaymentamount)
+                            FROM (
+                                SELECT DISTINCT ON (cli.conditionid) cli.repaymentamount
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id AND cc.status = 'FULFILLED'
+                                ORDER BY cli.conditionid
+                            ) cli_sub
                         ), 0.0)::float as repaid_amount,
                         COALESCE((
-                            SELECT SUM(cli.interestamount)
-                            FROM contract_loan_installments cli
-                            JOIN contract_conditions cc ON cc.id = cli.conditionid
-                            WHERE cc.contractid = c.id
+                            SELECT SUM(cli_sub.interestamount)
+                            FROM (
+                                SELECT DISTINCT ON (cli.conditionid) cli.interestamount
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id
+                                ORDER BY cli.conditionid
+                            ) cli_sub
                         ), 0.0)::float as total_interest_amount,
                         COALESCE((
                             SELECT cli.repaymentamount
@@ -466,16 +478,24 @@ class BankingRepository:
                             WHERE cc.contractid = c.id AND cc.type = 'LOAN_INSTALLMENT' AND cc.status = 'FULFILLED'
                         ), 0)::int as fulfilled_installments,
                         COALESCE((
-                            SELECT SUM(cli.repaymentamount)
-                            FROM contract_loan_installments cli
-                            JOIN contract_conditions cc ON cc.id = cli.conditionid
-                            WHERE cc.contractid = c.id AND cc.status = 'FULFILLED'
+                            SELECT SUM(cli_sub.repaymentamount)
+                            FROM (
+                                SELECT DISTINCT ON (cli.conditionid) cli.repaymentamount
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id AND cc.status = 'FULFILLED'
+                                ORDER BY cli.conditionid
+                            ) cli_sub
                         ), 0.0)::float as repaid_amount,
                         COALESCE((
-                            SELECT SUM(cli.interestamount)
-                            FROM contract_loan_installments cli
-                            JOIN contract_conditions cc ON cc.id = cli.conditionid
-                            WHERE cc.contractid = c.id
+                            SELECT SUM(cli_sub.interestamount)
+                            FROM (
+                                SELECT DISTINCT ON (cli.conditionid) cli.interestamount
+                                FROM contract_loan_installments cli
+                                JOIN contract_conditions cc ON cc.id = cli.conditionid
+                                WHERE cc.contractid = c.id
+                                ORDER BY cli.conditionid
+                            ) cli_sub
                         ), 0.0)::float as total_interest_amount,
                         COALESCE((
                             SELECT cli.repaymentamount
