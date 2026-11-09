@@ -19,6 +19,7 @@ def test_get_vendors_csv(client: fastapi.testclient.TestClient, db_savepoint: No
     response = client.get("/vendors/csv")
     assert response.status_code == 200
     assert "text/csv" in response.headers["content-type"]
+    assert "contract_reserved_amount" in response.text
 
 # ----------------- CX -----------------
 def test_get_cx_prices_csv(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
