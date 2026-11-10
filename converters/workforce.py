@@ -53,7 +53,7 @@ def convert_workforce_needs_data(raw_records: List[Dict[str, Any]], workforce_id
             {
                 "workforceneedid": workforce_need_id,
                 "workforceid": workforce_id,
-                "materialid": record.get("material").get("id"),
+                "materialid": material_id,
                 "category": record.get("category"),
                 "essential": record.get("essential"),
                 "satisfaction": record.get("satisfaction"),

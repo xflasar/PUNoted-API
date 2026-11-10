@@ -84,10 +84,13 @@ def convert_ships_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]
             commissioning_time = None
 
         repair_materials = []
-        for material in record.get("repairMaterials"):
+        for material in (record.get("repairMaterials") or []):
+            if not isinstance(material, dict):
+                continue
+            mat = material.get("material") or {}
             repair_materials.append(
                 {
-                    "materialid": material.get("material").get("id"),
+                    "materialid": mat.get("id"),
                     "amount": material.get("amount"),
                     "shipid": record.get("id"),
                 }
@@ -98,22 +101,24 @@ def convert_ships_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]
         addressStationId = None
 
         if record.get("flightId") is None:
-            adressEntity = record.get("address").get("lines")[0].get("entity")
-            if record.get("address").get("lines")[0].get("type") != "SYSTEM":
-                print(
-                    f"Warning: Expected SYSTEM type for address line 0, got {record.get('address').get('lines')[0].get('type')}"
-                )
-            addressSystemId = adressEntity.get("id")
+            address_obj = record.get("address") or {}
+            lines = address_obj.get("lines") or []
+            if len(lines) > 0 and isinstance(lines[0], dict):
+                first_line = lines[0]
+                if first_line.get("type") == "SYSTEM":
+                    entity = first_line.get("entity") or {}
+                    addressSystemId = entity.get("id")
+                else:
+                    entity = first_line.get("entity") or {}
+                    addressSystemId = entity.get("id")
 
-            adressEntity = record.get("address").get("lines")[1].get("entity")
-            if record.get("address").get("lines")[1].get("type") == "PLANET":
-                addressPlanetId = adressEntity.get("id")
-            elif record.get("address").get("lines")[1].get("type") == "STATION":
-                addressStationId = adressEntity.get("id")
-            else:
-                print(
-                    f"Warning: Unexpected type for address line 1: {record.get('address').get('lines')[1].get('type')}"
-                )
+            if len(lines) > 1 and isinstance(lines[1], dict):
+                second_line = lines[1]
+                entity = second_line.get("entity") or {}
+                if second_line.get("type") == "PLANET":
+                    addressPlanetId = entity.get("id")
+                elif second_line.get("type") == "STATION":
+                    addressStationId = entity.get("id")
 
         converted_records.append(
             {

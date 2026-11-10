@@ -12,21 +12,29 @@ def convert_site_data(raw_records: List[Dict[str, Any]]) -> Dict[str, Any]:
     building_options = []
     buildingOptionsIds = []
 
-    for build_option in record.get("buildOptions").get("options"):
+    build_options_obj = record.get("buildOptions") or {}
+    for build_option in (build_options_obj.get("options") or []):
+        if not isinstance(build_option, dict):
+            continue
         build_option_materials = []
 
-        for material in build_option.get("materials").get("quantities"):
+        materials_obj = build_option.get("materials") or {}
+        for material in (materials_obj.get("quantities") or []):
+            if not isinstance(material, dict):
+                continue
+            mat = material.get("material") or {}
             build_option_materials.append(
                 {
                     "buildingid": build_option.get("id"),
-                    "materialid": material.get("material").get("id"),
+                    "materialid": mat.get("id"),
                     "amount": material.get("amount"),
                 }
             )
 
         build_option_workforce_capacities = []
-
-        for workfoce_capacity in build_option.get("workforceCapacities"):
+        for workfoce_capacity in (build_option.get("workforceCapacities") or []):
+            if not isinstance(workfoce_capacity, dict):
+                continue
             build_option_workforce_capacities.append(
                 {
                     "buildingid": build_option.get("id"),
@@ -51,26 +59,33 @@ def convert_site_data(raw_records: List[Dict[str, Any]]) -> Dict[str, Any]:
             }
         )
 
-    for platform in record.get("platforms"):
+    for platform in (record.get("platforms") or []):
+        if not isinstance(platform, dict):
+            continue
         reclaimable_materials = []
 
-        for material in platform.get("reclaimableMaterials"):
+        for material in (platform.get("reclaimableMaterials") or []):
+            if not isinstance(material, dict):
+                continue
+            mat = material.get("material") or {}
             reclaimable_materials.append(
                 {
-                    "platformid": platform.get("id").replace("\x00", ""),
-                    "materialid": material.get("material").get("id"),
+                    "platformid": (platform.get("id") or "").replace("\x00", ""),
+                    "materialid": mat.get("id"),
                     "amount": material.get("amount"),
                     "materialtype": "reclaimable",
                 }
             )
 
         repair_materials = []
-
-        for material in platform.get("repairMaterials"):
+        for material in (platform.get("repairMaterials") or []):
+            if not isinstance(material, dict):
+                continue
+            mat = material.get("material") or {}
             repair_materials.append(
                 {
-                    "platformid": platform.get("id").replace("\x00", ""),
-                    "materialid": material.get("material").get("id"),
+                    "platformid": (platform.get("id") or "").replace("\x00", ""),
+                    "materialid": mat.get("id"),
                     "amount": material.get("amount"),
                     "materialtype": "repair",
                 }
@@ -88,16 +103,19 @@ def convert_site_data(raw_records: List[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             last_repair = None
 
+        book_val = platform.get("bookValue") or {}
+        module_obj = platform.get("module") or {}
+
         platforms.append(
             {
-                "platformid": platform.get("id").replace("\x00", ""),
+                "platformid": (platform.get("id") or "").replace("\x00", ""),
                 "siteid": platform.get("siteId"),
                 "creationtime": creation_time,
-                "bookvalueamount": platform.get("bookValue").get("amount"),
-                "bookvaluecurrency": platform.get("bookValue").get("currency"),
+                "bookvalueamount": book_val.get("amount"),
+                "bookvaluecurrency": book_val.get("currency"),
                 "area": platform.get("area"),
                 "condition": platform.get("condition"),
-                "buildingid": platform.get("module").get("reactorId"),
+                "buildingid": module_obj.get("reactorId"),
                 "lastrepair": last_repair,
                 "reclaimable_materials": reclaimable_materials,
                 "repair_materials": repair_materials,
@@ -110,10 +128,19 @@ def convert_site_data(raw_records: List[Dict[str, Any]]) -> Dict[str, Any]:
     else:
         founded_timestamp = None
 
+    addr = record.get("address") or {}
+    addr_lines = addr.get("lines") or []
+    sys_id = None
+    pla_id = None
+    if len(addr_lines) > 0 and isinstance(addr_lines[0], dict):
+        sys_id = (addr_lines[0].get("entity") or {}).get("id")
+    if len(addr_lines) > 1 and isinstance(addr_lines[1], dict):
+        pla_id = (addr_lines[1].get("entity") or {}).get("id")
+
     converted_record = {
         "siteid": record.get("siteId"),
-        "addresssystemid": record.get("address").get("lines")[0].get("entity").get("id"),
-        "addressplanetid": record.get("address").get("lines")[1].get("entity").get("id"),
+        "addresssystemid": sys_id,
+        "addressplanetid": pla_id,
         "foundedtimestamp": founded_timestamp,
         "area": record.get("area"),
         "investedpermits": record.get("investedPermits"),
@@ -135,25 +162,35 @@ def convert_sites_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]
         records = [raw_records["payload"]]
 
     for record in records:
+        if not isinstance(record, dict):
+            continue
         platforms = []
         building_options = []
         buildingOptionsIds = []
 
-        for build_option in record.get("buildOptions").get("options"):
+        build_options_obj = record.get("buildOptions") or {}
+        for build_option in (build_options_obj.get("options") or []):
+            if not isinstance(build_option, dict):
+                continue
             build_option_materials = []
 
-            for material in build_option.get("materials").get("quantities"):
+            materials_obj = build_option.get("materials") or {}
+            for material in (materials_obj.get("quantities") or []):
+                if not isinstance(material, dict):
+                    continue
+                mat = material.get("material") or {}
                 build_option_materials.append(
                     {
                         "buildingid": build_option.get("id"),
-                        "materialid": material.get("material").get("id"),
+                        "materialid": mat.get("id"),
                         "amount": material.get("amount"),
                     }
                 )
 
             build_option_workforce_capacities = []
-
-            for workfoce_capacity in build_option.get("workforceCapacities"):
+            for workfoce_capacity in (build_option.get("workforceCapacities") or []):
+                if not isinstance(workfoce_capacity, dict):
+                    continue
                 build_option_workforce_capacities.append(
                     {
                         "buildingid": build_option.get("id"),
@@ -178,26 +215,33 @@ def convert_sites_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 }
             )
 
-        for platform in record.get("platforms"):
+        for platform in (record.get("platforms") or []):
+            if not isinstance(platform, dict):
+                continue
             reclaimable_materials = []
 
-            for material in platform.get("reclaimableMaterials"):
+            for material in (platform.get("reclaimableMaterials") or []):
+                if not isinstance(material, dict):
+                    continue
+                mat = material.get("material") or {}
                 reclaimable_materials.append(
                     {
-                        "platformid": platform.get("id").replace("\x00", ""),
-                        "materialid": material.get("material").get("id"),
+                        "platformid": (platform.get("id") or "").replace("\x00", ""),
+                        "materialid": mat.get("id"),
                         "amount": material.get("amount"),
                         "materialtype": "reclaimable",
                     }
                 )
 
             repair_materials = []
-
-            for material in platform.get("repairMaterials"):
+            for material in (platform.get("repairMaterials") or []):
+                if not isinstance(material, dict):
+                    continue
+                mat = material.get("material") or {}
                 repair_materials.append(
                     {
-                        "platformid": platform.get("id").replace("\x00", ""),
-                        "materialid": material.get("material").get("id"),
+                        "platformid": (platform.get("id") or "").replace("\x00", ""),
+                        "materialid": mat.get("id"),
                         "amount": material.get("amount"),
                         "materialtype": "repair",
                     }
@@ -215,16 +259,19 @@ def convert_sites_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]
             else:
                 last_repair = None
 
+            book_val = platform.get("bookValue") or {}
+            module_obj = platform.get("module") or {}
+
             platforms.append(
                 {
-                    "platformid": platform.get("id").replace("\x00", ""),
+                    "platformid": (platform.get("id") or "").replace("\x00", ""),
                     "siteid": platform.get("siteId"),
                     "creationtime": creation_time,
-                    "bookvalueamount": platform.get("bookValue").get("amount"),
-                    "bookvaluecurrency": platform.get("bookValue").get("currency"),
+                    "bookvalueamount": book_val.get("amount"),
+                    "bookvaluecurrency": book_val.get("currency"),
                     "area": platform.get("area"),
                     "condition": platform.get("condition"),
-                    "buildingid": platform.get("module").get("reactorId"),
+                    "buildingid": module_obj.get("reactorId"),
                     "lastrepair": last_repair,
                     "reclaimable_materials": reclaimable_materials,
                     "repair_materials": repair_materials,
@@ -237,11 +284,20 @@ def convert_sites_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]
         else:
             founded_timestamp = None
 
+        addr = record.get("address") or {}
+        addr_lines = addr.get("lines") or []
+        sys_id = None
+        pla_id = None
+        if len(addr_lines) > 0 and isinstance(addr_lines[0], dict):
+            sys_id = (addr_lines[0].get("entity") or {}).get("id")
+        if len(addr_lines) > 1 and isinstance(addr_lines[1], dict):
+            pla_id = (addr_lines[1].get("entity") or {}).get("id")
+
         converted_records.append(
             {
                 "siteid": record.get("siteId"),
-                "addresssystemid": record.get("address").get("lines")[0].get("entity").get("id"),
-                "addressplanetid": record.get("address").get("lines")[1].get("entity").get("id"),
+                "addresssystemid": sys_id,
+                "addressplanetid": pla_id,
                 "foundedtimestamp": founded_timestamp,
                 "area": record.get("area"),
                 "investedpermits": record.get("investedPermits"),

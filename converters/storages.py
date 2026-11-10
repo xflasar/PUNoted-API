@@ -104,6 +104,16 @@ def convert_warehouses_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str,
         else:
             next_payment = None
 
+        fee_obj = record.get("fee") or {}
+        addr = record.get("address") or {}
+        addr_lines = addr.get("lines") or []
+        sys_id = None
+        pla_id = None
+        if len(addr_lines) > 0 and isinstance(addr_lines[0], dict):
+            sys_id = (addr_lines[0].get("entity") or {}).get("id")
+        if len(addr_lines) > 1 and isinstance(addr_lines[1], dict):
+            pla_id = (addr_lines[1].get("entity") or {}).get("id")
+
         converted_records.append(
             {
                 "warehouseid": record.get("warehouseId"),
@@ -112,11 +122,11 @@ def convert_warehouses_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str,
                 "weightcapacity": record.get("weightCapacity"),
                 "volumecapacity": record.get("volumeCapacity"),
                 "nextpayment": next_payment,
-                "feeamount": record.get("fee").get("amount"),
-                "feecurrency": record.get("fee").get("currency"),
+                "feeamount": fee_obj.get("amount"),
+                "feecurrency": fee_obj.get("currency"),
                 "status": record.get("status"),
-                "addresssystem": record.get("address").get("lines")[0].get("entity").get("id"),
-                "addressplanet": record.get("address").get("lines")[1].get("entity").get("id"),
+                "addresssystem": sys_id,
+                "addressplanet": pla_id,
             }
         )
     return converted_records

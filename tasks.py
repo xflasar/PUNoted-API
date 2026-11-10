@@ -123,6 +123,23 @@ def converter_router(argument, data):
     if handler:
         return handler(data)
     else:
+        payload = data.get("payload") if isinstance(data, dict) else None
+        p_keys = list(payload.keys()) if isinstance(payload, dict) else [type(payload).__name__]
+
+        log_entry = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "missing": "CONVERTER_HANDLER",
+            "messageType": argument,
+            "payload_keys": p_keys,
+            "raw_sample": payload if (isinstance(payload, dict) or (isinstance(payload, list) and len(payload) <= 5)) else (payload[:2] if isinstance(payload, list) else None),
+        }
+        try:
+            with open("unhandled_converters.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry, default=str) + "\n")
+        except Exception as file_err:
+            logger.debug(f"Could not write to unhandled_converters.jsonl: {file_err}")
+
+        logger.info(f"ℹ️ [CATCH-ALL] No CONVERTER_HANDLER for '{argument}', payload keys: {p_keys[:8]}")
         return []
 
 
@@ -199,7 +216,33 @@ async def handle_message_data_router(db, messageType, payload) -> Any:
         else:
             return response, 200
     else:
-        return {"error": f"Unknown message type: {messageType}"}, 200
+        raw_payload = payload.get("rawPayload") if isinstance(payload, dict) else None
+        keys_preview = []
+        if isinstance(raw_payload, dict):
+            keys_preview = list(raw_payload.keys())
+        elif isinstance(raw_payload, list) and raw_payload and isinstance(raw_payload[0], dict):
+            keys_preview = [f"list[{len(raw_payload)}]"] + list(raw_payload[0].keys())
+
+        log_entry = {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "messageType": messageType,
+            "userId": payload.get("userId") if isinstance(payload, dict) else None,
+            "context": payload.get("context") if isinstance(payload, dict) else None,
+            "payload_keys": keys_preview,
+            "raw_sample": raw_payload if (isinstance(raw_payload, dict) or (isinstance(raw_payload, list) and len(raw_payload) <= 5)) else (raw_payload[:2] if isinstance(raw_payload, list) else None),
+        }
+
+        try:
+            with open("unhandled_messages.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry, default=str) + "\n")
+        except Exception as file_err:
+            logger.debug(f"Could not write to unhandled_messages.jsonl: {file_err}")
+
+        logger.warning(
+            f"🔍 [CATCH-ALL UNHANDLED] No MESSAGE_HANDLER for '{messageType}' "
+            f"(user: {payload.get('userId')}, context: {payload.get('context')}, keys: {keys_preview[:8]})"
+        )
+        return {"warning": f"Unhandled message type: {messageType}"}, 200
 
 
 async def process_data_batch_task(items_to_process: List[Dict[str, Any]], user_id: str, db):
@@ -349,6 +392,7 @@ async def _process_data_batch_coroutine(items_to_process, user_id, db):
                 payload={
                     "userId": user_id,
                     "context": received_context,
+                    "rawPayload": message_payload.get("payload"),
                     "data": converter_router(message_type, message_payload),
                 },
             )

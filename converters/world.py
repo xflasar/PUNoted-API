@@ -341,20 +341,25 @@ def convert_systems_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, An
     return {"systems": systems, "systems_connections": systems_connections}
 
 def convert_system_data(raw_record: Dict[str, Any]) -> Dict[str, Any]:
-    body: Dict[str, Any] = raw_record.get("payload", {})
+    body: Dict[str, Any] = raw_record.get("payload", {}) if isinstance(raw_record, dict) else {}
     celestial_bodies = []
-    celestial_bodies_raw = body.get("celestialBodies", [])
+    celestial_bodies_raw = body.get("celestialBodies", []) or []
     for cbody in celestial_bodies_raw:
-        if cbody.get("address").get("lines")[1].get("type") == "STATION":
+        if not isinstance(cbody, dict):
+            continue
+        c_addr = cbody.get("address") or {}
+        lines = c_addr.get("lines") or []
+        if len(lines) > 1 and isinstance(lines[1], dict) and lines[1].get("type") == "STATION":
             celestial_bodies.append({"stationid": cbody.get("id"), "orbit": cbody.get("orbit")})
 
+    star_obj = body.get("star") or {}
     converted_data = {
         # Core System/MapPoint Data
         "id": body.get("id"),
         "meteoroidDensity": body.get("meteoroidDensity", 0),
-        "mass": body.get("star").get("mass"),
-        "masssol": body.get("star").get("massSol"),
-        "luminosity": body.get("star").get("luminosity"),
+        "mass": star_obj.get("mass"),
+        "masssol": star_obj.get("massSol"),
+        "luminosity": star_obj.get("luminosity"),
         "celestialbodies": celestial_bodies,
     }
 
@@ -376,25 +381,36 @@ def convert_system_connections_data(
 
 def convert_stations_data(raw_record: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'stations' table schema."""
-    raw_record = raw_record["payload"]
-    # Handle subscription expiry timestamp
-    commissioning_time = raw_record.get("commissioningTime")
+    payload = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    commissioning_time = payload.get("commissioningTime")
     if commissioning_time is not None and commissioning_time.get("timestamp") is not None:
         commissioning_time = datetime.fromtimestamp(commissioning_time["timestamp"] / 1000)
     else:
         commissioning_time = None
 
+    addr = payload.get("address") or {}
+    lines = addr.get("lines") or []
+    sys_id = None
+    if len(lines) > 0 and isinstance(lines[0], dict):
+        sys_id = (lines[0].get("entity") or {}).get("id")
+
+    comex_obj = payload.get("comex") or {}
+    country_obj = payload.get("country") or {}
+    gov_obj = payload.get("governingEntity") or {}
+
     converted_record = {
-        "stationid": raw_record.get("id"),
-        "systemid": raw_record.get("address").get("lines")[0].get("entity").get("id"),
-        "name": raw_record.get("name"),
-        "naturalid": raw_record.get("naturalId"),
+        "stationid": payload.get("id"),
+        "systemid": sys_id,
+        "name": payload.get("name"),
+        "naturalid": payload.get("naturalId"),
         "commissioningtime": commissioning_time,
-        "comexid": raw_record.get("comex").get("id"),
-        "warehouseid": raw_record.get("warehouseId"),
-        "localmarketid": raw_record.get("localMarketId"),
-        "countryid": raw_record.get("country").get("id"),
-        "governingentityid": raw_record.get("governingEntity").get("id"),
+        "comexid": comex_obj.get("id"),
+        "warehouseid": payload.get("warehouseId"),
+        "localmarketid": payload.get("localMarketId"),
+        "countryid": country_obj.get("id"),
+        "governingentityid": gov_obj.get("id"),
     }
 
     return converted_record
