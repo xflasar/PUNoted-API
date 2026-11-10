@@ -390,12 +390,14 @@ async def get_corp_family_metadata(conn: Any, user_id: str) -> List[Dict[str, An
     """
     FAMILY_QUERY = """
     WITH UserCorp AS (
-        SELECT c.id 
+        SELECT COALESCE(ud.corporationid, cs.corporationid) as id
         FROM users u 
         JOIN users_data ud ON u.userdataid = ud.userid 
-        JOIN corporation_shareholders cs ON ud.userid = cs.userid 
-        JOIN corporations c ON cs.corporationid = c.id 
-        WHERE u.accountid = $1 LIMIT 1
+        LEFT JOIN corporation_shareholders cs ON ud.userid = cs.userid 
+        WHERE u.accountid = $1 
+          AND (ud.corporationid IS NOT NULL OR cs.corporationid IS NOT NULL)
+        ORDER BY (ud.corporationid IS NOT NULL) DESC
+        LIMIT 1
     ),
     MainID AS (
         SELECT COALESCE(

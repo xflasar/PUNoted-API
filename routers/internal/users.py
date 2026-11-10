@@ -752,6 +752,10 @@ async def delete_user_data_category(
                 if userdata_id:
                     await conn.execute("DELETE FROM company_data WHERE userdataid = $1;", userdata_id)
                     await conn.execute("DELETE FROM users_data WHERE userid = $1;", userdata_id)
+                await conn.execute(
+                    "UPDATE users SET userdataid = NULL, is_synchronized = FALSE WHERE accountid::text = $1;",
+                    user_id
+                )
                 msg = "Successfully deleted company profile and user data."
 
             elif category == "blueprints":
@@ -775,6 +779,13 @@ async def delete_user_data_category(
                 await conn.execute("DELETE FROM site_production_line_orders WHERE productionlineid IN (SELECT productionlineid FROM site_production_lines WHERE siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2));", user_id, userdata_id)
                 await conn.execute("DELETE FROM site_production_lines WHERE siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2);", user_id, userdata_id)
                 await conn.execute("DELETE FROM site_platforms WHERE siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2);", user_id, userdata_id)
+                await conn.execute("""
+                    DELETE FROM workforce_needs 
+                    WHERE workforceid IN (
+                        SELECT workforceid FROM workforces 
+                        WHERE userid = $1 OR userid = $2 OR siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2)
+                    );
+                """, user_id, userdata_id)
                 await conn.execute("DELETE FROM workforces WHERE userid = $1 OR userid = $2 OR siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2);", user_id, userdata_id)
                 await conn.execute("DELETE FROM sites WHERE userid = $1 OR userid = $2;", user_id, userdata_id)
                 msg = "Successfully deleted all production sites, platforms, workforces, and line orders."
@@ -838,6 +849,13 @@ async def delete_user_data_category(
                 await conn.execute("DELETE FROM site_production_line_orders WHERE productionlineid IN (SELECT productionlineid FROM site_production_lines WHERE siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2));", user_id, userdata_id)
                 await conn.execute("DELETE FROM site_production_lines WHERE siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2);", user_id, userdata_id)
                 await conn.execute("DELETE FROM site_platforms WHERE siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2);", user_id, userdata_id)
+                await conn.execute("""
+                    DELETE FROM workforce_needs 
+                    WHERE workforceid IN (
+                        SELECT workforceid FROM workforces 
+                        WHERE userid = $1 OR userid = $2 OR siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2)
+                    );
+                """, user_id, userdata_id)
                 await conn.execute("DELETE FROM workforces WHERE userid = $1 OR userid = $2 OR siteid IN (SELECT siteid FROM sites WHERE userid = $1 OR userid = $2);", user_id, userdata_id)
                 await conn.execute("DELETE FROM sites WHERE userid = $1 OR userid = $2;", user_id, userdata_id)
 
@@ -846,9 +864,15 @@ async def delete_user_data_category(
 
                 await conn.execute("DELETE FROM user_currency_accounts_history WHERE userid = $1 OR userid = $2;", user_id, userdata_id)
                 await conn.execute("DELETE FROM user_currency_accounts WHERE userid = $1 OR userid = $2;", user_id, userdata_id)
+
+                # Reset synchronized flag and userdataid link in users table (without deleting the user account)
+                await conn.execute(
+                    "UPDATE users SET userdataid = NULL, is_synchronized = FALSE WHERE accountid::text = $1;",
+                    user_id
+                )
                 msg = "Successfully purged all synced in-game telemetry data across all tables."
 
-            elif category == "whole_account" or category == "account_identity":
+            elif category == "whole_account":
                 if userdata_id:
                     await conn.execute("DELETE FROM company_data WHERE userdataid = $1;", userdata_id)
                     await conn.execute("DELETE FROM users_data WHERE userid = $1;", userdata_id)
@@ -860,6 +884,9 @@ async def delete_user_data_category(
                 await conn.execute("DELETE FROM user_notifications WHERE accountid::text = $1;", user_id)
                 await conn.execute("DELETE FROM users WHERE accountid::text = $1;", user_id)
                 msg = "Entire user account and data purged successfully."
+
+            elif category == "account_identity":
+                raise HTTPException(status_code=400, detail="Cannot delete base account identity individually. Use 'Delete Whole Account' if you wish to close the account.")
 
             else:
                 raise HTTPException(status_code=400, detail="Invalid deletion category specified.")

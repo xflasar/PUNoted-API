@@ -207,8 +207,9 @@ async def fetch_public_vendors(
                     }
 
                 final_locations = []
+                is_sell = r["ordertype"] == "sell"
                 total_available = 0.0
-                total_contract_reserved = 0.0
+                total_contract_reserved = 0.0 if is_sell else None
 
                 for loc in r["parsed_locations"]:
                     loc_id = loc.get("id")
@@ -216,14 +217,14 @@ async def fetch_public_vendors(
 
                     storage_qty = inventory_map.get((r["gamename"], r["materialticker"], loc_id), 0.0)
                     target_amount = loc.get("amount", 0)
-                    contract_reserved_qty = contract_reserved_map.get((r["gamename"], r["materialticker"], loc_id), 0.0)
-                    total_contract_reserved += contract_reserved_qty
 
-                    loc_available = 0.0
-                    if r["ordertype"] == "buy":
-                        loc_available = max(0.0, float(target_amount) - storage_qty)
-                    else:
+                    if is_sell:
+                        contract_reserved_qty = contract_reserved_map.get((r["gamename"], r["materialticker"], loc_id), 0.0)
+                        total_contract_reserved += contract_reserved_qty
                         loc_available = max(0.0, storage_qty - float(target_amount) - contract_reserved_qty)
+                    else:
+                        contract_reserved_qty = None
+                        loc_available = max(0.0, float(target_amount) - storage_qty)
 
                     total_available += loc_available
 

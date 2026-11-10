@@ -307,13 +307,17 @@ def convert_planet_infrastructure_project(raw_record: Dict[str, Any]) -> Dict[st
         converted_record["contributions"] = []
         if upkeeps is not None:
             for upkeep in upkeeps:
+                if not isinstance(upkeep, dict):
+                    continue
+                mat = upkeep.get("material") or {}
+                tick = upkeep.get("nextTick") or {}
                 converted_record["upkeep"].append(
                     {
                         "amount": upkeep.get("amount"),
                         "currentamount": upkeep.get("currentAmount"),
                         "duration": upkeep.get("duration"),
-                        "materialid": upkeep.get("material").get("id"),
-                        "nexttick": upkeep.get("nextTick").get("timestamp"),
+                        "materialid": mat.get("id"),
+                        "nexttick": tick.get("timestamp"),
                         "storecapacity": upkeep.get("storeCapacity"),
                         "stored": upkeep.get("stored"),
                     }
@@ -321,9 +325,12 @@ def convert_planet_infrastructure_project(raw_record: Dict[str, Any]) -> Dict[st
 
         if upgrade_costs is not None:
             for upgrade_cost in upgrade_costs:
+                if not isinstance(upgrade_cost, dict):
+                    continue
+                mat = upgrade_cost.get("material") or {}
                 converted_record["upgrade_costs"].append(
                     {
-                        "materialid": upgrade_cost.get("material").get("id"),
+                        "materialid": mat.get("id"),
                         "amount": upgrade_cost.get("amount"),
                         "currentamount": upgrade_cost.get("currentAmount"),
                     }
@@ -331,18 +338,24 @@ def convert_planet_infrastructure_project(raw_record: Dict[str, Any]) -> Dict[st
 
         if contributions is not None:
             for contribution in contributions:
-                contributor = contribution.get("contributor")
-                materials = contribution.get("materials", [])
+                if not isinstance(contribution, dict):
+                    continue
+                contributor = contribution.get("contributor") or {}
+                materials = contribution.get("materials", []) or []
+                time_obj = contribution.get("time") or {}
 
                 for material in materials:
+                    if not isinstance(material, dict):
+                        continue
+                    mat = material.get("material") or {}
                     converted_record["contributions"].append(
                         {
                             "contributorid": contributor.get("id"),
                             "contributorname": contributor.get("name"),
                             "contributorcode": contributor.get("code"),
                             "amount": material.get("amount"),
-                            "materialid": material.get("material").get("id"),
-                            "timestamp": contribution.get("time").get("timestamp"),
+                            "materialid": mat.get("id"),
+                            "timestamp": time_obj.get("timestamp"),
                         }
                     )
         converted_record.update(

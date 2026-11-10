@@ -183,16 +183,22 @@ async def handle_corporation_data_message(db: Database, raw_payload: Dict[str, A
                 if processed_corporation_id:
                     await cleanup_old_shareholders(con, processed_corporation_id, all_shareholder_records)
 
-                # b. Update the user's primary corporation ID (if we identified the user)
-                if submitting_user_id and processed_corporation_id:
-                    await con.execute(
-                        USER_DATA_CORP_UPDATE_QUERY,
-                        processed_corporation_id,
-                        submitting_user_id,
+                # b. Update the user's primary corporation ID using the submitting account from raw_payload
+                if raw_payload.get("userId") and processed_corporation_id:
+                    user_res = await con.fetchrow(
+                        "SELECT userdataid FROM users WHERE accountid = $1;",
+                        raw_payload["userId"],
                     )
-                    logger.debug(
-                        f"Updated user {submitting_user_id} with new corporation ID {processed_corporation_id}."
-                    )
+                    target_userdata_id = user_res["userdataid"] if user_res else None
+                    if target_userdata_id:
+                        await con.execute(
+                            USER_DATA_CORP_UPDATE_QUERY,
+                            processed_corporation_id,
+                            target_userdata_id,
+                        )
+                        logger.debug(
+                            f"Updated submitting user {target_userdata_id} with new corporation ID {processed_corporation_id}."
+                        )
 
     except Exception as e:
         logger.error(f"Error processing corporation data: {e}", exc_info=True)

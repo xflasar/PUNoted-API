@@ -65,7 +65,7 @@ async def generate_vendors_csv(
                         loc.get("location_name", ""),
                         loc.get("location_code", ""),
                         loc.get("available", 0.0),
-                        loc.get("contract_reserved_amount", 0.0),
+                        loc.get("contract_reserved_amount") if loc.get("contract_reserved_amount") is not None else "",
                     ])
 
         return output.getvalue()
