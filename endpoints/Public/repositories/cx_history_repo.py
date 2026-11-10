@@ -234,6 +234,7 @@ async def fetch_ticker_detail(db, ticker: str, exchange: str = "IC1") -> Dict[st
 
     try:
         async with db.pool.acquire() as conn:
+            # Try exact match on ticker / brokermaterialid first (hits primary key or idx_cx_brokers_upper_ticker)
             broker_row = await conn.fetchrow(
                 """
                 SELECT 
@@ -250,16 +251,38 @@ async def fetch_ticker_detail(db, ticker: str, exchange: str = "IC1") -> Dict[st
                     brokermaterialid,
                     xata_updatedat AS last_update
                 FROM cx_brokers
-                WHERE UPPER(brokermaterialid) = $1
-                   OR UPPER(ticker) = $1
-                   OR (UPPER(brokermaterialid) LIKE $2 || '%' AND UPPER(brokermaterialid) LIKE '%' || $3)
-                   OR (UPPER(ticker) LIKE $2 || '%' AND UPPER(ticker) LIKE '%' || $3)
+                WHERE UPPER(ticker) = $1 OR UPPER(brokermaterialid) = $1
                 LIMIT 1;
                 """,
-                full_ticker, clean_ticker, clean_exchange
+                full_ticker
             )
 
-            # Fallback if cx_brokers row is absent or empty: build snapshot from cx_brokers_history
+            # Fallback if specific formatting differed (e.g. prefix match)
+            if not broker_row:
+                broker_row = await conn.fetchrow(
+                    """
+                    SELECT 
+                        ticker,
+                        priceaverage,
+                        askprice,
+                        askamount,
+                        bidprice,
+                        bidamount,
+                        supply,
+                        demand,
+                        traded,
+                        volume,
+                        brokermaterialid,
+                        xata_updatedat AS last_update
+                    FROM cx_brokers
+                    WHERE UPPER(ticker) LIKE $1 || '.' || $2
+                       OR UPPER(ticker) LIKE $1 || '%'
+                    LIMIT 1;
+                    """,
+                    clean_ticker, clean_exchange
+                )
+
+            # Fallback if cx_brokers row is absent: build snapshot from cx_brokers_history
             if not broker_row:
                 hist_fallback = await conn.fetchrow(
                     """
@@ -270,12 +293,29 @@ async def fetch_ticker_detail(db, ticker: str, exchange: str = "IC1") -> Dict[st
                         COALESCE(supply, 0) AS supply,
                         snapshot_at AS last_update
                     FROM cx_brokers_history
-                    WHERE (UPPER(ticker) = $1 OR (UPPER(ticker) LIKE $2 || '%' AND UPPER(ticker) LIKE '%' || $3))
+                    WHERE UPPER(ticker) = $1
                     ORDER BY snapshot_at DESC
                     LIMIT 1;
                     """,
-                    full_ticker, clean_ticker, clean_exchange
+                    full_ticker
                 )
+                if not hist_fallback:
+                    hist_fallback = await conn.fetchrow(
+                        """
+                        SELECT 
+                            COALESCE(priceaverage, (askprice + bidprice)/2.0, askprice, bidprice, 0) AS priceaverage,
+                            COALESCE(askprice, 0) AS askprice,
+                            COALESCE(bidprice, 0) AS bidprice,
+                            COALESCE(supply, 0) AS supply,
+                            snapshot_at AS last_update
+                        FROM cx_brokers_history
+                        WHERE UPPER(ticker) LIKE $1 || '.' || $2
+                        ORDER BY snapshot_at DESC
+                        LIMIT 1;
+                        """,
+                        clean_ticker, clean_exchange
+                    )
+
                 if hist_fallback:
                     broker_row = {
                         "priceaverage": hist_fallback["priceaverage"],
@@ -307,6 +347,7 @@ async def fetch_ticker_detail(db, ticker: str, exchange: str = "IC1") -> Dict[st
                 stats_data = None
 
             if not stats_data:
+                # Fast indexed lookup using UPPER(ticker) index
                 stats_row = await conn.fetchrow(
                     """
                     SELECT 
@@ -315,11 +356,24 @@ async def fetch_ticker_detail(db, ticker: str, exchange: str = "IC1") -> Dict[st
                         COALESCE(MAX(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS alltimehigh,
                         COALESCE(MIN(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS alltimelow
                     FROM cx_brokers_history
-                    WHERE UPPER(ticker) = $1 
-                       OR (UPPER(ticker) LIKE $2 || '%' AND UPPER(ticker) LIKE '%' || $3);
+                    WHERE UPPER(ticker) = $1;
                     """,
-                    full_ticker, clean_ticker, clean_exchange
+                    full_ticker
                 )
+                if not stats_row or (not stats_row["high"] and not stats_row["low"]):
+                    # Fallback to pattern only if exact match returned nothing
+                    stats_row = await conn.fetchrow(
+                        """
+                        SELECT 
+                            COALESCE(MAX(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS high,
+                            COALESCE(MIN(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS low,
+                            COALESCE(MAX(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS alltimehigh,
+                            COALESCE(MIN(COALESCE(priceaverage, askprice, bidprice, price)), 0) AS alltimelow
+                        FROM cx_brokers_history
+                        WHERE UPPER(ticker) LIKE $1 || '.' || $2;
+                        """,
+                        clean_ticker, clean_exchange
+                    )
                 stats_data = {
                     "high": float(stats_row["high"] or 0) if stats_row else 0.0,
                     "low": float(stats_row["low"] or 0) if stats_row else 0.0,

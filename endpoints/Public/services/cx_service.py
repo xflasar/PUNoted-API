@@ -246,10 +246,45 @@ async def get_ticker_history_service(
         db, ticker=ticker, exchange=exchange, days=days, start_date=start_date, end_date=end_date
     )
 
+import asyncio
+from collections import defaultdict
+
+_detail_locks = defaultdict(asyncio.Lock)
+
 async def get_ticker_detail_service(
     db,
     ticker: str,
     exchange: str = "IC1",
 ) -> Dict[str, Any]:
-    """Service wrapper for fetching detailed current orderbook and stats for a CX ticker."""
-    return await fetch_ticker_detail(db, ticker=ticker, exchange=exchange)
+    """Service wrapper for fetching detailed current orderbook and stats for a CX ticker with Redis cache layer."""
+    clean_ticker = ticker.upper()
+    clean_exchange = exchange.upper()
+    full_ticker = f"{clean_ticker}.{clean_exchange}" if "." not in clean_ticker else clean_ticker
+    cache_key = f"cx_ticker_detail:{full_ticker}"
+
+    try:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            return json.loads(cached) if isinstance(cached, str) else cached
+    except Exception as e:
+        logger.warning(f"Redis get failed for {cache_key}: {e}")
+
+    async with _detail_locks[cache_key]:
+        try:
+            cached = await redis_client.get(cache_key)
+            if cached:
+                return json.loads(cached) if isinstance(cached, str) else cached
+        except Exception:
+            pass
+
+        data = await fetch_ticker_detail(db, ticker=ticker, exchange=exchange)
+
+        if data and data.get("found"):
+            try:
+                # Cache full detail for 60 seconds
+                await redis_client.set(cache_key, json.dumps(data), ex=60)
+            except Exception as e:
+                logger.warning(f"Redis set failed for {cache_key}: {e}")
+
+        return data
+
