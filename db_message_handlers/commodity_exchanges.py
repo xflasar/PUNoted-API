@@ -43,6 +43,35 @@ async def handle_commodity_exchanges_message(db: Database, raw_payload: Dict[str
         "message": f"Processed {len(converted_data)} commodity exchanges successfully.",
     }
 
+
+async def handle_country_registry_countries_message(db: Database, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
+    start_time = time.perf_counter()
+    logger.debug("Starting processing COUNTRY_REGISTRY_COUNTRIES data.")
+
+    converted_data = raw_payload.get("data") or {}
+    countries = converted_data.get("countries") or []
+    currencies = converted_data.get("currencies") or []
+
+    if not countries and not currencies:
+        logger.debug("No countries/currencies to process. Exiting.")
+        return {"success": True, "message": "No countries/currencies to process."}
+
+    try:
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                if currencies:
+                    await _upsert_records(con, "currencies", currencies, ["id"])
+                if countries:
+                    await _upsert_records(con, "countries", countries, ["id"])
+
+    except Exception as e:
+        logger.error(f"Error processing country registry data: {e}", exc_info=True)
+        raise
+
+    end_time = time.perf_counter()
+    logger.debug(f"Processing country registry took {end_time - start_time:.4f} seconds")
+    return {"success": True, "message": f"Processed {len(countries)} countries and {len(currencies)} currencies successfully."}
+
 async def _upsert_records(
     con: asyncpg.Connection,
     table_name: str,

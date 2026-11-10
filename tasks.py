@@ -114,6 +114,7 @@ CONVERTER_HANDLERS = {
     'LEADERBOARD_SCORES': converters.leaderboard.convert_leaderboard_scores if hasattr(converters, 'leaderboard') else data_converter.convert_leaderboard_scores,
     "BLUEPRINT_BLUEPRINTS": converters.blueprints.convert_blueprints_data,
     "SHIPYARD_PROJECTS": data_converter.convert_shipyard_projects_payload,
+    "COUNTRY_REGISTRY_COUNTRIES": data_converter.convert_country_registry_countries,
 }
 
 
@@ -200,6 +201,7 @@ MESSAGE_HANDLERS = {
     "gateways": db_message_handlers.gateway.handle_gateway_data_message,
     "STORAGE_REMOVED": db_message_handlers.storage_data.handle_storage_removed_message,
     'commodityexchanges': db_message_handlers.commodity_exchanges.handle_commodity_exchanges_message,
+    'COUNTRY_REGISTRY_COUNTRIES': db_message_handlers.commodity_exchanges.handle_country_registry_countries_message,
     'users': db_message_handlers.user_data.handle_public_user_data_message,
     'LEADERBOARD_SCORES': db_message_handlers.leaderboards_data.handle_leaderboard_scores
 }

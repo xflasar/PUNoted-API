@@ -92,6 +92,7 @@ from .world import (
     convert_system_data,
     convert_system_connections_data,
     convert_stations_data,
+    convert_country_registry_countries,
 )
 
 from .leaderboard import (

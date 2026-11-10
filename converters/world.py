@@ -412,5 +412,66 @@ def convert_stations_data(raw_record: Dict[str, Any]) -> List[Dict[str, Any]]:
         "countryid": country_obj.get("id"),
         "governingentityid": gov_obj.get("id"),
     }
-
     return converted_record
+
+
+def convert_country_registry_countries(
+    raw_record: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Converts COUNTRY_REGISTRY_COUNTRIES payload into countries and currencies lists."""
+    countries_list: List[Dict[str, Any]] = []
+    currencies_list: List[Dict[str, Any]] = []
+
+    payload = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(payload, dict):
+        return {"countries": [], "currencies": []}
+
+    raw_countries = payload.get("countries") or []
+    if isinstance(raw_countries, dict):
+        raw_countries = [raw_countries]
+
+    seen_currency_ids = set()
+
+    for c in raw_countries:
+        if not isinstance(c, dict):
+            continue
+
+        c_id = c.get("id")
+        if not c_id:
+            continue
+
+        curr = c.get("currency") or {}
+        curr_code = curr.get("code")
+        curr_name = curr.get("name")
+        curr_num = curr.get("numericCode")
+        curr_dec = curr.get("decimals")
+
+        countries_list.append(
+            {
+                "id": c_id,
+                "code": c.get("code"),
+                "name": c.get("name"),
+                "currencycode": curr_code,
+                "currencyname": curr_name,
+                "currencynumericcode": curr_num,
+                "currencydecimals": curr_dec,
+            }
+        )
+
+        if curr_code and curr_code not in seen_currency_ids:
+            seen_currency_ids.add(curr_code)
+            currencies_list.append(
+                {
+                    "id": curr_code,
+                    "code": curr_code,
+                    "name": curr_name,
+                    "numericcode": curr_num,
+                    "decimals": curr_dec,
+                }
+            )
+
+    return {
+        "countries": countries_list,
+        "currencies": currencies_list,
+    }
+

@@ -536,5 +536,39 @@ def test_convert_world_materials_data() -> None:
     assert len(res["material_categories"]) == 1
 
 
+def test_convert_country_registry_countries() -> None:
+    payload = {
+        "payload": {
+            "countries": [
+                {
+                    "id": "c1",
+                    "code": "CI",
+                    "name": "Castillo-Ito Mercantile",
+                    "currency": {"numericCode": 2, "code": "CIS", "name": "Sol", "decimals": 2},
+                },
+                {
+                    "id": "c2",
+                    "code": "NC",
+                    "name": "NEO Charter Exploration",
+                    "currency": {"numericCode": 4, "code": "NCC", "name": "NCE Coupons", "decimals": 2},
+                },
+            ]
+        }
+    }
+    res = converters.world.convert_country_registry_countries(payload)
+    assert len(res["countries"]) == 2
+    assert res["countries"][0]["code"] == "CI"
+    assert res["countries"][0]["currencycode"] == "CIS"
+    assert len(res["currencies"]) == 2
+    assert res["currencies"][0]["code"] == "CIS"
+
+    # Test None safety
+    res_none = converters.world.convert_country_registry_countries(None)
+    assert res_none == {"countries": [], "currencies": []}
+    res_empty = converters.world.convert_country_registry_countries({"payload": None})
+    assert res_empty == {"countries": [], "currencies": []}
+
+
+
 
 
