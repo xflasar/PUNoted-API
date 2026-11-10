@@ -122,7 +122,7 @@ def converter_router(argument, data):
     """
     Routes an argument to the correct data converter function.
     """
-    if argument in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED"):
+    if argument in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED", "FOREX_TRADER_ORDERS", "SIMULATION_DATA"): # FOREX_TRADER_ORDERS and SIMULATION_DATA will be later added and fixed
         return []
 
     handler = CONVERTER_HANDLERS.get(argument)
@@ -224,8 +224,8 @@ async def handle_message_data_router(db, messageType, payload) -> Any:
             return response
         else:
             return response, 200
-    if messageType in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED"):
-        logger.debug(f"Acknowledged control message: {messageType}")
+    if messageType in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED", "FOREX_TRADER_ORDERS", "SIMULATION_DATA"):
+        logger.debug(f"Acknowledged message: {messageType}")
         return {"success": True, "message": f"Acknowledged {messageType}"}, 200
 
     raw_payload = payload.get("rawPayload") if isinstance(payload, dict) else None
