@@ -14,48 +14,61 @@ def convert_comex_trade_orders_data(
 ) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'comex_trade_orders' table schema."""
     converted_records = []
-    for record in raw_records["payload"]["orders"]:
+    payload = raw_records.get("payload") if isinstance(raw_records, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    orders = payload.get("orders") or []
+    for record in orders:
+        if not isinstance(record, dict):
+            continue
         trades = []
 
-        for trade in record.get("trades"):
-            # Handle earliest contract timestamp
+        for trade in (record.get("trades") or []):
+            if not isinstance(trade, dict):
+                continue
             trade_time = trade.get("time")
-            if trade_time is not None and trade_time.get("timestamp") is not None:
+            if trade_time is not None and isinstance(trade_time, dict) and trade_time.get("timestamp") is not None:
                 trade_time = datetime.fromtimestamp(trade_time["timestamp"] / 1000)
             else:
-                trade_time = None  # Or None, 0, etc. based on your needs
+                trade_time = None
+
+            price_obj = trade.get("price") or {}
+            partner_obj = trade.get("partner") or {}
 
             trades.append(
                 {
                     "tradeid": trade.get("id"),
                     "amount": trade.get("amount"),
-                    "priceamount": trade.get("price").get("amount"),
-                    "pricecurrency": trade.get("price").get("currency"),
+                    "priceamount": price_obj.get("amount"),
+                    "pricecurrency": price_obj.get("currency"),
                     "tradetime": trade_time,
-                    "partnerid": trade.get("partner").get("id"),
-                    "partnername": trade.get("partner").get("name"),
-                    "partnercode": trade.get("partner").get("code"),
+                    "partnerid": partner_obj.get("id"),
+                    "partnername": partner_obj.get("name"),
+                    "partnercode": partner_obj.get("code"),
                 }
             )
 
-        # Handle earliest contract timestamp
         created = record.get("created")
-        if created is not None and created.get("timestamp") is not None:
+        if created is not None and isinstance(created, dict) and created.get("timestamp") is not None:
             created = datetime.fromtimestamp(created["timestamp"] / 1000)
         else:
-            created = None  # Or None, 0, etc. based on your needs
+            created = None
+
+        exch = record.get("exchange") or {}
+        mat = record.get("material") or {}
+        lim = record.get("limit") or {}
 
         converted_records.append(
             {
                 "orderid": record.get("id"),
-                "exchangeid": record.get("exchange").get("id"),
+                "exchangeid": exch.get("id"),
                 "brokerid": record.get("brokerId"),
                 "type": record.get("type"),
-                "materialid": record.get("material").get("id"),
+                "materialid": mat.get("id"),
                 "amount": record.get("amount"),
                 "initialamount": record.get("initialAmount"),
-                "limitamount": record.get("limit").get("amount"),
-                "limitcurrency": record.get("limit").get("currency"),
+                "limitamount": lim.get("amount"),
+                "limitcurrency": lim.get("currency"),
                 "status": record.get("status"),
                 "created": created,
                 "trades": trades,
@@ -67,46 +80,55 @@ def handle_comex_trade_order_data(raw_record: Dict[str, Any]) -> Dict[str, Any]:
     converted_record = {}
     trades = []
 
-    record = raw_record["payload"]
+    record = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(record, dict):
+        record = {}
 
-    for trade in record.get("trades"):
-        # Handle earliest contract timestamp
+    for trade in (record.get("trades") or []):
+        if not isinstance(trade, dict):
+            continue
         trade_time = trade.get("time")
-        if trade_time is not None and trade_time.get("timestamp") is not None:
+        if trade_time is not None and isinstance(trade_time, dict) and trade_time.get("timestamp") is not None:
             trade_time = datetime.fromtimestamp(trade_time["timestamp"] / 1000)
         else:
-            trade_time = None  # Or None, 0, etc. based on your needs
+            trade_time = None
+
+        price_obj = trade.get("price") or {}
+        partner_obj = trade.get("partner") or {}
 
         trades.append(
             {
                 "tradeid": trade.get("id"),
                 "amount": trade.get("amount"),
-                "priceamount": trade.get("price").get("amount"),
-                "pricecurrency": trade.get("price").get("currency"),
+                "priceamount": price_obj.get("amount"),
+                "pricecurrency": price_obj.get("currency"),
                 "tradetime": trade_time,
-                "partnerid": trade.get("partner").get("id"),
-                "partnername": trade.get("partner").get("name"),
-                "partnercode": trade.get("partner").get("code"),
+                "partnerid": partner_obj.get("id"),
+                "partnername": partner_obj.get("name"),
+                "partnercode": partner_obj.get("code"),
             }
         )
 
-    # Handle earliest contract timestamp
     created = record.get("created")
-    if created is not None and created.get("timestamp") is not None:
+    if created is not None and isinstance(created, dict) and created.get("timestamp") is not None:
         created = datetime.fromtimestamp(created["timestamp"] / 1000)
     else:
-        created = None  # Or None, 0, etc. based on your needs
+        created = None
+
+    exch = record.get("exchange") or {}
+    mat = record.get("material") or {}
+    lim = record.get("limit") or {}
 
     converted_record = {
         "orderid": record.get("id"),
-        "exchangeid": record.get("exchange").get("id"),
+        "exchangeid": exch.get("id"),
         "brokerid": record.get("brokerId"),
         "type": record.get("type"),
-        "materialid": record.get("material").get("id"),
+        "materialid": mat.get("id"),
         "amount": record.get("amount"),
         "initialamount": record.get("initialAmount"),
-        "limitamount": record.get("limit").get("amount"),
-        "limitcurrency": record.get("limit").get("currency"),
+        "limitamount": lim.get("amount"),
+        "limitcurrency": lim.get("currency"),
         "status": record.get("status"),
         "created": created,
         "trades": trades,
@@ -124,7 +146,9 @@ def convert_comex_trade_order_update_data(raw_record: Dict[str, Any]) -> Dict[st
 
 def convert_comex_trade_order_remove(raw_record: Dict[str, Any]) -> Dict[str, Any]:
     """Converts raw data to match the 'comex_trade_order_remove' table schema."""
-    record = raw_record["payload"]
+    record = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(record, dict):
+        record = {}
     converted_record = {"orderid": record.get("orderId")}
     return converted_record
 
@@ -133,59 +157,77 @@ def convert_comex_broker_data(
 ) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'comex_trade_orders' table schema."""
     converted_records = []
-    record = raw_records["payload"]
+    record = raw_records.get("payload") if isinstance(raw_records, dict) else {}
+    if not isinstance(record, dict):
+        record = {}
     buyOrders = []
     sellOrders = []
-    for buy in record.get("buyingOrders"):
+    for buy in (record.get("buyingOrders") or []):
+        if not isinstance(buy, dict):
+            continue
+        lim = buy.get("limit") or {}
+        trader = buy.get("trader") or {}
         buyOrders.append(
             {
                 "orderid": buy.get("id"),
                 "amount": buy.get("amount"),
-                "priceamount": buy.get("limit").get("amount"),
-                "pricecurrency": buy.get("limit").get("currency"),
-                "traderid": buy.get("trader").get("id"),
-                "tradername": buy.get("trader").get("name"),
-                "tradercode": buy.get("trader").get("code"),
+                "priceamount": lim.get("amount"),
+                "pricecurrency": lim.get("currency"),
+                "traderid": trader.get("id"),
+                "tradername": trader.get("name"),
+                "tradercode": trader.get("code"),
             }
         )
 
-    for sell in record.get("sellingOrders"):
+    for sell in (record.get("sellingOrders") or []):
+        if not isinstance(sell, dict):
+            continue
+        lim = sell.get("limit") or {}
+        trader = sell.get("trader") or {}
         sellOrders.append(
             {
                 "orderid": sell.get("id"),
                 "amount": sell.get("amount"),
-                "priceamount": sell.get("limit").get("amount"),
-                "pricecurrency": sell.get("limit").get("currency"),
-                "traderid": sell.get("trader").get("id"),
-                "tradername": sell.get("trader").get("name"),
-                "tradercode": sell.get("trader").get("code"),
+                "priceamount": lim.get("amount"),
+                "pricecurrency": lim.get("currency"),
+                "traderid": trader.get("id"),
+                "tradername": trader.get("name"),
+                "tradercode": trader.get("code"),
             }
         )
-    # Handle earliest contract timestamp
     price_time = record.get("priceTime")
-    if price_time is not None and price_time.get("timestamp") is not None:
+    if price_time is not None and isinstance(price_time, dict) and price_time.get("timestamp") is not None:
         price_time = datetime.fromtimestamp(price_time["timestamp"] / 1000)
     else:
-        price_time = None  # Or None, 0, etc. based on your needs
+        price_time = None
+
+    addr = record.get("address") or {}
+    lines = addr.get("lines") or []
+    sys_id = (lines[0].get("entity") or {}).get("id") if len(lines) > 0 and isinstance(lines[0], dict) else None
+    sta_id = (lines[1].get("entity") or {}).get("id") if len(lines) > 1 and isinstance(lines[1], dict) else None
+
+    exch = record.get("exchange") or {}
+    curr = record.get("currency") or {}
+    mat = record.get("material") or {}
 
     converted_records.append(
         {
             "brokermaterialid": record.get("id"),
-            "addresssystemid": record.get("address", {}).get("lines", [{}, {}])[0].get("entity", {}).get("id"),
-            "addressstationid": record.get("address", {}).get("lines", [{}, {}])[1].get("entity", {}).get("id"),
-            "exchangeid": record.get("exchange" or {}).get("id"),
-            "currencyid": record.get("currency" or {}).get("code"),
+            "addresssystemid": sys_id,
+            "addressstationid": sta_id,
+            "exchangeid": exch.get("id"),
+            "currencyid": curr.get("code"),
             "demand": record.get("demand"),
             "supply": record.get("supply"),
             "traded": record.get("traded"),
             "ticker": record.get("ticker"),
             "askamount": (record.get("ask") or {}).get("amount"),
-            "askprice": (record.get("ask") or {}).get("price", {}).get("amount"),
+            "askprice": ((record.get("ask") or {}).get("price") or {}).get("amount"),
             "bidamount": (record.get("bid") or {}).get("amount"),
-            "bidprice": (record.get("bid") or {}).get("price", {}).get("amount"),
+            "bidprice": ((record.get("bid") or {}).get("price") or {}).get("amount"),
             "high": (record.get("high") or {}).get("amount"),
             "low": (record.get("low") or {}).get("amount"),
-            "materialid": record.get("material", {}).get("id"),
+            "materialid": mat.get("id"),
             "narrowpricebandhigh": (record.get("narrowPriceBand") or {}).get("high"),
             "narrowpricebandlow": (record.get("narrowPriceBand") or {}).get("low"),
             "price": (record.get("price") or {}).get("amount"),

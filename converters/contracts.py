@@ -8,7 +8,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 import re
-import data_converter
 
 MOT_REGEX = re.compile(r"MOT-\d+-\d+")
 
@@ -252,9 +251,10 @@ def _parse_address_lines(address_lines: List[Dict[str, Any]], address_type: str)
     """
     Helper to extract entity data from the complex 'address.lines' array.
     """
-    system_data = next((line["entity"] for line in address_lines if line["type"] == "SYSTEM"), {})
-    planet_data = next((line["entity"] for line in address_lines if line["type"] == "PLANET"), {})
-    station_data = next((line["entity"] for line in address_lines if line["type"] == "STATION"), {})
+    valid_lines = [l for l in (address_lines or []) if isinstance(l, dict)]
+    system_data = next(((line.get("entity") or {}) for line in valid_lines if line.get("type") == "SYSTEM"), {})
+    planet_data = next(((line.get("entity") or {}) for line in valid_lines if line.get("type") == "PLANET"), {})
+    station_data = next(((line.get("entity") or {}) for line in valid_lines if line.get("type") == "STATION"), {})
 
     prefix = "destination" if address_type == "DESTINATION" else "address"
 

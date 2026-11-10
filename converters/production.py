@@ -7,7 +7,6 @@ import uuid
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
-import data_converter
 
 
 def convert_production_lines_data(
@@ -15,7 +14,13 @@ def convert_production_lines_data(
 ) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'production_lines' table schema."""
     converted_records = []
-    for record in raw_records["payload"]["productionLines"]:
+    payload = raw_records.get("payload") if isinstance(raw_records, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    lines = payload.get("productionLines") or []
+    for record in lines:
+        if not isinstance(record, dict):
+            continue
         converted_records.append(
             {
                 "productionlineid": record.get("id"),
@@ -25,27 +30,29 @@ def convert_production_lines_data(
                 "slots": record.get("slots"),
                 "efficiency": record.get("efficiency"),
                 "condition": record.get("condition"),
-                "orders": convert_production_line_orders_data(record.get("orders")),
+                "orders": convert_production_line_orders_data(record.get("orders") or []),
                 "production_templates": convert_production_line_order_production_templates_data(
-                    record.get("productionTemplates"), record.get("id")
+                    record.get("productionTemplates") or [], record.get("id")
                 ),
                 "efficiency_factors": convert_production_line_efficiency_factors(
-                    record.get("efficiencyFactors"), record.get("id")
+                    record.get("efficiencyFactors") or [], record.get("id")
                 ),
-                "workforces": convert_production_workforces_data(record.get("workforces"), record.get("id")),
+                "workforces": convert_production_workforces_data(record.get("workforces") or [], record.get("id")),
             }
         )
     return {
-        "siteid": raw_records["payload"].get("siteId"),
+        "siteid": payload.get("siteId"),
         "production_lines": converted_records,
     }
 
 def convert_production_workforces_data(
-    raw_records: List[Dict[str, Any]], production_line_id: string
+    raw_records: List[Dict[str, Any]], production_line_id: str
 ) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'production_workforces' table schema."""
     converted_records = []
-    for record in raw_records:
+    for record in (raw_records or []):
+        if not isinstance(record, dict):
+            continue
         converted_records.append(
             {
                 "productionlineid": production_line_id,
@@ -60,7 +67,9 @@ def convert_production_line_orders_data(
 ) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'production_line_orders' table schema."""
     converted_records = []
-    for record in raw_records:
+    for record in (raw_records or []):
+        if not isinstance(record, dict):
+            continue
         # Handle created timestamp
         created = record.get("created")
         if created is not None and created.get("timestamp") is not None:
@@ -68,21 +77,18 @@ def convert_production_line_orders_data(
         else:
             created = None
 
-        # Handle created timestamp
         started = record.get("started")
         if started is not None and started.get("timestamp") is not None:
             started = datetime.fromtimestamp(started["timestamp"] / 1000)
         else:
             started = None
 
-        # Handle created timestamp
         completion = record.get("completion")
         if completion is not None and completion.get("timestamp") is not None:
             completion = datetime.fromtimestamp(completion["timestamp"] / 1000)
         else:
             completion = None
 
-        # Handle created timestamp
         lastupdated = record.get("lastUpdated")
         if lastupdated is not None and lastupdated.get("timestamp") is not None:
             lastupdated = datetime.fromtimestamp(lastupdated["timestamp"] / 1000)
@@ -94,6 +100,8 @@ def convert_production_line_orders_data(
             duration = duration.get("millis")
         else:
             duration = None
+
+        prod_fee = record.get("productionFee") or {}
 
         converted_records.append(
             {
@@ -108,30 +116,34 @@ def convert_production_line_orders_data(
                 "completed": bool(record.get("completed")),
                 "halted": record.get("halted"),
                 "recurring": record.get("recurring"),
-                "productionfeeamount": record.get("productionFee").get("amount"),
-                "productionfeecurrency": record.get("productionFee").get("currency"),
-                "inputs": convert_production_line_order_materials_data(record.get("inputs"), record.get("id"), "input"),
+                "productionfeeamount": prod_fee.get("amount"),
+                "productionfeecurrency": prod_fee.get("currency"),
+                "inputs": convert_production_line_order_materials_data(record.get("inputs") or [], record.get("id"), "input"),
                 "outputs": convert_production_line_order_materials_data(
-                    record.get("outputs"), record.get("id"), "output"
+                    record.get("outputs") or [], record.get("id"), "output"
                 ),
             }
         )
     return converted_records
 
 def convert_production_line_order_materials_data(
-    raw_records: List[Dict[str, Any]], order_id: string, material_type: string
+    raw_records: List[Dict[str, Any]], order_id: str, material_type: str
 ) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'production_line_order_materials' table schema."""
     converted_records = []
-    for record in raw_records:
+    for record in (raw_records or []):
+        if not isinstance(record, dict):
+            continue
+        mat = record.get("material") or {}
+        val = record.get("value") or {}
         converted_records.append(
             {
                 "orderid": order_id,
-                "materialId": record.get("material").get("id"),
+                "materialId": mat.get("id"),
                 "type": material_type,
                 "amount": record.get("amount"),
-                "valueAmount": record.get("value").get("amount"),
-                "valueCurrency": record.get("value").get("currency"),
+                "valueAmount": val.get("amount"),
+                "valueCurrency": val.get("currency"),
             }
         )
     return converted_records
@@ -140,12 +152,16 @@ def convert_production_line_order_production_templates_data(
     raw_records: List[Dict[str, Any]], production_line_id: str
 ) -> List[Dict[str, Any]]:
     converted_records = []
-    for record in raw_records:
+    for record in (raw_records or []):
+        if not isinstance(record, dict):
+            continue
         duration = record.get("duration")
         if duration is not None and duration.get("millis") is not None:
             duration = duration.get("millis")
         else:
             duration = None
+
+        fee_factor = record.get("productionFeeFactor") or {}
 
         converted_records.append(
             {
@@ -156,16 +172,16 @@ def convert_production_line_order_production_templates_data(
                 "efficiency": record.get("efficiency"),
                 "effortfactor": record.get("effortFactor"),
                 "experience": record.get("experience"),
-                "productionfee": record.get("productionFeeFactor").get("amount"),
-                "productionfeecurrency": record.get("productionFeeFactor").get("currency"),
+                "productionfee": fee_factor.get("amount"),
+                "productionfeecurrency": fee_factor.get("currency"),
                 "input_factors": convert_templates_factors_data(
-                    record.get("inputFactors"),
+                    record.get("inputFactors") or [],
                     record.get("id"),
                     "input",
                     production_line_id,
                 ),
                 "output_factors": convert_templates_factors_data(
-                    record.get("outputFactors"),
+                    record.get("outputFactors") or [],
                     record.get("id"),
                     "output",
                     production_line_id,
@@ -176,17 +192,20 @@ def convert_production_line_order_production_templates_data(
 
 def convert_templates_factors_data(
     raw_records: List[Dict[str, Any]],
-    production_template_id: string,
-    material_type: string,
+    production_template_id: str,
+    material_type: str,
     production_line_id: str,
 ) -> List[Dict[str, Any]]:
     converted_records = []
-    for record in raw_records:
+    for record in (raw_records or []):
+        if not isinstance(record, dict):
+            continue
+        mat = record.get("material") or {}
         converted_records.append(
             {
                 "productiontemplateid": production_template_id,
                 "productionlineid": production_line_id,
-                "materialid": record.get("material").get("id"),
+                "materialid": mat.get("id"),
                 "factor": record.get("factor"),
             }
         )
