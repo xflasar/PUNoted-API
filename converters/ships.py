@@ -417,7 +417,76 @@ def convert_segment(raw_segment: Dict[str, Any], flight_id: str, segment_index: 
         pass
 
     # 3. DEPARTURE Segment (Focus on STL/Transfer Ellipse)
-    elif segment_type == "DEPARTURE":
-        pass
-
     return segment_record
+
+
+def convert_shipyard_projects_payload(
+    raw_record: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Converts SHIPYARD_PROJECTS payload into shipyard_projects and shipyard_project_materials."""
+    projects_list: List[Dict[str, Any]] = []
+    materials_list: List[Dict[str, Any]] = []
+
+    payload = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(payload, dict):
+        return {"shipyard_projects": [], "shipyard_project_materials": []}
+
+    raw_projects = payload.get("projects") or []
+    if isinstance(raw_projects, dict):
+        raw_projects = [raw_projects]
+
+    for p in raw_projects:
+        if not isinstance(p, dict):
+            continue
+
+        proj_id = p.get("id")
+        if not proj_id:
+            continue
+
+        creation_ts = (p.get("creation") or {}).get("timestamp")
+        start_ts = (p.get("start") or {}).get("timestamp")
+        end_ts = (p.get("end") or {}).get("timestamp")
+
+        creation_dt = datetime.fromtimestamp(creation_ts / 1000) if creation_ts else None
+        start_dt = datetime.fromtimestamp(start_ts / 1000) if start_ts else None
+        end_dt = datetime.fromtimestamp(end_ts / 1000) if end_ts else None
+
+        projects_list.append(
+            {
+                "id": proj_id,
+                "blueprintnaturalid": p.get("blueprintNaturalId"),
+                "originblueprintnaturalid": p.get("originBlueprintNaturalId"),
+                "shipyardid": p.get("shipyardId"),
+                "status": p.get("status"),
+                "canstart": p.get("canStart"),
+                "shipid": p.get("shipId"),
+                "creationtimestamp": creation_dt,
+                "starttimestamp": start_dt,
+                "endtimestamp": end_dt,
+            }
+        )
+
+        inventory = p.get("inventory") or {}
+        items = inventory.get("items") or []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            mat = item.get("material") or {}
+            mat_id = mat.get("id")
+            if not mat_id:
+                continue
+
+            materials_list.append(
+                {
+                    "projectid": proj_id,
+                    "materialid": mat_id,
+                    "amount": item.get("amount"),
+                    "amountlimit": item.get("limit"),
+                }
+            )
+
+    return {
+        "shipyard_projects": projects_list,
+        "shipyard_project_materials": materials_list,
+    }
+

@@ -86,8 +86,34 @@ async def handle_cx_broker_data_message(db: Database, raw_payload: Dict[str, Any
 
     end_time = time.perf_counter()
     logger.debug(f"Processing cx_broker records took {end_time - start_time:.4f} seconds")
-
     return {"success": True, "message": "Processed cx_broker record successfully."}
+
+
+async def handle_cx_exchange_broker_list_message(db: Database, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
+    start_time = time.perf_counter()
+    logger.debug("Starting processing COMEX_EXCHANGE_BROKER_LIST data.")
+
+    converted_data = raw_payload.get("data")
+    if not converted_data:
+        logger.debug("No cx_broker entries in COMEX_EXCHANGE_BROKER_LIST. Exiting.")
+        return {"success": True, "message": "No cx_broker entries to process."}
+
+    try:
+        current_time = datetime.now(timezone.utc)
+        for entry in converted_data:
+            entry["xata_updatedat"] = current_time
+
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                await _upsert_records(con, "cx_brokers", converted_data, ["brokermaterialid"])
+
+    except Exception as e:
+        logger.error(f"Error processing COMEX_EXCHANGE_BROKER_LIST data: {e}", exc_info=True)
+        raise
+
+    end_time = time.perf_counter()
+    logger.debug(f"Processing COMEX_EXCHANGE_BROKER_LIST records took {end_time - start_time:.4f} seconds")
+    return {"success": True, "message": f"Processed {len(converted_data)} broker mappings successfully."}
 
 
 async def _upsert_records(

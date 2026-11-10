@@ -345,3 +345,46 @@ async def _process_notifications(db, ws_manager, current_account_id: str, shipid
 
     except Exception as e:
         logger.error(f"Notification processing failed: {e}")
+
+
+async def handle_shipyard_projects_message(db: Database, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
+    start_time = time.perf_counter()
+    logger.debug("Starting processing SHIPYARD_PROJECTS data.")
+
+    converted_data = raw_payload.get("data") or {}
+    projects = converted_data.get("shipyard_projects") or []
+    materials = converted_data.get("shipyard_project_materials") or []
+
+    if not projects:
+        logger.debug("No shipyard projects to process.")
+        return {"success": True, "message": "No shipyard projects to process."}
+
+    try:
+        async with db.pool.acquire() as con:
+            async with con.transaction():
+                # 1. Upsert shipyard_projects
+                await _upsert_records(con, "shipyard_projects", projects, ["id"])
+
+                # 2. Re-insert materials for these projects
+                project_ids = [p["id"] for p in projects if "id" in p]
+                if project_ids:
+                    await con.execute(
+                        "DELETE FROM shipyard_project_materials WHERE projectid = ANY($1::text[])",
+                        project_ids,
+                    )
+                if materials:
+                    mat_cols = ["projectid", "materialid", "amount", "amountlimit"]
+                    cols_str = ", ".join(mat_cols)
+                    placeholders = ", ".join([f"${i + 1}" for i in range(len(mat_cols))])
+                    mat_query = f"INSERT INTO shipyard_project_materials ({cols_str}) VALUES ({placeholders})"
+                    mat_values = [[m[c] for c in mat_cols] for m in materials]
+                    await con.executemany(mat_query, mat_values)
+
+    except Exception as e:
+        logger.error(f"Error processing shipyard projects: {e}", exc_info=True)
+        raise
+
+    end_time = time.perf_counter()
+    logger.debug(f"Processing shipyard projects took {end_time - start_time:.4f} seconds")
+    return {"success": True, "message": f"Processed {len(projects)} shipyard projects successfully."}
+

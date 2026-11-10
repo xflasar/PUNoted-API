@@ -285,3 +285,37 @@ def convert_commodity_exchanges_data(
         )
 
     return converted_records
+
+
+def convert_comex_exchange_broker_list(
+    raw_records: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Converts COMEX_EXCHANGE_BROKER_LIST message payload to match cx_brokers schema."""
+    converted_records = []
+    payload = raw_records.get("payload") if isinstance(raw_records, dict) else {}
+    if not isinstance(payload, dict):
+        return converted_records
+
+    exchange_id = payload.get("exchangeId")
+    items = payload.get("data") or []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        broker_id = item.get("brokerId")
+        if not broker_id:
+            continue
+
+        material = item.get("material") or {}
+        ticker = item.get("ticker")
+
+        converted_records.append(
+            {
+                "brokermaterialid": broker_id,
+                "exchangeid": exchange_id,
+                "materialid": material.get("id"),
+                "ticker": ticker,
+            }
+        )
+
+    return converted_records

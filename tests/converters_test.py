@@ -387,6 +387,44 @@ def test_convert_blueprints_data() -> None:
     assert "ship_blueprints" in res
     assert len(res["ship_blueprints"]) == 1
 
+def test_convert_shipyard_projects_payload() -> None:
+    payload = {
+        "payload": {
+            "projects": [
+                {
+                    "id": "proj1",
+                    "creation": {"timestamp": 1778005169980},
+                    "start": {"timestamp": 1778011567229},
+                    "end": {"timestamp": 1778144299229},
+                    "blueprintNaturalId": "BP-KRKL-6441",
+                    "originBlueprintNaturalId": None,
+                    "shipyardId": "yard1",
+                    "status": "BUILT",
+                    "canStart": False,
+                    "shipId": "ship1",
+                    "inventory": {
+                        "items": [
+                            {"material": {"id": "mat1"}, "amount": 1, "limit": 1},
+                            {"material": {"id": "mat2"}, "amount": 5, "limit": 5},
+                        ]
+                    },
+                }
+            ]
+        }
+    }
+    res = converters.ships.convert_shipyard_projects_payload(payload)
+    assert len(res["shipyard_projects"]) == 1
+    assert res["shipyard_projects"][0]["id"] == "proj1"
+    assert res["shipyard_projects"][0]["status"] == "BUILT"
+    assert len(res["shipyard_project_materials"]) == 2
+    assert res["shipyard_project_materials"][0]["projectid"] == "proj1"
+    assert res["shipyard_project_materials"][0]["materialid"] == "mat1"
+    # Test None safety
+    res_none = converters.ships.convert_shipyard_projects_payload(None)
+    assert res_none == {"shipyard_projects": [], "shipyard_project_materials": []}
+    res_empty = converters.ships.convert_shipyard_projects_payload({"payload": None})
+    assert res_empty == {"shipyard_projects": [], "shipyard_project_materials": []}
+
 def test_convert_comex_trade_orders_data() -> None:
     payload = {
         "payload": {
@@ -403,6 +441,37 @@ def test_convert_comex_trade_orders_data() -> None:
     }
     res = converters.comex.convert_comex_trade_orders_data(payload)
     assert len(res) == 1
+
+def test_convert_comex_exchange_broker_list() -> None:
+    payload = {
+        "payload": {
+            "exchangeId": "ex1",
+            "categoryId": "cat1",
+            "data": [
+                {
+                    "brokerId": "brk1",
+                    "ticker": "ALG.AI1",
+                    "material": {"id": "mat1", "ticker": "ALG"},
+                },
+                {
+                    "brokerId": "brk2",
+                    "ticker": "BEA.AI1",
+                    "material": {"id": "mat2", "ticker": "BEA"},
+                },
+            ],
+        }
+    }
+    res = converters.comex.convert_comex_exchange_broker_list(payload)
+    assert len(res) == 2
+    assert res[0]["brokermaterialid"] == "brk1"
+    assert res[0]["exchangeid"] == "ex1"
+    assert res[0]["materialid"] == "mat1"
+    assert res[0]["ticker"] == "ALG.AI1"
+    # Test None safety
+    res_none = converters.comex.convert_comex_exchange_broker_list(None)
+    assert res_none == []
+    res_empty = converters.comex.convert_comex_exchange_broker_list({"payload": None})
+    assert res_empty == []
 
 def test_convert_corporations_data() -> None:
     payload = {

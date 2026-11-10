@@ -43,6 +43,7 @@ from .ships import (
     convert_flight_record,
     convert_flight_ended_record,
     convert_segment,
+    convert_shipyard_projects_payload,
 )
 
 from .workforce import (
@@ -79,6 +80,7 @@ from .comex import (
     convert_comex_trade_order_remove,
     convert_comex_broker_data,
     convert_commodity_exchanges_data,
+    convert_comex_exchange_broker_list,
 )
 
 from .world import (

@@ -77,6 +77,7 @@ CONVERTER_HANDLERS = {
     "COMEX_TRADER_ORDER_UPDATED": data_converter.convert_comex_trade_order_update_data,
     "COMEX_TRADER_ORDER_REMOVED": data_converter.convert_comex_trade_order_remove,
     "COMEX_BROKER_DATA": data_converter.convert_comex_broker_data,
+    "COMEX_EXCHANGE_BROKER_LIST": data_converter.convert_comex_exchange_broker_list,
     "ACCOUNTING_CASH_BALANCES": data_converter.convert_user_currency_accounts_data,
     "ACCOUNTING_BOOKINGS": data_converter.convert_accounting_data,
 
@@ -112,6 +113,7 @@ CONVERTER_HANDLERS = {
     'users': data_converter.convert_public_user_data,
     'LEADERBOARD_SCORES': converters.leaderboard.convert_leaderboard_scores if hasattr(converters, 'leaderboard') else data_converter.convert_leaderboard_scores,
     "BLUEPRINT_BLUEPRINTS": converters.blueprints.convert_blueprints_data,
+    "SHIPYARD_PROJECTS": data_converter.convert_shipyard_projects_payload,
 }
 
 
@@ -119,6 +121,9 @@ def converter_router(argument, data):
     """
     Routes an argument to the correct data converter function.
     """
+    if argument in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED"):
+        return []
+
     handler = CONVERTER_HANDLERS.get(argument)
     if handler:
         return handler(data)
@@ -157,11 +162,13 @@ MESSAGE_HANDLERS = {
     "WAREHOUSE_STORAGES": db_message_handlers.warehouse_data.handle_warehouse_data_message,
     "SHIP_SHIPS": db_message_handlers.ship_data.handle_ship_data_message,
     "SHIP_DATA": db_message_handlers.ship_data.handle_ship_data_message,
+    "SHIPYARD_PROJECTS": db_message_handlers.ship_data.handle_shipyard_projects_message,
     "COMEX_TRADER_ORDERS": db_message_handlers.cx_data_orders.handle_comex_orders_data_message,
     "COMEX_TRADER_ORDER_ADDED": db_message_handlers.cx_data_order_added.handle_comex_order_added_message,
     "COMEX_TRADER_ORDER_UPDATED": db_message_handlers.cx_data_order_updated.handle_comex_order_updated_message,
     "COMEX_TRADER_ORDER_REMOVED": db_message_handlers.cx_data_order_removed.handle_comex_order_removed_message,
     "COMEX_BROKER_DATA": db_message_handlers.cx_broker_data.handle_cx_broker_data_message,
+    "COMEX_EXCHANGE_BROKER_LIST": db_message_handlers.cx_broker_data.handle_cx_exchange_broker_list_message,
     "ACCOUNTING_CASH_BALANCES": db_message_handlers.accounting_currency_balance_data.handle_accounting_currency_balance_data_message,
     "ACCOUNTING_BOOKINGS": db_message_handlers.accounting_data.handle_accounting_data_message,
 
@@ -215,34 +222,37 @@ async def handle_message_data_router(db, messageType, payload) -> Any:
             return response
         else:
             return response, 200
-    else:
-        raw_payload = payload.get("rawPayload") if isinstance(payload, dict) else None
-        keys_preview = []
-        if isinstance(raw_payload, dict):
-            keys_preview = list(raw_payload.keys())
-        elif isinstance(raw_payload, list) and raw_payload and isinstance(raw_payload[0], dict):
-            keys_preview = [f"list[{len(raw_payload)}]"] + list(raw_payload[0].keys())
+    if messageType in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED"):
+        logger.debug(f"Acknowledged control message: {messageType}")
+        return {"success": True, "message": f"Acknowledged {messageType}"}, 200
 
-        log_entry = {
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "messageType": messageType,
-            "userId": payload.get("userId") if isinstance(payload, dict) else None,
-            "context": payload.get("context") if isinstance(payload, dict) else None,
-            "payload_keys": keys_preview,
-            "raw_sample": raw_payload if (isinstance(raw_payload, dict) or (isinstance(raw_payload, list) and len(raw_payload) <= 5)) else (raw_payload[:2] if isinstance(raw_payload, list) else None),
-        }
+    raw_payload = payload.get("rawPayload") if isinstance(payload, dict) else None
+    keys_preview = []
+    if isinstance(raw_payload, dict):
+        keys_preview = list(raw_payload.keys())
+    elif isinstance(raw_payload, list) and raw_payload and isinstance(raw_payload[0], dict):
+        keys_preview = [f"list[{len(raw_payload)}]"] + list(raw_payload[0].keys())
 
-        try:
-            with open("unhandled_messages.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps(log_entry, default=str) + "\n")
-        except Exception as file_err:
-            logger.debug(f"Could not write to unhandled_messages.jsonl: {file_err}")
+    log_entry = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "messageType": messageType,
+        "userId": payload.get("userId") if isinstance(payload, dict) else None,
+        "context": payload.get("context") if isinstance(payload, dict) else None,
+        "payload_keys": keys_preview,
+        "raw_sample": raw_payload if (isinstance(raw_payload, dict) or (isinstance(raw_payload, list) and len(raw_payload) <= 5)) else (raw_payload[:2] if isinstance(raw_payload, list) else None),
+    }
 
-        logger.warning(
-            f"🔍 [CATCH-ALL UNHANDLED] No MESSAGE_HANDLER for '{messageType}' "
-            f"(user: {payload.get('userId')}, context: {payload.get('context')}, keys: {keys_preview[:8]})"
-        )
-        return {"warning": f"Unhandled message type: {messageType}"}, 200
+    try:
+        with open("unhandled_messages.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, default=str) + "\n")
+    except Exception as file_err:
+        logger.debug(f"Could not write to unhandled_messages.jsonl: {file_err}")
+
+    logger.warning(
+        f"🔍 [CATCH-ALL UNHANDLED] No MESSAGE_HANDLER for '{messageType}' "
+        f"(user: {payload.get('userId')}, context: {payload.get('context')}, keys: {keys_preview[:8]})"
+    )
+    return {"warning": f"Unhandled message type: {messageType}"}, 200
 
 
 async def process_data_batch_task(items_to_process: List[Dict[str, Any]], user_id: str, db):
