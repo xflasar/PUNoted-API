@@ -4,11 +4,13 @@ from typing import Any, Dict, Iterable, Tuple
 SQL_FETCH_CORP_FLAT_ORDERS = """
 WITH 
 TargetUser AS (SELECT userdataid FROM users WHERE accountid = $1::uuid LIMIT 1),
-TargetUserVars AS (SELECT $1::uuid as uid),
 TargetCorp AS (
-    SELECT cs.corporationid 
-    FROM corporation_shareholders cs
-    JOIN TargetUser tu ON cs.userid = tu.userdataid
+    SELECT COALESCE(ud.corporationid, cs.corporationid) as corporationid
+    FROM TargetUser tu
+    JOIN users_data ud ON ud.userid = tu.userdataid
+    LEFT JOIN corporation_shareholders cs ON cs.userid = tu.userdataid
+    WHERE ud.corporationid IS NOT NULL OR cs.corporationid IS NOT NULL
+    ORDER BY (ud.corporationid IS NOT NULL) DESC
     LIMIT 1
 ),
 CorpSites AS (
@@ -62,7 +64,7 @@ SELECT
     cs.location_name,
     cs.is_accurate,
     pl.productionlineid,
-    pl.type as building_ticker,
+    COALESCE(b.ticker, pl.type) as building_ticker,
     pl.capacity,
     pl.condition,
     po.orderid,
@@ -73,6 +75,7 @@ SELECT
     po.recipeid
 FROM CorpSites cs
 JOIN site_production_lines pl ON pl.siteid = cs.siteid
+LEFT JOIN buildings b ON b.name = pl.type
 JOIN site_production_line_orders po ON po.productionlineid = pl.productionlineid
 WHERE (po.completion IS NULL OR po.completion > NOW());
 """
@@ -129,7 +132,15 @@ JOIN materials m ON m.materialid = o.materialid;
 SQL_FETCH_CORP_WORKFORCE = """
 WITH 
 TargetUser AS (SELECT userdataid FROM users WHERE accountid = $1 LIMIT 1),
-TargetCorp AS (SELECT cs.corporationid FROM corporation_shareholders cs JOIN TargetUser tu ON cs.userid = tu.userdataid LIMIT 1),
+TargetCorp AS (
+    SELECT COALESCE(ud.corporationid, cs.corporationid) as corporationid
+    FROM TargetUser tu
+    JOIN users_data ud ON ud.userid = tu.userdataid
+    LEFT JOIN corporation_shareholders cs ON cs.userid = tu.userdataid
+    WHERE ud.corporationid IS NOT NULL OR cs.corporationid IS NOT NULL
+    ORDER BY (ud.corporationid IS NOT NULL) DESC
+    LIMIT 1
+),
 CorpMembers AS (
     SELECT u.userdataid, COALESCE(cs.companycode, u.username) as player_name,
     CASE WHEN ud.subscriptionlevel = 'PRO' AND ud.subscriptionexpiry > NOW() THEN TRUE ELSE FALSE END as is_accurate

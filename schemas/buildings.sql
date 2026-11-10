@@ -16,3 +16,6 @@ CREATE TABLE IF NOT EXISTS buildings (
     xata_version INTEGER DEFAULT 0 NOT NULL,
     PRIMARY KEY (buildingid)
 );
+
+-- Performance & Optimization Indexes
+CREATE INDEX IF NOT EXISTS idx_buildings_name ON public.buildings USING btree (name);
