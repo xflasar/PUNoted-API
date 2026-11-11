@@ -73,6 +73,7 @@ CONVERTER_HANDLERS = {
     "SITE_SITES": data_converter.convert_sites_data,
     "SITE_SITE": data_converter.convert_site_data,
     "WAREHOUSE_STORAGES": data_converter.convert_warehouses_data,
+    "WAREHOUSE_STORAGE": data_converter.convert_warehouse_data,
     "SHIP_SHIPS": data_converter.convert_ships_data,
     "SHIP_DATA": data_converter.convert_ships_data,
     "COMEX_TRADER_ORDERS": data_converter.convert_comex_trade_orders_data,
@@ -131,6 +132,7 @@ def converter_router(argument, data):
     """
     # Acknowledged messages: Handled silently (no converter needed)
     # COMEX_BROKER_PRICES & COMEX_BROKER_NEW_PRICE: Live chart candlestick intervals sent when viewing CX graphs; PUNoted calculates its own daily history snapshot.
+    # COMEX_TRADER_ORDER_DELETION_TERMS: Order deletion fee preview; not needed in DB.
     # FOREX_TRADER_ORDERS & SIMULATION_DATA: Stored/processed later when forex & simulation modules are live.
     if argument in (
         "SERVER_CONNECTION_OPENED",
@@ -139,6 +141,7 @@ def converter_router(argument, data):
         "SIMULATION_DATA",
         "COMEX_BROKER_PRICES",
         "COMEX_BROKER_NEW_PRICE",
+        "COMEX_TRADER_ORDER_DELETION_TERMS",
     ):
         return []
 
@@ -178,6 +181,7 @@ MESSAGE_HANDLERS = {
     "SITE_SITES": db_message_handlers.sites_data.handle_sites_data_message,
     "SITE_SITE": db_message_handlers.site_data.handle_site_data_message,
     "WAREHOUSE_STORAGES": db_message_handlers.warehouse_data.handle_warehouse_data_message,
+    "WAREHOUSE_STORAGE": db_message_handlers.warehouse_data.handle_warehouse_data_message,
     "SHIP_SHIPS": db_message_handlers.ship_data.handle_ship_data_message,
     "SHIP_DATA": db_message_handlers.ship_data.handle_ship_data_message,
     "SHIPYARD_PROJECTS": db_message_handlers.ship_data.handle_shipyard_projects_message,
@@ -252,6 +256,7 @@ async def handle_message_data_router(db, messageType, payload) -> Any:
         "SIMULATION_DATA",
         "COMEX_BROKER_PRICES",
         "COMEX_BROKER_NEW_PRICE",
+        "COMEX_TRADER_ORDER_DELETION_TERMS",
     ):
         logger.debug(f"Acknowledged message: {messageType}")
         return {"success": True, "message": f"Acknowledged {messageType}"}, 200

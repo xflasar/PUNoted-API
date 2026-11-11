@@ -131,6 +131,45 @@ def convert_warehouses_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str,
         )
     return converted_records
 
+def convert_warehouse_data(raw_records: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Converts raw data from WAREHOUSE_STORAGE (single warehouse store) to match 'warehouses' schema."""
+    payload = raw_records.get("payload") if isinstance(raw_records, dict) else {}
+    if not isinstance(payload, dict):
+        return []
+
+    next_payment = payload.get("nextPayment")
+    if next_payment is not None and isinstance(next_payment, dict) and next_payment.get("timestamp") is not None:
+        next_payment = datetime.fromtimestamp(next_payment["timestamp"] / 1000)
+    else:
+        next_payment = None
+
+    fee_obj = payload.get("fee") or {}
+    addr = payload.get("address") or {}
+    addr_lines = addr.get("lines") or []
+    sys_id = None
+    pla_id = None
+    if len(addr_lines) > 0 and isinstance(addr_lines[0], dict):
+        sys_id = (addr_lines[0].get("entity") or {}).get("id")
+    if len(addr_lines) > 1 and isinstance(addr_lines[1], dict):
+        pla_id = (addr_lines[1].get("entity") or {}).get("id")
+
+    return [
+        {
+            "warehouseid": payload.get("warehouseId"),
+            "storeid": payload.get("storeId"),
+            "units": payload.get("units"),
+            "weightcapacity": payload.get("weightCapacity"),
+            "volumecapacity": payload.get("volumeCapacity"),
+            "nextpayment": next_payment,
+            "feeamount": fee_obj.get("amount"),
+            "feecurrency": fee_obj.get("currency"),
+            "status": payload.get("status"),
+            "addresssystem": sys_id,
+            "addressplanet": pla_id,
+        }
+    ]
+
+
 def convert_storage_items_data(
     raw_records: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:

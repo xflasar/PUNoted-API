@@ -20,6 +20,7 @@ from .storages import (
     convert_full_refresh_storage_data,
     convert_storage_removed,
     convert_warehouses_data,
+    convert_warehouse_data,
     convert_storage_items_data,
 )
 
