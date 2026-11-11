@@ -73,6 +73,7 @@ from .company import (
 from .accounting import (
     convert_user_currency_accounts_data,
     convert_accounting_data,
+    convert_cash_bookings_data,
 )
 
 

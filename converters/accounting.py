@@ -49,3 +49,46 @@ def convert_accounting_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str,
                 }
             )
     return converted_records
+
+
+def convert_cash_bookings_data(raw_records: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Converts raw data from ACCOUNTING_CASH_BOOKINGS to match 'user_cash_transactions' table schema.
+    Payload contains items: List[Dict] with transaction entries.
+    """
+    converted_records = []
+    payload = raw_records.get("payload", {}) if isinstance(raw_records, dict) else {}
+    items = payload.get("items", []) if isinstance(payload, dict) else []
+
+    for record in items:
+        if not isinstance(record, dict):
+            continue
+
+        amount_obj = record.get("amount") or record.get("bookAmount") or {}
+        book_bal_obj = record.get("bookBalance") or record.get("balance") or {}
+
+        time_obj = record.get("time")
+        if time_obj and isinstance(time_obj, dict) and time_obj.get("timestamp"):
+            tx_time = datetime.fromtimestamp(time_obj["timestamp"] / 1000, tz=timezone.utc)
+        else:
+            tx_time = datetime.now(timezone.utc)
+
+        converted_records.append(
+            {
+                "period": record.get("period"),
+                "number": record.get("number"),
+                "item": record.get("item", 0),
+                "type": record.get("type"),
+                "account_category": record.get("accountCategory"),
+                "account_type": record.get("accountType"),
+                "account": record.get("account"),
+                "debit": bool(record.get("debit", True)),
+                "amount": float(amount_obj.get("amount") or 0.0),
+                "currency": amount_obj.get("currency") or "ICA",
+                "book_balance": float(book_bal_obj.get("amount")) if book_bal_obj.get("amount") is not None else None,
+                "timestamp": tx_time,
+            }
+        )
+
+    return converted_records
+

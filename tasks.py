@@ -11,6 +11,8 @@ from cachetools import TTLCache
 import converters as data_converter
 import db_message_handlers.accounting_currency_balance_data
 import db_message_handlers.accounting_data
+import db_message_handlers.cash_bookings_data
+
 
 
 import db_message_handlers.commodity_exchanges
@@ -84,6 +86,7 @@ CONVERTER_HANDLERS = {
     "COMEX_EXCHANGE_BROKER_LIST": data_converter.convert_comex_exchange_broker_list,
     "ACCOUNTING_CASH_BALANCES": data_converter.convert_user_currency_accounts_data,
     "ACCOUNTING_BOOKINGS": data_converter.convert_accounting_data,
+    "ACCOUNTING_CASH_BOOKINGS": data_converter.convert_cash_bookings_data,
 
 
     "WORLD_SECTORS": data_converter.convert_sectors_data,
@@ -193,6 +196,7 @@ MESSAGE_HANDLERS = {
     "COMEX_EXCHANGE_BROKER_LIST": db_message_handlers.cx_broker_data.handle_cx_exchange_broker_list_message,
     "ACCOUNTING_CASH_BALANCES": db_message_handlers.accounting_currency_balance_data.handle_accounting_currency_balance_data_message,
     "ACCOUNTING_BOOKINGS": db_message_handlers.accounting_data.handle_accounting_data_message,
+    "ACCOUNTING_CASH_BOOKINGS": db_message_handlers.cash_bookings_data.handle_cash_bookings_data_message,
 
 
     "WORLD_SECTORS": db_message_handlers.sectors_data.handle_sectors_message,
