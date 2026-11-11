@@ -36,6 +36,7 @@ import db_message_handlers.production_line_order_added
 import db_message_handlers.production_line_order_removed
 import db_message_handlers.production_line_order_update
 import db_message_handlers.production_lines_data
+import db_message_handlers.production_line_updated
 import db_message_handlers.sectors_data
 import db_message_handlers.ship_data
 import db_message_handlers.ship_flights_data
@@ -86,6 +87,8 @@ CONVERTER_HANDLERS = {
     "SYSTEM_STARS_DATA": data_converter.convert_systems_data,
     "POPULATION_AVAILABLE_RESERVE_WORKFORCE": data_converter.convert_site_available_population_data,
     "PRODUCTION_SITE_PRODUCTION_LINES": data_converter.convert_production_lines_data,
+    "PRODUCTION_PRODUCTION_LINES": data_converter.convert_multi_site_production_lines,
+    "PRODUCTION_PRODUCTION_LINE_UPDATED": data_converter.convert_single_production_line_updated,
     "stations": data_converter.convert_stations_data,
     "populations": data_converter.convert_planet_population_data,
     "populations_projects": data_converter.convert_planet_infrastructure_project,
@@ -178,6 +181,8 @@ MESSAGE_HANDLERS = {
     "SYSTEM_STARS_DATA": db_message_handlers.systems_data.handle_systems_data,
     "POPULATION_AVAILABLE_RESERVE_WORKFORCE": db_message_handlers.site_available_reserve_population_data.handle_site_available_reserve_population_data_message,
     "PRODUCTION_SITE_PRODUCTION_LINES": db_message_handlers.production_lines_data.handle_production_lines_data_message,
+    "PRODUCTION_PRODUCTION_LINES": db_message_handlers.production_lines_data.handle_multi_site_production_lines_message,
+    "PRODUCTION_PRODUCTION_LINE_UPDATED": db_message_handlers.production_line_updated.handle_single_production_line_updated_message,
     "stations": db_message_handlers.stations_data.handle_stations_data_message,
     "populations": db_message_handlers.planet_population_data.handle_planet_population_data_message,
     "populations_projects": db_message_handlers.planet_infrastructure_data.handle_planet_infrastructure_project,

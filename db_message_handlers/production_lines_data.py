@@ -260,3 +260,31 @@ async def process_production_templates(con, site_id: str, recipes_with_factors: 
                 SET {factor_update_clause};
             """
             await con.executemany(SQL_UPSERT_OUTPUT_FACTORS, output_factors_tuples)
+
+
+async def handle_multi_site_production_lines_message(db, raw_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handles PRODUCTION_PRODUCTION_LINES message containing lines across multiple sites.
+    Iterates through each site and delegates to handle_production_lines_data_message.
+    """
+    converted_data = raw_payload.get("data", {}) if isinstance(raw_payload, dict) else {}
+    sites_dict = converted_data.get("sites", {})
+    user_id = raw_payload.get("userId") or converted_data.get("userid")
+
+    if not sites_dict:
+        return {"success": True, "message": "No sites in production lines payload."}
+
+    results = []
+    for site_id, site_data in sites_dict.items():
+        payload_for_site = {
+            "userId": user_id,
+            "data": site_data,
+        }
+        res = await handle_production_lines_data_message(db, payload_for_site)
+        results.append(res)
+
+    return {
+        "success": True,
+        "message": f"Processed multi-site production lines across {len(sites_dict)} sites.",
+        "site_count": len(sites_dict),
+    }

@@ -251,3 +251,92 @@ def convert_production_line_removed(raw_record: Dict[str, Any]) -> Dict[str, Any
         "orderid": order_id,
         "productionlineid": production_line_id,
     }
+
+def convert_single_production_line_updated(raw_record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Converts raw payload from PRODUCTION_PRODUCTION_LINE_UPDATED message.
+    Payload contains a single production line object with its orders, templates, and efficiency factors.
+    """
+    payload = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    line_id = payload.get("id")
+    site_id = payload.get("siteId")
+
+    converted_line = {
+        "productionlineid": line_id,
+        "siteid": site_id,
+        "type": payload.get("type"),
+        "capacity": payload.get("capacity"),
+        "slots": payload.get("slots"),
+        "efficiency": payload.get("efficiency"),
+        "condition": payload.get("condition"),
+        "orders": convert_production_line_orders_data(payload.get("orders") or []),
+        "production_templates": convert_production_line_order_production_templates_data(
+            payload.get("productionTemplates") or [], line_id
+        ),
+        "efficiency_factors": convert_production_line_efficiency_factors(
+            payload.get("efficiencyFactors") or [], line_id
+        ),
+        "workforces": convert_production_workforces_data(payload.get("workforces") or [], line_id),
+    }
+
+    return {
+        "siteid": site_id,
+        "production_line": converted_line,
+    }
+
+
+def convert_multi_site_production_lines(raw_record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Converts raw payload from PRODUCTION_PRODUCTION_LINES message.
+    Payload contains productionLines across multiple sites. Groups them by siteId.
+    Returns: { "sites": { site_id: { "siteid": site_id, "production_lines": [...] } } }
+    """
+    payload = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    lines = payload.get("productionLines") or []
+    grouped_by_site = {}
+
+    for record in lines:
+        if not isinstance(record, dict):
+            continue
+        site_id = record.get("siteId")
+        if not site_id:
+            continue
+
+        if site_id not in grouped_by_site:
+            grouped_by_site[site_id] = []
+
+        line_id = record.get("id")
+        grouped_by_site[site_id].append(
+            {
+                "productionlineid": line_id,
+                "siteid": site_id,
+                "type": record.get("type"),
+                "capacity": record.get("capacity"),
+                "slots": record.get("slots"),
+                "efficiency": record.get("efficiency"),
+                "condition": record.get("condition"),
+                "orders": convert_production_line_orders_data(record.get("orders") or []),
+                "production_templates": convert_production_line_order_production_templates_data(
+                    record.get("productionTemplates") or [], line_id
+                ),
+                "efficiency_factors": convert_production_line_efficiency_factors(
+                    record.get("efficiencyFactors") or [], line_id
+                ),
+                "workforces": convert_production_workforces_data(record.get("workforces") or [], line_id),
+            }
+        )
+
+    return {
+        "sites": {
+            site_id: {"siteid": site_id, "production_lines": line_list}
+            for site_id, line_list in grouped_by_site.items()
+        }
+    }
+
+

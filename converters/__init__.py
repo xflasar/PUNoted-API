@@ -34,6 +34,8 @@ from .production import (
     convert_production_line_added,
     convert_production_line_updated,
     convert_production_line_removed,
+    convert_single_production_line_updated,
+    convert_multi_site_production_lines,
 )
 
 from .ships import (
