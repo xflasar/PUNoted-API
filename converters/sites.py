@@ -346,3 +346,79 @@ def convert_site_experts_data(raw_records: List[Dict[str, Any]]) -> List[Dict[st
             }
         )
     return converted_records
+
+
+def convert_site_platform_updated(raw_record: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Converts raw payload from SITE_PLATFORM_UPDATED message.
+    Payload contains a single platform object for a specific site.
+    """
+    platform = raw_record.get("payload") if isinstance(raw_record, dict) else {}
+    if not isinstance(platform, dict):
+        platform = {}
+
+    platform_id = (platform.get("id") or "").replace("\x00", "")
+    site_id = platform.get("siteId")
+
+    reclaimable_materials = []
+    for material in (platform.get("reclaimableMaterials") or []):
+        if not isinstance(material, dict):
+            continue
+        mat = material.get("material") or {}
+        reclaimable_materials.append(
+            {
+                "platformid": platform_id,
+                "materialid": mat.get("id"),
+                "amount": material.get("amount"),
+                "materialtype": "reclaimable",
+            }
+        )
+
+    repair_materials = []
+    for material in (platform.get("repairMaterials") or []):
+        if not isinstance(material, dict):
+            continue
+        mat = material.get("material") or {}
+        repair_materials.append(
+            {
+                "platformid": platform_id,
+                "materialid": mat.get("id"),
+                "amount": material.get("amount"),
+                "materialtype": "repair",
+            }
+        )
+
+    creation_time = platform.get("creationTime")
+    if creation_time is not None and isinstance(creation_time, dict) and creation_time.get("timestamp") is not None:
+        creation_time = datetime.fromtimestamp(creation_time["timestamp"] / 1000)
+    else:
+        creation_time = None
+
+    last_repair = platform.get("lastRepair")
+    if last_repair is not None and isinstance(last_repair, dict) and last_repair.get("timestamp") is not None:
+        last_repair = datetime.fromtimestamp(last_repair["timestamp"] / 1000)
+    else:
+        last_repair = None
+
+    book_val = platform.get("bookValue") or {}
+    module_obj = platform.get("module") or {}
+
+    converted_platform = {
+        "platformid": platform_id,
+        "siteid": site_id,
+        "creationtime": creation_time,
+        "bookvalueamount": book_val.get("amount"),
+        "bookvaluecurrency": book_val.get("currency"),
+        "area": platform.get("area"),
+        "condition": platform.get("condition"),
+        "buildingid": module_obj.get("reactorId"),
+        "lastrepair": last_repair,
+        "reclaimable_materials": reclaimable_materials,
+        "repair_materials": repair_materials,
+    }
+
+    return {
+        "siteid": site_id,
+        "platform": converted_platform,
+    }
+

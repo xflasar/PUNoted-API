@@ -42,6 +42,7 @@ import db_message_handlers.ship_data
 import db_message_handlers.ship_flights_data
 import db_message_handlers.site_available_reserve_population_data
 import db_message_handlers.site_data
+import db_message_handlers.site_platform_updated
 import db_message_handlers.sites_data
 import db_message_handlers.stations_data
 import db_message_handlers.storage_data
@@ -50,6 +51,7 @@ import db_message_handlers.systems_data
 import db_message_handlers.user_data
 import db_message_handlers.warehouse_data
 import db_message_handlers.workforce_data
+import db_message_handlers.workforces_updated
 import db_message_handlers.world_data
 
 import converters.blueprints
@@ -103,7 +105,9 @@ CONVERTER_HANDLERS = {
     "SHIP_FLIGHT_FLIGHTS": data_converter.convert_flight_records,
     "SHIP_FLIGHT_FLIGHT": data_converter.convert_flight_record,
     "SHIP_FLIGHT_FLIGHT_ENDED": data_converter.convert_flight_ended_record,
+    "SITE_PLATFORM_UPDATED": data_converter.convert_site_platform_updated,
     "WORKFORCE_WORKFORCES": data_converter.convert_workforces_data,
+    "WORKFORCE_WORKFORCES_UPDATED": data_converter.convert_workforces_updated_data,
     "CONTRACTS_CONTRACTS": converters.contracts.convert_contracts_payload,
     "CONTRACTS_CONTRACT": converters.contracts.convert_contracts_payload,
     "admincenter_motion": converters.planet_motions.convert_planet_motion,
@@ -125,7 +129,17 @@ def converter_router(argument, data):
     """
     Routes an argument to the correct data converter function.
     """
-    if argument in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED", "FOREX_TRADER_ORDERS", "SIMULATION_DATA"): # FOREX_TRADER_ORDERS and SIMULATION_DATA will be later added and fixed
+    # Acknowledged messages: Handled silently (no converter needed)
+    # COMEX_BROKER_PRICES & COMEX_BROKER_NEW_PRICE: Live chart candlestick intervals sent when viewing CX graphs; PUNoted calculates its own daily history snapshot.
+    # FOREX_TRADER_ORDERS & SIMULATION_DATA: Stored/processed later when forex & simulation modules are live.
+    if argument in (
+        "SERVER_CONNECTION_OPENED",
+        "AUTH_AUTHENTICATED",
+        "FOREX_TRADER_ORDERS",
+        "SIMULATION_DATA",
+        "COMEX_BROKER_PRICES",
+        "COMEX_BROKER_NEW_PRICE",
+    ):
         return []
 
     handler = CONVERTER_HANDLERS.get(argument)
@@ -196,7 +210,9 @@ MESSAGE_HANDLERS = {
     "PRODUCTION_ORDER_UPDATED": db_message_handlers.production_line_order_update.handle_production_line_order_update_message,
     "SHIP_FLIGHT_FLIGHTS": db_message_handlers.ship_flights_data.handle_ship_flights_data_message,
     "SHIP_FLIGHT_FLIGHT": db_message_handlers.ship_flights_data.handle_ship_flights_data_message,
+    "SITE_PLATFORM_UPDATED": db_message_handlers.site_platform_updated.handle_site_platform_updated_message,
     "WORKFORCE_WORKFORCES": db_message_handlers.workforce_data.handle_workforce_data_message,
+    "WORKFORCE_WORKFORCES_UPDATED": db_message_handlers.workforces_updated.handle_workforces_updated_message,
     "CONTRACTS_CONTRACTS": db_message_handlers.contracts_data.handle_contracts_data_message,
     "CONTRACTS_CONTRACT": db_message_handlers.contracts_data.handle_contracts_data_message,
     "admincenter_motion": db_message_handlers.planet_motions.handle_planet_motion_message,
@@ -229,7 +245,14 @@ async def handle_message_data_router(db, messageType, payload) -> Any:
             return response
         else:
             return response, 200
-    if messageType in ("SERVER_CONNECTION_OPENED", "AUTH_AUTHENTICATED", "FOREX_TRADER_ORDERS", "SIMULATION_DATA"):
+    if messageType in (
+        "SERVER_CONNECTION_OPENED",
+        "AUTH_AUTHENTICATED",
+        "FOREX_TRADER_ORDERS",
+        "SIMULATION_DATA",
+        "COMEX_BROKER_PRICES",
+        "COMEX_BROKER_NEW_PRICE",
+    ):
         logger.debug(f"Acknowledged message: {messageType}")
         return {"success": True, "message": f"Acknowledged {messageType}"}, 200
 

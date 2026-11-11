@@ -77,3 +77,13 @@ def convert_site_available_population_data(
         "technician": workforce.get("TECHNICIAN"),
     }
     return converted_data
+
+
+def convert_workforces_updated_data(raw_records: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Converts raw data from WORKFORCE_WORKFORCES_UPDATED message.
+    Payload contains { "siteId": ..., "workforces": [...] }.
+    Calculates next consumption timestamp from remainingAllocation if available.
+    """
+    return convert_workforces_data(raw_records)
+

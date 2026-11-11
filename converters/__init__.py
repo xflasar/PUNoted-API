@@ -52,6 +52,7 @@ from .workforce import (
     convert_workforces_data,
     convert_workforce_needs_data,
     convert_site_available_population_data,
+    convert_workforces_updated_data,
 )
 
 from .contracts import (
@@ -120,6 +121,7 @@ from .sites import (
     convert_sites_data,
     convert_site_platforms_data,
     convert_site_experts_data,
+    convert_site_platform_updated,
 )
 
 from .planet_government import (
