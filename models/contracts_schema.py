@@ -113,7 +113,7 @@ class LoansList(BaseModel):
     total: int
 
 
-# Re-export banking models for backwards compatibility
+# Re-export banking models for backwards compatibility - Remove later
 from models.banking_schema import *
 
 

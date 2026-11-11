@@ -35,7 +35,8 @@ except ImportError:
 import config
 
 auth_router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+http_bearer = HTTPBearer(auto_error=False)
+oauth2_scheme = http_bearer
 
 logger = logging.getLogger(__name__)
 
@@ -391,7 +392,23 @@ async def delete_verification_code(conn, record_id: str) -> bool:
         return False
 
 
-async def get_current_user_id(request: Request, token: str = Depends(oauth2_scheme)) -> str:
+async def get_current_user_id(
+    request: Request,
+    bearer_creds: Optional[HTTPAuthorizationCredentials] = Depends(http_bearer),
+) -> str:
+    token = bearer_creds.credentials if bearer_creds else None
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1].strip()
+
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated. Missing Bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     pool = request.app.state.db.pool
 
     async with pool.acquire() as conn:

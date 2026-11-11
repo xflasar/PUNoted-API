@@ -8,6 +8,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+logger = logging.getLogger(__name__)
+
 
 def convert_user_currency_accounts_data(
     raw_records: List[Dict[str, Any]],
@@ -33,6 +35,12 @@ def convert_user_currency_accounts_data(
 
 def convert_accounting_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Converts raw data to match the 'user_currency_accounts' table schema."""
+    try:
+        with open("accounting_bookings_sample.json", "w", encoding="utf-8") as f:
+            json.dump(raw_records, f, indent=2, default=str)
+    except Exception as e:
+        logger.warning(f"Could not dump accounting_bookings_sample.json: {e}")
+
     converted_records = []
     payload = raw_records.get("payload", {})
     items = payload.get("items", []) if isinstance(payload, dict) else []
@@ -49,6 +57,7 @@ def convert_accounting_data(raw_records: List[Dict[str, Any]]) -> List[Dict[str,
                 }
             )
     return converted_records
+
 
 
 def convert_cash_bookings_data(raw_records: Dict[str, Any]) -> List[Dict[str, Any]]:

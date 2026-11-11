@@ -58,6 +58,8 @@ import db_message_handlers.world_data
 
 import converters.blueprints
 import db_message_handlers.blueprints_data
+import converters.ship_routes
+import db_message_handlers.ship_routes_data
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,10 @@ CONVERTER_HANDLERS = {
     "BLUEPRINT_BLUEPRINTS": converters.blueprints.convert_blueprints_data,
     "SHIPYARD_PROJECTS": data_converter.convert_shipyard_projects_payload,
     "COUNTRY_REGISTRY_COUNTRIES": data_converter.convert_country_registry_countries,
+    "SHIP_ROUTES_ROUTES": converters.ship_routes.convert_ship_routes_payload,
+    "SHIP_ROUTES_ROUTE": converters.ship_routes.convert_ship_routes_payload,
+    "SHIP_ROUTES_ASSIGN_ROUTE": converters.ship_routes.convert_assign_route_payload,
+    "SHIP_ROUTES_DELETE_ROUTE": converters.ship_routes.convert_delete_route_payload,
 }
 
 
@@ -145,6 +151,14 @@ def converter_router(argument, data):
         "COMEX_BROKER_PRICES",
         "COMEX_BROKER_NEW_PRICE",
         "COMEX_TRADER_ORDER_DELETION_TERMS",
+        "SHIP_ROUTES_ADD_WAYPOINT",
+        "SHIP_ROUTES_EDIT_WAYPOINT",
+        "SHIP_ROUTES_REMOVE_WAYPOINT",
+        "SHIP_ROUTES_ADD_STEP",
+        "SHIP_ROUTES_EDIT_LOAD_STEP",
+        "SHIP_ROUTES_EDIT_REFUEL_STEP",
+        "SHIP_ROUTES_EDIT_WAIT_STEP",
+        "SHIP_ROUTES_REMOVE_STEP",
     ):
         return []
 
@@ -232,7 +246,11 @@ MESSAGE_HANDLERS = {
     'commodityexchanges': db_message_handlers.commodity_exchanges.handle_commodity_exchanges_message,
     'COUNTRY_REGISTRY_COUNTRIES': db_message_handlers.commodity_exchanges.handle_country_registry_countries_message,
     'users': db_message_handlers.user_data.handle_public_user_data_message,
-    'LEADERBOARD_SCORES': db_message_handlers.leaderboards_data.handle_leaderboard_scores
+    'LEADERBOARD_SCORES': db_message_handlers.leaderboards_data.handle_leaderboard_scores,
+    "SHIP_ROUTES_ROUTES": db_message_handlers.ship_routes_data.handle_ship_routes_data_message,
+    "SHIP_ROUTES_ROUTE": db_message_handlers.ship_routes_data.handle_ship_routes_data_message,
+    "SHIP_ROUTES_ASSIGN_ROUTE": db_message_handlers.ship_routes_data.handle_ship_routes_assign_message,
+    "SHIP_ROUTES_DELETE_ROUTE": db_message_handlers.ship_routes_data.handle_ship_routes_delete_message,
 }
 
 
@@ -261,6 +279,14 @@ async def handle_message_data_router(db, messageType, payload) -> Any:
         "COMEX_BROKER_PRICES",
         "COMEX_BROKER_NEW_PRICE",
         "COMEX_TRADER_ORDER_DELETION_TERMS",
+        "SHIP_ROUTES_ADD_WAYPOINT",
+        "SHIP_ROUTES_EDIT_WAYPOINT",
+        "SHIP_ROUTES_REMOVE_WAYPOINT",
+        "SHIP_ROUTES_ADD_STEP",
+        "SHIP_ROUTES_EDIT_LOAD_STEP",
+        "SHIP_ROUTES_EDIT_REFUEL_STEP",
+        "SHIP_ROUTES_EDIT_WAIT_STEP",
+        "SHIP_ROUTES_REMOVE_STEP",
     ):
         logger.debug(f"Acknowledged message: {messageType}")
         return {"success": True, "message": f"Acknowledged {messageType}"}, 200

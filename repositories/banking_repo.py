@@ -15,8 +15,6 @@ class BankingRepository:
         If bank_id is provided, only inspects transactions for that specific bank.
         """
         async with self.db.pool.acquire() as conn:
-            await conn.execute("ALTER TABLE bank_loan_requests ADD COLUMN IF NOT EXISTS loan_structure VARCHAR(30) DEFAULT 'STANDARD';")
-
             # 1. Sync pending contract transactions (DEPOSITS, WITHDRAWALS, LOANS)
             if bank_id is not None:
                 pending_records = await conn.fetch("""

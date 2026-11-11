@@ -96,6 +96,7 @@ from routers.internal.production import production_router
 from routers.internal.storage import storage_router
 from routers.internal.users import users_router
 from routers.internal.ships import ships_router
+from routers.internal.ship_routes import ship_routes_router
 from routers.internal.sites import sites_router
 from routers.internal.notifications import notifications_router
 from routers.internal.notification_rules import notification_rules_router
@@ -444,6 +445,7 @@ app.include_router(entity_settings_router, prefix="/internal/entity-settings", t
 app.include_router(announcements_router, prefix="/public/announcements", tags=["Announcements"])
 app.include_router(shipments_public_external_router, prefix="/public/shipments", tags=["Public Shipments"])
 app.include_router(ships_router, prefix="/internal/ships", tags=["Ships"])
+app.include_router(ship_routes_router, prefix="/internal/ship-routes", tags=["Ship Routes"])
 app.include_router(sites_router, prefix="/internal/sites", tags=["Sites"])
 app.include_router(vendor_router, prefix="/internal/vendor", tags=["Vendor"])
 app.include_router(internal_company_router, prefix="/internal/company", tags=["Company"])

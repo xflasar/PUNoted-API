@@ -17,5 +17,4 @@ CREATE TABLE IF NOT EXISTS buildings (
     PRIMARY KEY (buildingid)
 );
 
--- Performance & Optimization Indexes
 CREATE INDEX IF NOT EXISTS idx_buildings_name ON public.buildings USING btree (name);
