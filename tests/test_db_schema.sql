@@ -920,6 +920,7 @@ CREATE TABLE IF NOT EXISTS bank_loan_requests (
     status VARCHAR(20) DEFAULT 'PENDING',
     contract_id VARCHAR(100),
     transaction_type VARCHAR(30) DEFAULT 'LOAN',
+    loan_structure VARCHAR(30) DEFAULT 'STANDARD',
     is_verified BOOLEAN DEFAULT false,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
