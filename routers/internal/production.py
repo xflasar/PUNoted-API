@@ -157,13 +157,34 @@ SELECT
     ) AS warehouse_storage_items,
     (
         SELECT jsonb_build_object(
-            'overall', COALESCE(AVG(CASE WHEN b.type IN ('PRODUCTION', 'RESOURCES') THEN sp.condition END), 0.0),
+            'overall', COALESCE(AVG(CASE WHEN b.type IN ('MANUFACTURING', 'PRODUCTION', 'RESOURCES') THEN sp.condition END), 0.0),
             'tickers', (
                 SELECT COALESCE(jsonb_agg(DISTINCT b2.ticker ORDER BY b2.ticker), '[]'::jsonb) 
                 FROM site_platforms sp2 JOIN buildings b2 ON b2.buildingid = sp2.buildingid 
                 WHERE sp2.siteid::text = us.siteid
             ),
-            'conditions', COALESCE(jsonb_agg(jsonb_build_object('building_ticker', b.ticker, 'platform_condition', sp.condition)), '[]'::jsonb)
+            'conditions', COALESCE(jsonb_agg(
+                jsonb_build_object(
+                    'platform_id', sp.platformid,
+                    'building_ticker', b.ticker, 
+                    'building_type', b.type, 
+                    'area', sp.area,
+                    'last_repair', sp.lastrepair,
+                    'platform_condition', sp.condition,
+                    'repair_materials', COALESCE((
+                        SELECT jsonb_agg(jsonb_build_object('ticker', m.ticker, 'amount', pm.amount))
+                        FROM platform_materials pm
+                        JOIN materials m ON m.materialid = pm.materialid
+                        WHERE pm.platformid = sp.platformid AND pm.materialtype = 'repair'
+                    ), '[]'::jsonb),
+                    'reclaimable_materials', COALESCE((
+                        SELECT jsonb_agg(jsonb_build_object('ticker', m.ticker, 'amount', pm.amount))
+                        FROM platform_materials pm
+                        JOIN materials m ON m.materialid = pm.materialid
+                        WHERE pm.platformid = sp.platformid AND pm.materialtype = 'reclaimable'
+                    ), '[]'::jsonb)
+                )
+            ), '[]'::jsonb)
         )
         FROM site_platforms sp
         JOIN buildings b ON b.buildingid = sp.buildingid

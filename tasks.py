@@ -132,6 +132,8 @@ CONVERTER_HANDLERS = {
     "SHIP_ROUTES_ROUTE": converters.ship_routes.convert_ship_routes_payload,
     "SHIP_ROUTES_ASSIGN_ROUTE": converters.ship_routes.convert_assign_route_payload,
     "SHIP_ROUTES_DELETE_ROUTE": converters.ship_routes.convert_delete_route_payload,
+    "SHIP_ROUTES_EXECUTION": converters.ship_routes.convert_ship_routes_execution_payload,
+    "SHIP_ROUTES_EXECUTIONS": converters.ship_routes.convert_ship_routes_execution_payload,
 }
 
 
@@ -251,6 +253,8 @@ MESSAGE_HANDLERS = {
     "SHIP_ROUTES_ROUTE": db_message_handlers.ship_routes_data.handle_ship_routes_data_message,
     "SHIP_ROUTES_ASSIGN_ROUTE": db_message_handlers.ship_routes_data.handle_ship_routes_assign_message,
     "SHIP_ROUTES_DELETE_ROUTE": db_message_handlers.ship_routes_data.handle_ship_routes_delete_message,
+    "SHIP_ROUTES_EXECUTION": db_message_handlers.ship_routes_data.handle_ship_routes_execution_message,
+    "SHIP_ROUTES_EXECUTIONS": db_message_handlers.ship_routes_data.handle_ship_routes_execution_message,
 }
 
 

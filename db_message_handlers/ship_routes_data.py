@@ -183,6 +183,71 @@ async def handle_ship_routes_assign_message(db: Database, payload: Dict[str, Any
         raise
 
 
+async def handle_ship_routes_execution_message(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handles SHIP_ROUTES_EXECUTION (single) and SHIP_ROUTES_EXECUTIONS (list) messages:
+    assigns or updates ships on their respective routes.
+    """
+    raw_data = payload.get("data")
+    if isinstance(raw_data, list):
+        executions = raw_data
+    elif isinstance(raw_data, dict):
+        executions = [raw_data]
+    else:
+        executions = []
+
+    user_account_id = payload.get("userId")
+
+    if not executions:
+        return {"success": False, "message": "No executions to process."}
+
+    updated_count = 0
+    try:
+        async with db.pool.acquire() as conn:
+            for exc in executions:
+                ship_id = exc.get("shipId")
+                route_id = exc.get("routeId")
+                state = exc.get("state")
+
+                if not ship_id:
+                    continue
+
+                if state in ("STOPPED", "CANCELLED", "UNASSIGNED", "ABORTED") and not route_id:
+                    route_id = None
+
+                actual_route_id = None
+                if route_id:
+                    row = await conn.fetchrow(
+                        "SELECT routeid FROM ship_routes WHERE routeid = $1 OR naturalid = $1 LIMIT 1;",
+                        route_id,
+                    )
+                    if row:
+                        actual_route_id = row["routeid"]
+                    else:
+                        actual_route_id = route_id
+
+                await conn.execute(
+                    "UPDATE ships SET routeid = $1 WHERE shipid = $2;",
+                    actual_route_id,
+                    ship_id,
+                )
+                updated_count += 1
+
+                try:
+                    await global_ws_manager.send_personal_message(
+                        user_account_id,
+                        {"type": "SHIP_ROUTE_ASSIGNED", "data": {"shipId": ship_id, "routeId": actual_route_id}},
+                    )
+                except Exception:
+                    pass
+
+        return {"success": True, "message": f"Processed {updated_count} ship route executions."}
+
+    except Exception as e:
+        logger.error(f"Error handling ship route executions: {e}", exc_info=True)
+        raise
+
+
 async def handle_ship_routes_delete_message(db: Database, payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Handles SHIP_ROUTES_DELETE_ROUTE message: deletes a route and unassigns ships.

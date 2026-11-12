@@ -185,6 +185,49 @@ def convert_assign_route_payload(raw_payload: Any) -> Dict[str, Any]:
     }
 
 
+def parse_single_execution(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Parses a single ship route execution record."""
+    route_data = payload.get("route")
+    route_id = None
+    if isinstance(route_data, dict):
+        route_id = (
+            route_data.get("id")
+            or route_data.get("routeId")
+            or route_data.get("naturalId")
+            or route_data.get("naturalid")
+            or route_data.get("routeid")
+        )
+    elif isinstance(route_data, str):
+        route_id = route_data
+
+    return {
+        "shipId": payload.get("shipId"),
+        "routeId": route_id,
+        "state": payload.get("state"),
+        "waypointIndex": payload.get("waypointIndex"),
+        "stepIndex": payload.get("stepIndex"),
+        "flightId": payload.get("flightIdd") or payload.get("flightId"),
+        "stepStartedAt": payload.get("stepStartedAt"),
+        "stepEndsAt": payload.get("stepEndsAt"),
+    }
+
+
+def convert_ship_routes_execution_payload(raw_payload: Any) -> List[Dict[str, Any]]:
+    """Converter for SHIP_ROUTES_EXECUTION (single) and SHIP_ROUTES_EXECUTIONS (list)."""
+    payload = raw_payload.get("payload", raw_payload) if isinstance(raw_payload, dict) else raw_payload
+
+    if isinstance(payload, dict) and "executions" in payload:
+        items = payload["executions"]
+    elif isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict) and "shipId" in payload:
+        items = [payload]
+    else:
+        items = []
+
+    return [parse_single_execution(i) for i in items if isinstance(i, dict) and i.get("shipId")]
+
+
 def convert_delete_route_payload(raw_payload: Any) -> Dict[str, Any]:
     """Converter for SHIP_ROUTES_DELETE_ROUTE."""
     payload = raw_payload.get("payload", raw_payload) if isinstance(raw_payload, dict) else raw_payload

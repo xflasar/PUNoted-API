@@ -55,11 +55,14 @@ def get_public_key(request: Request):
 
 # --- INITIALIZE ---
 import sys
-STORAGE_URI = os.getenv("REDIS_URL")
 
-# Force in-memory storage during tests to prevent connecting to a real Redis instance
-if "pytest" in sys.modules:
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+
+# In development or during tests, use in-memory storage so a local Redis isn't required for rate limiting
+if ENVIRONMENT == "development" or "pytest" in sys.modules:
     STORAGE_URI = "memory://"
+else:
+    STORAGE_URI = os.getenv("REDIS_URL", "redis://redis_cache:6379/0")
 
 limiter = Limiter(
     key_func=get_remote_address,

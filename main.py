@@ -5,9 +5,12 @@ import os
 import time
 from contextlib import asynccontextmanager
 
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Ensure we always load PUNoted-Prod/.env regardless of working directory
+_env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=_env_path)
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
