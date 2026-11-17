@@ -2251,12 +2251,28 @@ UserSites AS (
 PlatformData AS (
     SELECT
         sp.siteid,
-        COALESCE(AVG(CASE WHEN b.type IN ('PRODUCTION', 'RESOURCES') THEN sp.condition END), 0.0) AS overall_platform_condition,
+        COALESCE(AVG(CASE WHEN b.type IN ('MANUFACTURING', 'PRODUCTION', 'RESOURCES') THEN sp.condition END), 0.0) AS overall_platform_condition,
         jsonb_agg(DISTINCT b.ticker ORDER BY b.ticker) AS site_building_tickers,
         jsonb_agg(
             jsonb_build_object(
+                'platform_id', sp.platformid,
                 'building_ticker', b.ticker, 
-                'platform_condition', sp.condition
+                'building_type', b.type,
+                'area', sp.area,
+                'last_repair', sp.lastrepair,
+                'platform_condition', sp.condition,
+                'repair_materials', COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object('ticker', m.ticker, 'amount', pm.amount))
+                    FROM platform_materials pm
+                    JOIN materials m ON m.materialid = pm.materialid
+                    WHERE pm.platformid = sp.platformid AND pm.materialtype = 'repair'
+                ), '[]'::jsonb),
+                'reclaimable_materials', COALESCE((
+                    SELECT jsonb_agg(jsonb_build_object('ticker', m.ticker, 'amount', pm.amount))
+                    FROM platform_materials pm
+                    JOIN materials m ON m.materialid = pm.materialid
+                    WHERE pm.platformid = sp.platformid AND pm.materialtype = 'reclaimable'
+                ), '[]'::jsonb)
             )
         ) AS site_platform_conditions
     FROM site_platforms sp

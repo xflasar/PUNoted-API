@@ -17,6 +17,8 @@ class CorpPrice(BaseModel):
 class CorpMemberData(BaseModel):
     company_code: str = Field(..., description="Company code")
     company_name: str = Field(..., description="Company name")
+    corporation_code: Optional[str] = Field(None, description="Corporation code for this member")
+    corporation_name: Optional[str] = Field(None, description="Corporation name for this member")
 
 class CorpMembersDetails(BaseModel):
     corporation_name: Optional[str] = Field(None, description="Corporation Name")

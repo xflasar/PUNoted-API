@@ -24,21 +24,35 @@ async def fetch_corp_prices(db) -> list:
         raise
 
 SQL_GET_CORP_MEMBERS = """
-WITH TargetCorp AS (
-    SELECT corporationid 
-    FROM corporation_shareholders cs
-    INNER JOIN users u ON cs.userid = u.userdataid
-    WHERE u.accountid = $1
+WITH UserCorp AS (
+    SELECT COALESCE(ud.corporationid, cs.corporationid) AS id
+    FROM users u 
+    JOIN users_data ud ON u.userdataid = ud.userid 
+    LEFT JOIN corporation_shareholders cs ON ud.userid = cs.userid 
+    WHERE u.accountid = $1 
+      AND (ud.corporationid IS NOT NULL OR cs.corporationid IS NOT NULL)
+    ORDER BY (ud.corporationid IS NOT NULL) DESC
     LIMIT 1
+),
+MainID AS (
+    SELECT COALESCE(
+        (SELECT corporationmainid FROM corporation_subsidiaries WHERE corporationsubid = (SELECT id FROM UserCorp)),
+        (SELECT id FROM UserCorp)
+    ) AS id
+),
+FamilyIDs AS (
+    SELECT id FROM MainID
+    UNION
+    SELECT corporationsubid AS id FROM corporation_subsidiaries WHERE corporationmainid = (SELECT id FROM MainID)
 )
-SELECT 
+SELECT DISTINCT
     c.name,
     c.code,
     cs.companycode,
     cs.companyname
 FROM corporation_shareholders cs
-INNER JOIN TargetCorp tc ON cs.corporationid = tc.corporationid
-INNER JOIN corporations c ON c.id = tc.corporationid
+INNER JOIN FamilyIDs f ON cs.corporationid = f.id
+INNER JOIN corporations c ON c.id = cs.corporationid
 ORDER BY cs.companyname ASC;
 """
 

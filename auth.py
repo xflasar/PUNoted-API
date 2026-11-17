@@ -409,6 +409,14 @@ async def get_current_user_id(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Internal routes strictly forbid personal (ptk_) or group (grp_) tokens.
+    # Those tokens are only permitted on public external /v1/ endpoints.
+    if token.startswith("ptk_") or "grp_" in token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="API data tokens (ptk_/grp_) are not allowed on internal endpoints. Use /v1/ endpoints or authenticate with user session credentials.",
+        )
+
     pool = request.app.state.db.pool
 
     async with pool.acquire() as conn:
@@ -487,6 +495,11 @@ class RequireAuth:
         token_cookie_tok: Optional[str] = Cookie(None, alias="refresh_token"),
     ) -> str:
         raw_token = token_header or token_query or token_cookie_tok
+        if not raw_token:
+            auth_header = request.headers.get("Authorization") or request.headers.get("authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                raw_token = auth_header.split(" ", 1)[1].strip()
+
         if not raw_token:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required.")
 

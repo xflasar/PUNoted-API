@@ -27,8 +27,10 @@ FilteredFlights AS (
                 ELSE (f.arrivaltimestamp <= NOW() OR f.aborted = TRUE)
             END
         ))
+        AND ($4::timestamp IS NULL OR f.departuretimestamp >= $4)
+        AND ($5::timestamp IS NULL OR f.departuretimestamp <= $5)
     ORDER BY f.departuretimestamp DESC
-    LIMIT $4 
+    LIMIT $6 
 ),
 SegmentDetails AS (
     -- 2. Process Segments ONLY for the limited flights above
@@ -170,10 +172,26 @@ FROM (
 ) sub;
 """
 
-async def search_flights(db, usernames_list, ship_identifier=None, is_current=None, limit=50):
+async def search_flights(
+    db,
+    usernames_list,
+    ship_identifier=None,
+    is_current=None,
+    start_date=None,
+    end_date=None,
+    limit=50,
+):
     """
     Fetches flights for the list of validated usernames.
     Returns: [{ "Username": "x3m", "Flights": [...] }, ...]
     """
-    row = await db.fetch_one(SQL_SEARCH_FLIGHTS, usernames_list, ship_identifier, is_current, limit)
+    row = await db.fetch_one(
+        SQL_SEARCH_FLIGHTS,
+        usernames_list,
+        ship_identifier,
+        is_current,
+        start_date,
+        end_date,
+        limit,
+    )
     return row[0] if row else []

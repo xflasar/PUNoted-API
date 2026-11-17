@@ -108,7 +108,9 @@ async def get_corporation_members_endpoint(
         members = [
             {
                 "company_code": record["companycode"],
-                "company_name": record["companyname"]
+                "company_name": record["companyname"],
+                "corporation_code": record.get("code"),
+                "corporation_name": record.get("name"),
             }
             for record in records
         ]
@@ -123,7 +125,7 @@ async def get_corporation_members_endpoint(
         }
 
     except Exception as e:
-        logger.error(f"Failed to process corporation members endpoint for user {actual_user_id}: {e}", exc_info=True)
+        logger.error(f"Failed to process corporation members endpoint for user {user_id}: {e}", exc_info=True)
         return Response(
             status_code=500,
             content=json.dumps({"success": False, "message": "Internal server error processing corporation data."}),

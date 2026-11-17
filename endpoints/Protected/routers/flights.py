@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import orjson
@@ -31,8 +32,10 @@ async def get_flights(
     request: Request,
     user_id: str = Depends(RequireAuth(["flights:read"])),
     usernames: Optional[str] = Query(None, description="Comma-separated list of usernames"),
-    ship: Optional[str] = Query(None),
-    current: Optional[bool] = Query(None),
+    ship: Optional[str] = Query(None, description="Filter by ship name or registration"),
+    current: Optional[bool] = Query(None, description="Filter ongoing flights (true) or completed/aborted (false)"),
+    start_date: Optional[datetime] = Query(None, description="ISO start date (UTC) for departure timestamp"),
+    end_date: Optional[datetime] = Query(None, description="ISO end date (UTC) for departure timestamp"),
     limit: int = Query(20, ge=1, le=100),
 ):
     db = request.app.state.db
@@ -45,7 +48,19 @@ async def get_flights(
     if not valid_targets:
         return []
 
-    flights_data = await get_flights_data(db, valid_targets, ship, current, limit)
+    # Strip tzinfo to compare against PostgreSQL timestamp without time zone (UTC)
+    clean_start = start_date.replace(tzinfo=None) if start_date else None
+    clean_end = end_date.replace(tzinfo=None) if end_date else None
+
+    flights_data = await get_flights_data(
+        db,
+        valid_targets,
+        ship_identifier=ship,
+        is_current=current,
+        start_date=clean_start,
+        end_date=clean_end,
+        limit=limit,
+    )
     return flights_data
 
 
@@ -63,8 +78,10 @@ async def get_flight_user(
     request: Request,
     user_id: str = Depends(RequireAuth(["flights:read"])),
     username: Optional[str] = Query(None, description="Specific username to fetch"),
-    ship: Optional[str] = Query(None),
-    current: Optional[bool] = Query(None),
+    ship: Optional[str] = Query(None, description="Filter by ship name or registration"),
+    current: Optional[bool] = Query(None, description="Filter ongoing flights (true) or completed/aborted (false)"),
+    start_date: Optional[datetime] = Query(None, description="ISO start date (UTC) for departure timestamp"),
+    end_date: Optional[datetime] = Query(None, description="ISO end date (UTC) for departure timestamp"),
     limit: int = Query(20, ge=1, le=100),
 ):
     db = request.app.state.db
@@ -76,8 +93,19 @@ async def get_flight_user(
     if not valid_targets:
         raise HTTPException(status_code=404, detail="User not found or access denied")
 
+    clean_start = start_date.replace(tzinfo=None) if start_date else None
+    clean_end = end_date.replace(tzinfo=None) if end_date else None
+
     # 1. Fetch standard structure
-    flights_data = await get_flights_data(db, valid_targets, ship, current, limit)
+    flights_data = await get_flights_data(
+        db,
+        valid_targets,
+        ship_identifier=ship,
+        is_current=current,
+        start_date=clean_start,
+        end_date=clean_end,
+        limit=limit,
+    )
 
     if not flights_data:
         return []

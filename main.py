@@ -83,7 +83,6 @@ from endpoints.Public.routers.governance import (
 )
 from endpoints.Public.routers.shipments import shipments_router as shipments_public_external_router
 from routers.cxuser import cx_router
-from routers.flights import flights_router
 from routers.governance import governance_router
 from routers.group import group_router
 from routers.internal.contracts import contracts_router
@@ -273,6 +272,11 @@ class SecurityLoggerMiddleware:
                 f"STATUS: {status_code[0]} | TIME: {process_time:.2f}ms"
             )
 
+            if status_code[0] == 401:
+                auth_hdr = headers.get(b"authorization", b"").decode("utf-8", errors="ignore")
+                data_tok = headers.get(b"x-data-token", b"").decode("utf-8", errors="ignore")
+                logger.warning(f"DEBUG 401 on {path} | Authorization: {auth_hdr[:15]}... | X-Data-Token: {data_tok[:15]}...")
+
             if size_mb > 5 or status_code[0] >= 400:
                 logger.warning(log_msg)
             else:
@@ -372,7 +376,8 @@ app.add_middleware(
         "authorization",
         "content-type",
         "x-data-token",
-        "content-encoding"
+        "content-encoding",
+        "x-extension-client"
     ],
 )
 
@@ -391,7 +396,8 @@ v1_app.add_middleware(
         "authorization",
         "content-type",
         "x-data-token",
-        "content-encoding"
+        "content-encoding",
+        "x-extension-client"
     ],
 )
 
@@ -488,9 +494,6 @@ v1_app.include_router(company_public_external_router, prefix="/company", tags=["
 v1_app.include_router(governance_public_external_router, prefix="/governance", tags=["Governance Data"])
 v1_app.include_router(shipments_public_external_router, prefix="/shipments", tags=["Shipments Data"])
 v1_app.include_router(public_banking_external_router, prefix="/banking", tags=["Public Banking Data"])
-
-# Flights router is registered under /public/flights to the main app
-app.include_router(flights_router, prefix="/public/flights", tags=["flights"])
 
 # If in development mode, register them to the main app as well with "/v1" prefixes,
 # so that the main app's /docs page shows ALL endpoints (both internal and public).
