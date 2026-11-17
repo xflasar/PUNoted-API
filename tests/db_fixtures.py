@@ -68,6 +68,8 @@ TEST_JWT_PAYLOAD = {
     "type": "access",
     "exp": 2147483647,
 }
+if not config.JWT_SECRET_KEY:
+    config.JWT_SECRET_KEY = "test-jwt-secret-key-for-testing-only"
 TEST_JWT_TOKEN = jwt.encode(TEST_JWT_PAYLOAD, config.JWT_SECRET_KEY, algorithm="HS256")
 INTERNAL_AUTH_HEADERS = {
     "Origin": INTERNAL_ORIGIN,
