@@ -3,7 +3,7 @@ from __future__ import annotations
 import typing
 import pytest
 
-from tests.db_fixtures import client, db_savepoint, db_setup  # noqa: F401
+from tests.db_fixtures import INTERNAL_HEADERS, client, db_savepoint, db_setup  # noqa: F401
 
 if typing.TYPE_CHECKING:
     import fastapi.testclient
@@ -30,7 +30,7 @@ def test_get_public_bank_detail(client: fastapi.testclient.TestClient, db_savepo
 
 def test_internal_get_bank_ledger(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:
     """Test bank ledger inspection /internal/banking/{id}/ledger."""
-    response = client.get("/internal/banking/101/ledger", headers={"X-Internal-Origin": "punoted-internal"})
+    response = client.get("/internal/banking/101/ledger", headers=INTERNAL_HEADERS)
     assert response.status_code == 200
     data = response.json()
     assert data["bank_id"] == 101
@@ -49,7 +49,7 @@ def test_get_protected_user_banking(client: fastapi.testclient.TestClient, db_sa
 
 def test_internal_get_banks(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:
     """Test internal banking list endpoint /internal/banking."""
-    response = client.get("/internal/banking", headers={"X-Internal-Origin": "punoted-internal"})
+    response = client.get("/internal/banking", headers=INTERNAL_HEADERS)
     assert response.status_code == 200
     banks = response.json()
     assert isinstance(banks, list)
@@ -58,7 +58,7 @@ def test_internal_get_banks(client: fastapi.testclient.TestClient, db_savepoint:
 
 def test_internal_get_bank_by_id(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:
     """Test internal bank details /internal/banking/{id}."""
-    response = client.get("/internal/banking/101", headers={"X-Internal-Origin": "punoted-internal"})
+    response = client.get("/internal/banking/101", headers=INTERNAL_HEADERS)
     assert response.status_code == 200
     bank = response.json()
     assert bank["id"] == 101

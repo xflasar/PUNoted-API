@@ -54,7 +54,25 @@ import fastapi.testclient
 import pytest
 
 import config
+import jwt
 import main
+
+# Canonical origin for internal web app requests
+INTERNAL_ORIGIN = "https://punoted.net"
+INTERNAL_HEADERS = {"Origin": INTERNAL_ORIGIN}
+
+# Valid JWT session token for test user (accountid: aaaaaaaa-aa04-aaaa-aaaa-aaaaaaaaaaaa)
+TEST_USER_ID = "aaaaaaaa-aa04-aaaa-aaaa-aaaaaaaaaaaa"
+TEST_JWT_PAYLOAD = {
+    "user_id": TEST_USER_ID,
+    "type": "access",
+    "exp": 2147483647,
+}
+TEST_JWT_TOKEN = jwt.encode(TEST_JWT_PAYLOAD, config.JWT_SECRET_KEY, algorithm="HS256")
+INTERNAL_AUTH_HEADERS = {
+    "Origin": INTERNAL_ORIGIN,
+    "Authorization": f"Bearer {TEST_JWT_TOKEN}",
+}
 
 if typing.TYPE_CHECKING:
     import asyncpg.transaction

@@ -4,7 +4,7 @@ import typing
 
 import pytest
 
-from tests.db_fixtures import client, db_savepoint, db_setup  # noqa: F401
+from tests.db_fixtures import INTERNAL_AUTH_HEADERS, client, db_savepoint, db_setup  # noqa: F401
 
 if typing.TYPE_CHECKING:
     import fastapi.testclient
@@ -28,7 +28,7 @@ def test_search_simple_production_user(client: fastapi.testclient.TestClient, db
     assert response.status_code == 200
 
 def test_get_user_production_internal(client: fastapi.testclient.TestClient, db_savepoint: None) -> None:  # noqa: F811
-    response = client.get("/internal/production/user_production", headers={"Authorization": "Bearer ptk_fake", "Origin": "http://localhost:5174"})
+    response = client.get("/internal/production/user_production", headers=INTERNAL_AUTH_HEADERS)
     assert response.status_code == 200
     assert response.json()["success"] is True
 
