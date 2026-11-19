@@ -578,6 +578,62 @@ async def get_corp_fuel_consumption(conn: Any, user_id: str, days: int = 7) -> D
     savings = round(cx_total - corp_total, 2)
     div_days = max(days, 1)
 
+    FUEL_MEMBERS_QUERY = """
+    WITH UserCorp AS (
+        SELECT COALESCE(ud.corporationid, cs.corporationid) AS id
+        FROM users u 
+        JOIN users_data ud ON u.userdataid = ud.userid 
+        LEFT JOIN corporation_shareholders cs ON ud.userid = cs.userid 
+        WHERE u.accountid = $1 
+          AND (ud.corporationid IS NOT NULL OR cs.corporationid IS NOT NULL)
+        ORDER BY (ud.corporationid IS NOT NULL) DESC
+        LIMIT 1
+    ),
+    MainCorp AS (
+        SELECT COALESCE(
+            (SELECT corporationmainid FROM corporation_subsidiaries WHERE corporationsubid = (SELECT id FROM UserCorp)),
+            (SELECT id FROM UserCorp)
+        ) AS id
+    ),
+    FamilyCorpIDs AS (
+        SELECT id FROM MainCorp
+        UNION
+        SELECT corporationsubid FROM corporation_subsidiaries WHERE corporationmainid = (SELECT id FROM MainCorp)
+    ),
+    FamilyMembers AS (
+        SELECT DISTINCT cs.userid, COALESCE(cs.companycode, u.username) AS player_name
+        FROM corporation_shareholders cs
+        JOIN users_data ud ON ud.userid = cs.userid
+        JOIN users u ON u.userdataid = ud.userid
+        WHERE cs.corporationid IN (SELECT id FROM FamilyCorpIDs)
+          AND cs.userid IS NOT NULL
+    )
+    SELECT 
+        fm.player_name,
+        COALESCE(SUM(sf.stltotalconsumption), 0) AS total_stl,
+        COALESCE(SUM(sf.ftltotalconsumption), 0) AS total_ftl,
+        COUNT(sf.id) AS flights_count
+    FROM FamilyMembers fm
+    JOIN ship_flights sf ON sf.userid = fm.userid
+    WHERE sf.departuretimestamp >= NOW() - ($2 || ' days')::INTERVAL
+    GROUP BY fm.player_name
+    ORDER BY total_stl DESC, total_ftl DESC;
+    """
+
+    member_rows = await conn.fetch(FUEL_MEMBERS_QUERY, user_id, str(days))
+    consumers = []
+    for mr in member_rows:
+        t_stl = int(mr["total_stl"] or 0)
+        t_ftl = int(mr["total_ftl"] or 0)
+        consumers.append({
+            "player_name": mr["player_name"],
+            "total_stl": t_stl,
+            "total_ftl": t_ftl,
+            "daily_stl": round(t_stl / div_days, 1),
+            "daily_ftl": round(t_ftl / div_days, 1),
+            "flights_count": int(mr["flights_count"] or 0),
+        })
+
     return {
         "days": days,
         "total_flights": total_flights,
@@ -605,6 +661,7 @@ async def get_corp_fuel_consumption(conn: Any, user_id: str, days: int = 7) -> D
             "corp_cost": round(corp_total / div_days, 2),
             "cx_cost": round(cx_total / div_days, 2),
         },
+        "consumers": consumers,
     }
 
 
