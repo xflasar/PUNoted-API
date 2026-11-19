@@ -102,6 +102,7 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
     from routers.internal.production import production_router
     from routers.internal.storage import storage_router
     from routers.internal.banking import banking_router
+    from routers.internal.corporation import corporation_internal_router
     from endpoints.Public.routers.shipments import shipments_router as shipments_public_external_router
     from endpoints.Public.routers.banking import public_banking_router as public_banking_external_router
     from endpoints.Protected.routers.banking import protected_banking_router as api_banking_external_router
@@ -110,6 +111,8 @@ async def prepare_test_db(app) -> tuple[asyncpg.Connection, asyncpg.transaction.
         app.include_router(storage_router, prefix="/internal/storage")
     if not any(hasattr(r, "path") and r.path.startswith("/internal/banking") for r in app.routes):
         app.include_router(banking_router, prefix="/internal/banking")
+    if not any(hasattr(r, "path") and r.path.startswith("/internal/corporation") for r in app.routes):
+        app.include_router(corporation_internal_router, prefix="/internal/corporation")
     if not any(hasattr(r, "path") and r.path.startswith("/public/shipments") for r in app.routes):
         app.include_router(shipments_public_external_router, prefix="/public/shipments")
     if not any(hasattr(r, "path") and r.path.startswith("/banking") for r in app.routes):

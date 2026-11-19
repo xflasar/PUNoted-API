@@ -142,12 +142,43 @@ TargetCorp AS (
     LIMIT 1
 ),
 CorpMembers AS (
-    SELECT u.userdataid, COALESCE(cs.companycode, u.username) as player_name,
-    CASE WHEN ud.subscriptionlevel = 'PRO' AND ud.subscriptionexpiry > NOW() THEN TRUE ELSE FALSE END as is_accurate
+    SELECT 
+        s.siteid,
+        u.userdataid,
+        COALESCE(cs.companycode, u.username) as player_name,
+        CASE WHEN ud.subscriptionlevel = 'PRO' AND ud.subscriptionexpiry > NOW() THEN TRUE ELSE FALSE END as is_accurate
     FROM TargetCorp tc 
     JOIN corporation_shareholders cs ON cs.corporationid = tc.corporationid 
     JOIN users_data ud ON ud.userid = cs.userid 
     JOIN users u ON u.userdataid = ud.userid
+    JOIN sites s ON s.userid = u.userdataid
+    LEFT JOIN user_global_settings ugs ON ugs.userid::uuid = u.accountid
+    WHERE u.xata_updatedat > NOW() - INTERVAL '7 day'
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM jsonb_array_elements(
+            CASE 
+                WHEN jsonb_typeof(ugs.internal_excluded_sites) = 'array' THEN ugs.internal_excluded_sites 
+                ELSE '[]'::jsonb 
+            END
+        ) as ex 
+        WHERE ex->>'siteId' = s.siteid
+    )
+    AND NOT EXISTS (
+        SELECT 1 
+        FROM jsonb_array_elements(
+            CASE 
+                WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'array' 
+                    THEN ugs.internal_leased_sites::jsonb
+                WHEN jsonb_typeof(ugs.internal_leased_sites::jsonb) = 'string' 
+                     AND jsonb_typeof((ugs.internal_leased_sites::jsonb #>> '{}')::jsonb) = 'array' 
+                    THEN (ugs.internal_leased_sites::jsonb #>> '{}')::jsonb
+                ELSE '[]'::jsonb 
+            END
+        ) as ls 
+        WHERE ls->>'siteId' = s.siteid
+        AND (ls->>'show_in_corp')::boolean IS NOT TRUE 
+    )
 ),
 -- Aggregate materials by User instead of Site
 UserMaterialTotals AS (
@@ -156,8 +187,7 @@ UserMaterialTotals AS (
         m.ticker,
         SUM(wfn.unitsperinterval) as total_units
     FROM CorpMembers cm
-    JOIN sites s ON s.userid = cm.userdataid
-    JOIN workforces wf ON wf.siteid = s.siteid
+    JOIN workforces wf ON wf.siteid = cm.siteid
     JOIN workforce_needs wfn ON wfn.workforceid = wf.workforceid
     JOIN materials m ON m.materialid = wfn.materialid
     GROUP BY cm.userdataid, m.ticker

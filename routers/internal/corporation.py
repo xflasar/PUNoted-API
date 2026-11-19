@@ -7,7 +7,11 @@ from app.core.security import require_internal_origin
 from auth import get_current_user_id
 from endpoints.Public.services.corp_service import generate_json_data
 from models.corp_production_models import CorpOverviewResponse
-from services.internal.corporation_service import build_corp_production_response
+from services.internal.corporation_service import (
+    build_corp_production_response,
+    get_corp_fuel_consumption,
+    get_corp_trade_summary,
+)
 
 corporation_internal_router = APIRouter(dependencies=[Depends(require_internal_origin)])
 
@@ -30,6 +34,34 @@ async def corp_production(
             user_id=user_id,
             debug=debug,
         )
+
+@corporation_internal_router.get(
+    "/fuel-consumption",
+    description="Get rolling fuel consumption (STL and FTL) for the corporation family over specified days (default 7).",
+)
+async def get_corp_fuel_consumption_endpoint(
+    request: Request,
+    days: int = 7,
+    user_id: str = Depends(get_current_user_id),
+):
+    pool = request.app.state.db.pool
+    async with pool.acquire() as conn:
+        return await get_corp_fuel_consumption(conn=conn, user_id=user_id, days=days)
+
+
+@corporation_internal_router.get(
+    "/trade-summary",
+    description="Get material trade comparison (internal corp contracts vs CX trades) over specified days (default 7).",
+)
+async def get_corp_trade_summary_endpoint(
+    request: Request,
+    days: int = 7,
+    user_id: str = Depends(get_current_user_id),
+):
+    pool = request.app.state.db.pool
+    async with pool.acquire() as conn:
+        return await get_corp_trade_summary(conn=conn, user_id=user_id, days=days)
+
 
 # FIXME: Rework this endpoint to use the internal service and repo and add corp pricing tables
 @corporation_internal_router.get(

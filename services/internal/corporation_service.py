@@ -470,3 +470,272 @@ async def get_family_members(conn: Any, corp_ids: List[str]):
             proxies_map[cid] = r["accountid"]
 
     return members_map, proxies_map
+
+
+# ==========================================
+# 4. HELPER: GET 7-DAY FUEL CONSUMPTION
+# ==========================================
+
+async def get_corp_fuel_consumption(conn: Any, user_id: str, days: int = 7) -> Dict[str, Any]:
+    """
+    Calculates total and daily rolling fuel consumption (STL and FTL) for the user's
+    entire corporation family (main + subsidiaries) over the requested number of days.
+    Also prices it using material_prices (Corp price) and cx_brokers (CX IC1 price).
+    """
+    FUEL_QUERY = """
+    WITH UserCorp AS (
+        SELECT COALESCE(ud.corporationid, cs.corporationid) AS id
+        FROM users u 
+        JOIN users_data ud ON u.userdataid = ud.userid 
+        LEFT JOIN corporation_shareholders cs ON ud.userid = cs.userid 
+        WHERE u.accountid = $1 
+          AND (ud.corporationid IS NOT NULL OR cs.corporationid IS NOT NULL)
+        ORDER BY (ud.corporationid IS NOT NULL) DESC
+        LIMIT 1
+    ),
+    MainCorp AS (
+        SELECT COALESCE(
+            (SELECT corporationmainid FROM corporation_subsidiaries WHERE corporationsubid = (SELECT id FROM UserCorp)),
+            (SELECT id FROM UserCorp)
+        ) AS id
+    ),
+    FamilyCorpIDs AS (
+        SELECT id FROM MainCorp
+        UNION
+        SELECT corporationsubid FROM corporation_subsidiaries WHERE corporationmainid = (SELECT id FROM MainCorp)
+    ),
+    FamilyUserIDs AS (
+        SELECT DISTINCT cs.userid
+        FROM corporation_shareholders cs
+        WHERE cs.corporationid IN (SELECT id FROM FamilyCorpIDs)
+          AND cs.userid IS NOT NULL
+    ),
+    Consumption AS (
+        SELECT 
+            COALESCE(SUM(sf.stltotalconsumption), 0) AS total_stl,
+            COALESCE(SUM(sf.ftltotalconsumption), 0) AS total_ftl,
+            COUNT(sf.id) AS total_flights
+        FROM ship_flights sf
+        WHERE sf.userid IN (SELECT userid FROM FamilyUserIDs)
+          AND sf.departuretimestamp >= NOW() - ($2 || ' days')::INTERVAL
+    ),
+    CorpPrices AS (
+        SELECT
+            MAX(CASE WHEN ticker = 'SF' THEN price END) AS corp_sf_price,
+            MAX(CASE WHEN ticker = 'FF' THEN price END) AS corp_ff_price
+        FROM material_prices
+        WHERE ticker IN ('SF', 'FF')
+    ),
+    CxPrices AS (
+        SELECT
+            MAX(CASE WHEN ticker = 'SF.IC1' THEN price END) AS cx_sf_price,
+            MAX(CASE WHEN ticker = 'FF.IC1' THEN price END) AS cx_ff_price
+        FROM cx_brokers
+        WHERE ticker IN ('SF.IC1', 'FF.IC1')
+    )
+    SELECT 
+        c.total_flights,
+        c.total_stl,
+        c.total_ftl,
+        COALESCE(cp.corp_sf_price, 0) AS corp_sf_price,
+        COALESCE(cp.corp_ff_price, 0) AS corp_ff_price,
+        COALESCE(cx.cx_sf_price, 0) AS cx_sf_price,
+        COALESCE(cx.cx_ff_price, 0) AS cx_ff_price
+    FROM Consumption c
+    CROSS JOIN CorpPrices cp
+    CROSS JOIN CxPrices cx;
+    """
+
+    row = await conn.fetchrow(FUEL_QUERY, user_id, str(days))
+    if not row:
+        return {
+            "days": days,
+            "total_flights": 0,
+            "total_stl": 0,
+            "total_ftl": 0,
+            "corp_pricing": {"sf_price": 0, "ff_price": 0, "stl_cost": 0, "ftl_cost": 0, "total_cost": 0},
+            "cx_pricing": {"exchange": "IC1", "sf_price": 0, "ff_price": 0, "stl_cost": 0, "ftl_cost": 0, "total_cost": 0},
+            "savings_vs_cx": 0,
+            "daily_average": {"stl": 0, "ftl": 0, "corp_cost": 0, "cx_cost": 0},
+        }
+
+    total_flights = int(row["total_flights"] or 0)
+    total_stl = int(row["total_stl"] or 0)
+    total_ftl = int(row["total_ftl"] or 0)
+    corp_sf = float(row["corp_sf_price"] or 0)
+    corp_ff = float(row["corp_ff_price"] or 0)
+    cx_sf = float(row["cx_sf_price"] or 0)
+    cx_ff = float(row["cx_ff_price"] or 0)
+
+    corp_stl_cost = round(total_stl * corp_sf, 2)
+    corp_ftl_cost = round(total_ftl * corp_ff, 2)
+    corp_total = round(corp_stl_cost + corp_ftl_cost, 2)
+
+    cx_stl_cost = round(total_stl * cx_sf, 2)
+    cx_ftl_cost = round(total_ftl * cx_ff, 2)
+    cx_total = round(cx_stl_cost + cx_ftl_cost, 2)
+
+    savings = round(cx_total - corp_total, 2)
+    div_days = max(days, 1)
+
+    return {
+        "days": days,
+        "total_flights": total_flights,
+        "total_stl": total_stl,
+        "total_ftl": total_ftl,
+        "corp_pricing": {
+            "sf_price": corp_sf,
+            "ff_price": corp_ff,
+            "stl_cost": corp_stl_cost,
+            "ftl_cost": corp_ftl_cost,
+            "total_cost": corp_total,
+        },
+        "cx_pricing": {
+            "exchange": "IC1",
+            "sf_price": cx_sf,
+            "ff_price": cx_ff,
+            "stl_cost": cx_stl_cost,
+            "ftl_cost": cx_ftl_cost,
+            "total_cost": cx_total,
+        },
+        "savings_vs_cx": savings,
+        "daily_average": {
+            "stl": round(total_stl / div_days, 1),
+            "ftl": round(total_ftl / div_days, 1),
+            "corp_cost": round(corp_total / div_days, 2),
+            "cx_cost": round(cx_total / div_days, 2),
+        },
+    }
+
+
+# ==========================================
+# 5. HELPER: GET MATERIAL TRADE COMPARISON (CORP CONTRACTS VS CX)
+# ==========================================
+
+async def get_corp_trade_summary(conn: Any, user_id: str, days: int = 7) -> Dict[str, Any]:
+    """
+    Returns aggregated material transactions for the corporation family over the specified days:
+    - Internal trade between corp members via contracts (quantity, contract count).
+    - External trade on CX by corp members (bought quantity/cost/avg price, sold quantity/revenue/avg price).
+    """
+    days = max(1, min(days, 365))
+
+    FAMILY_QUERY = """
+    WITH UserCorp AS (
+        SELECT COALESCE(ud.corporationid, cs.corporationid) AS id
+        FROM users u 
+        JOIN users_data ud ON u.userdataid = ud.userid 
+        LEFT JOIN corporation_shareholders cs ON ud.userid = cs.userid 
+        WHERE u.accountid = $1 
+          AND (ud.corporationid IS NOT NULL OR cs.corporationid IS NOT NULL)
+        ORDER BY (ud.corporationid IS NOT NULL) DESC
+        LIMIT 1
+    ),
+    MainCorp AS (
+        SELECT COALESCE(
+            (SELECT corporationmainid FROM corporation_subsidiaries WHERE corporationsubid = (SELECT id FROM UserCorp)),
+            (SELECT id FROM UserCorp)
+        ) AS id
+    ),
+    FamilyCorpIDs AS (
+        SELECT id FROM MainCorp
+        UNION
+        SELECT corporationsubid FROM corporation_subsidiaries WHERE corporationmainid = (SELECT id FROM MainCorp)
+    )
+    SELECT DISTINCT cs.userid, cs.companycode
+    FROM corporation_shareholders cs
+    WHERE cs.corporationid IN (SELECT id FROM FamilyCorpIDs)
+      AND cs.userid IS NOT NULL;
+    """
+    member_rows = await conn.fetch(FAMILY_QUERY, user_id)
+    if not member_rows:
+        return {"days": days, "trades": {}}
+
+    member_userids = [r["userid"] for r in member_rows if r["userid"]]
+    member_codes = [r["companycode"] for r in member_rows if r["companycode"]]
+
+    CX_QUERY = """
+    SELECT 
+        m.ticker,
+        o.type AS order_type,
+        SUM(t.amount) AS total_amount,
+        SUM(t.amount * o.limitamount) AS total_value,
+        COUNT(DISTINCT o.orderid) AS order_count
+    FROM comex_trade_orders o
+    INNER JOIN comex_trade_orders_trades t ON o.orderid = t.orderId
+    JOIN materials m ON o.materialid = m.materialid
+    WHERE o.userid = ANY($1::text[])
+      AND o.created >= NOW() - ($2 || ' days')::INTERVAL
+    GROUP BY m.ticker, o.type;
+    """
+    cx_rows = await conn.fetch(CX_QUERY, member_userids, str(days))
+
+    CONTRACTS_QUERY = """
+    SELECT 
+        mat.ticker,
+        SUM(cm.amount) AS total_amount,
+        COUNT(DISTINCT c.id) AS contract_count
+    FROM contracts c
+    JOIN contract_conditions cc ON c.id = cc.contractid AND c.party = cc.contractparty
+    JOIN contract_materials cm ON cc.id = cm.contractconditionid AND cc.contractparty = cm.contractparty
+    JOIN materials mat ON cm.materialid = mat.materialid
+    WHERE c.userid = ANY($1::text[])
+      AND (c.partnercode = ANY($2::text[]) OR c.partnerid = ANY($1::text[]))
+      AND c.party = 'PROVIDER'
+      AND c.status IN ('FULFILLED', 'CLOSED', 'OPEN')
+      AND c.date >= NOW() - ($3 || ' days')::INTERVAL
+    GROUP BY mat.ticker;
+    """
+    contracts_rows = await conn.fetch(CONTRACTS_QUERY, member_userids, member_codes, str(days))
+
+    trades: Dict[str, Any] = {}
+
+    for r in contracts_rows:
+        ticker = r["ticker"]
+        amt = float(r["total_amount"] or 0)
+        cnt = int(r["contract_count"] or 0)
+        if ticker not in trades:
+            trades[ticker] = {
+                "corp_contracts": {"amount": amt, "count": cnt},
+                "cx": {
+                    "bought_amount": 0.0,
+                    "bought_value": 0.0,
+                    "bought_avg_price": 0.0,
+                    "sold_amount": 0.0,
+                    "sold_value": 0.0,
+                    "sold_avg_price": 0.0,
+                },
+            }
+        else:
+            trades[ticker]["corp_contracts"] = {"amount": amt, "count": cnt}
+
+    for r in cx_rows:
+        ticker = r["ticker"]
+        order_type = r["order_type"]
+        amt = float(r["total_amount"] or 0)
+        val = float(r["total_value"] or 0)
+        avg_price = round(val / amt, 2) if amt > 0 else 0.0
+
+        if ticker not in trades:
+            trades[ticker] = {
+                "corp_contracts": {"amount": 0.0, "count": 0},
+                "cx": {
+                    "bought_amount": 0.0,
+                    "bought_value": 0.0,
+                    "bought_avg_price": 0.0,
+                    "sold_amount": 0.0,
+                    "sold_value": 0.0,
+                    "sold_avg_price": 0.0,
+                },
+            }
+
+        if order_type == "BUYING":
+            trades[ticker]["cx"]["bought_amount"] = amt
+            trades[ticker]["cx"]["bought_value"] = val
+            trades[ticker]["cx"]["bought_avg_price"] = avg_price
+        elif order_type == "SELLING":
+            trades[ticker]["cx"]["sold_amount"] = amt
+            trades[ticker]["cx"]["sold_value"] = val
+            trades[ticker]["cx"]["sold_avg_price"] = avg_price
+
+    return {"days": days, "trades": trades}
