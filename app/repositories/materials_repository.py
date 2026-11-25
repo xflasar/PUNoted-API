@@ -5,7 +5,7 @@ class MaterialsRepository:
 
     async def get_all_materials(self):
         query = """
-            SELECT materialid, ticker, name, resource 
+            SELECT materialid, ticker, name, resource, category
             FROM materials
         """
         return await self.db.fetch_rows(query)

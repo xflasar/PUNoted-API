@@ -66,13 +66,16 @@ class MaterialsService:
             # --- SYNTHETIC RECIPE FOR STARTER NODES ---
             if is_resource and len(recipes) == 0:
 
-                # Determine the building type based on material category
+                # Determine the building type based on material category and base runtime
                 cat = (m.get('category') or "").upper()
                 bldg = "EXT" # Default solid extractor
+                dur_ms = 43200000 # 12.0 hours
                 if "LIQUID" in cat:
                     bldg = "RIG"
+                    dur_ms = 17280000 # 4.8 hours
                 elif "GAS" in cat:
                     bldg = "COL"
+                    dur_ms = 21600000 # 6.0 hours
 
                 if ticker not in material_primary_building:
                     material_primary_building[ticker] = bldg
@@ -80,10 +83,10 @@ class MaterialsService:
                 synthetic_recipe = InputRecipeDTO(
                     processid=f"ext-{ticker}",
                     name=f"Extract {m['name'] or ticker}",
-                    durationmillis=86400000,
+                    durationmillis=dur_ms,
                     madeIn=bldg,
                     inputs=[],
-                    outputs=[RecipeIODTO(ticker=ticker, amount=100.0)]
+                    outputs=[RecipeIODTO(ticker=ticker, amount=1.0)]
                 )
                 recipes.append(synthetic_recipe)
 
