@@ -180,7 +180,14 @@ CorpMembers AS (
         AND (ls->>'show_in_corp')::boolean IS NOT TRUE 
     )
 ),
--- Aggregate materials by User instead of Site
+UniqueCorpMembers AS (
+    SELECT DISTINCT
+        userdataid,
+        player_name,
+        is_accurate
+    FROM CorpMembers
+),
+-- Aggregate materials by User across all allowed sites
 UserMaterialTotals AS (
     SELECT 
         cm.userdataid,
@@ -194,10 +201,10 @@ UserMaterialTotals AS (
 )
 SELECT 
     -- 1. Virtual Site ID: Use userdataid so it is unique and stable
-    cm.userdataid as siteid,
+    ucm.userdataid as siteid,
     
-    cm.player_name,
-    cm.is_accurate,
+    ucm.player_name,
+    ucm.is_accurate,
     
     -- 2. Virtual Location Name
     'Workforce' as location_name,
@@ -213,10 +220,10 @@ SELECT
         ) FILTER (WHERE umt.ticker IS NOT NULL), 
         '[]'::jsonb
     ) as needs
-FROM CorpMembers cm
-LEFT JOIN UserMaterialTotals umt ON umt.userdataid = cm.userdataid
-GROUP BY cm.userdataid, cm.player_name, cm.is_accurate
-ORDER BY cm.player_name;
+FROM UniqueCorpMembers ucm
+LEFT JOIN UserMaterialTotals umt ON umt.userdataid = ucm.userdataid
+GROUP BY ucm.userdataid, ucm.player_name, ucm.is_accurate
+ORDER BY ucm.player_name;
 """
 
 
